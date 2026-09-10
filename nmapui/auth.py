@@ -191,38 +191,50 @@ def require_auth(f):
     return decorated
 
 
+def _basic_credentials_valid():
+    """Validate the request's Basic credentials, from either source Flask uses."""
+    auth = request.authorization
+    if auth and check_auth(auth.username, auth.password):
+        return True
+
+    header = (request.headers.get("Authorization") or "").strip()
+    if header.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(header.split(" ", 1)[1]).decode()
+            username, password = decoded.split(":", 1)
+            if check_auth(username, password):
+                return True
+        except Exception:
+            return False
+    return False
+
+
+def socket_authorized():
+    """True when the current Socket.IO handshake may proceed.
+
+    The loopback handshake token is CSRF protection, not a credential: any
+    local process can fetch it.  This is the actual gate.
+    """
+    if request_is_local_ui():
+        return True
+    if session_username():
+        return True
+    return _basic_credentials_valid()
+
+
 def require_socket_auth():
-    """Decorator to require HTTP Basic Auth context for Socket.IO events."""
+    """Decorator to require an authenticated session for Socket.IO events."""
 
     def decorator(f):
         @wraps(f)
         def wrapped(*args, **kwargs):
-            auth = request.authorization
-            if request_is_local_ui():
+            if socket_authorized():
                 return f(*args, **kwargs)
-            if not auth:
-                header = request.headers.get("Authorization", "")
-                if header.startswith("Basic "):
-                    try:
-                        decoded = base64.b64decode(header.split(" ", 1)[1]).decode()
-                        username, password = decoded.split(":", 1)
-                        if check_auth(username, password):
-                            return f(*args, **kwargs)
-                    except Exception:
-                        pass
-                if auth_uses_insecure_defaults():
-                    emit("auth_error", {"error": "Authentication is not configured securely"})
-                    return None
-                emit("auth_error", {"error": "Unauthorized"})
+            if auth_uses_insecure_defaults():
+                emit("auth_error", {"error": "Authentication is not configured securely"})
                 return None
-
-            if not check_auth(auth.username, auth.password):
-                if auth_uses_insecure_defaults():
-                    emit("auth_error", {"error": "Authentication is not configured securely"})
-                    return None
-                emit("auth_error", {"error": "Unauthorized"})
-                return None
-            return f(*args, **kwargs)
+            emit("auth_error", {"error": "Unauthorized"})
+            return None
 
         return wrapped
 

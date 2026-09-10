@@ -190,6 +190,7 @@ def register_core_routes(app, deps):
         )
 
     @app.route("/api/runtime/settings-summary")
+    @require_auth
     def runtime_settings_summary():
         scan_rules = settings_state.get("scan_rules", {})
         reports = settings_state.get("reports", {})
@@ -237,6 +238,7 @@ def register_core_routes(app, deps):
         )
 
     @app.route("/api/runtime/logs")
+    @require_auth
     def runtime_logs():
         category = None
         if runtime_store is not None:

@@ -10,7 +10,8 @@ from nmapui.startup_checks import run_startup_checks
 from nmapui.traceroute import run_traceroute
 
 
-def test_runtime_logs_route_returns_persisted_entries():
+def test_runtime_logs_route_returns_persisted_entries(monkeypatch):
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
     class RuntimeStoreStub:
         def get_recent_logs(self, category=None, limit=200):
             return [
@@ -542,7 +543,8 @@ def test_runtime_backfill_route_runs_authenticated_backfill(monkeypatch, tmp_pat
     assert snapshot_calls[0][1]["last_backfilled"] == 1
 
 
-def test_runtime_settings_summary_includes_backfill_status():
+def test_runtime_settings_summary_includes_backfill_status(monkeypatch):
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
     class RuntimeStoreStub:
         def get_runtime_snapshot(self, key):
             if key == "maintenance_backfill_status":
@@ -575,7 +577,8 @@ def test_runtime_settings_summary_includes_backfill_status():
     assert payload["maintenance_backfill"]["last_run_at"] == "2026-03-14T21:00:00+00:00"
 
 
-def test_runtime_settings_summary_includes_retention_status():
+def test_runtime_settings_summary_includes_retention_status(monkeypatch):
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
     class RuntimeStoreStub:
         def get_runtime_snapshot(self, key):
             if key == "maintenance_retention_status":

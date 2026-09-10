@@ -175,3 +175,25 @@ def test_unauthenticated_api_request_is_rejected(monkeypatch):
         )
 
     assert response.status_code == 401
+
+
+def test_logs_and_settings_summary_require_auth(monkeypatch):
+    """These leaked targets, paths and exception strings to any local process."""
+    configure_auth(monkeypatch)
+    app = build_session_app()
+
+    with app.test_client() as client:
+        for path in ("/api/runtime/logs", "/api/runtime/settings-summary"):
+            response = client.get(path, environ_overrides={"REMOTE_ADDR": "10.1.2.3"})
+            assert response.status_code == 401, path
+
+
+def test_health_endpoints_stay_public_for_supervision(monkeypatch):
+    """launchd/CI health probes must not need credentials."""
+    configure_auth(monkeypatch)
+    app = build_session_app()
+
+    with app.test_client() as client:
+        for path in ("/api/health/live", "/api/health/ready"):
+            response = client.get(path, environ_overrides={"REMOTE_ADDR": "10.1.2.3"})
+            assert response.status_code == 200, path
