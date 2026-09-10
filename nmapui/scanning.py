@@ -6,27 +6,14 @@ import re
 import shutil
 import subprocess
 
+from nmapui import privileged
+
 
 logger = logging.getLogger(__name__)
 
 
 def _is_permission_denied(result) -> bool:
-    combined_output = " ".join(
-        str(part or "")
-        for part in (
-            getattr(result, "stdout", ""),
-            getattr(result, "stderr", ""),
-        )
-    ).lower()
-    return any(
-        token in combined_output
-        for token in (
-            "permission denied",
-            "operation not permitted",
-            "not permitted",
-            "requires root",
-        )
-    )
+    return privileged.is_permission_denied(result)
 
 
 def get_nmap_scan_technique(force_unprivileged=False):
@@ -278,10 +265,18 @@ def run_nmap_with_xml_output(
     timeout_seconds=None,
 ):
     """Run nmap with all formats output (-oA)."""
-    if force_privileged_scan:
+    # Precedence matters: an explicit unprivileged request must win over the
+    # default privileged attempt, otherwise "scan only" mode silently becomes
+    # a SYN scan (and contradicts the message shown to the operator).
+    if scan_only_mode:
+        scan_technique = "-sT"
+    elif force_privileged_scan:
         scan_technique = "-sS"
     else:
-        scan_technique = get_nmap_scan_technique(force_unprivileged=scan_only_mode)
+        scan_technique = get_nmap_scan_technique(
+            force_unprivileged=not (privileged.is_root() or privileged.sudo_available())
+        )
+    scan_prefix = privileged.privileged_prefix()
     excluded_targets = [
         str(item or "").strip() for item in (excluded_targets or []) if str(item or "").strip()
     ]
@@ -292,16 +287,7 @@ def run_nmap_with_xml_output(
             emit_to_client(sid, "scan_feedback", f"Starting quick scan on {target}...")
         else:
             socketio_emit("scan_feedback", f"Starting quick scan on {target}...")
-        cmd = [
-            "nmap",
-            scan_technique,
-            "-T3",
-            "--top-ports",
-            "100",
-            "-oA",
-            str(output_base),
-            target,
-        ]
+        options = ["-T3", "--top-ports", "100", "-oA", str(output_base)]
         timeout_seconds = int(timeout_seconds or 180)
     else:
         logger.info("Running comprehensive scan on %s...", target)
@@ -313,9 +299,7 @@ def run_nmap_with_xml_output(
             emit_to_client(sid, "scan_feedback", message)
         else:
             socketio_emit("scan_feedback", message)
-        cmd = [
-            "nmap",
-            scan_technique,
+        options = [
             "-Pn",
             "-T4",
             "-A",
@@ -326,12 +310,14 @@ def run_nmap_with_xml_output(
             str(stylesheet_pdf),
             "-oA",
             str(output_base),
-            target,
         ]
         timeout_seconds = int(timeout_seconds or 7200)
 
     if excluded_targets:
-        cmd[1:1] = ["--exclude", ",".join(excluded_targets)]
+        # Part of the shared option list, so the unprivileged fallback keeps it.
+        options = ["--exclude", ",".join(excluded_targets), *options]
+
+    cmd = privileged.nmap_argv(scan_technique, options, target, prefix=scan_prefix)
 
     cmd_str = " ".join(cmd)
     logger.info("Executing: %s", cmd_str)
@@ -357,7 +343,11 @@ def run_nmap_with_xml_output(
         result = run_cancellable_command(
             cmd, sid=sid, job_type="report" if sid else None, timeout=timeout_seconds
         )
-        if force_privileged_scan and result.returncode != 0 and _is_permission_denied(result):
+        if (
+            (force_privileged_scan or scan_prefix)
+            and result.returncode != 0
+            and _is_permission_denied(result)
+        ):
             logger.warning("Privileged scan denied; retrying with unprivileged connect scan")
             if sid:
                 emit_to_client(
@@ -371,8 +361,11 @@ def run_nmap_with_xml_output(
                     "Privileged scan denied; retrying with unprivileged connect scan",
                 )
             socketio_sleep(0)
-            fallback_cmd = cmd[:]
-            fallback_cmd[1] = "-sT"
+            # Rebuild from the shared option list with no privilege prefix so
+            # exclusions and every other flag survive the retry.
+            fallback_cmd = privileged.nmap_argv(
+                "-sT", options, target, prefix=[]
+            )
             result = run_cancellable_command(
                 fallback_cmd,
                 sid=sid,
