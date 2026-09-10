@@ -287,7 +287,9 @@ These are correctness fixes with no dependency on the privilege decision, so the
 | 2.5 Remove duplicate installs | Installer refuses/cleans a second bundle | Only one bundle on disk |
 | 2.6 Recoverable port (H8) | Probe-and-skip to the next free port for the bundled entrypoint; log and pass the resolved port | Stale listener on 9000 does not prevent startup |
 
-### Phase 3 — Scheduler correctness (1-2 days)
+### Phase 3 — Scheduler correctness (3.1-3.3 done, 3.4-3.5 open)
+
+**Status:** Due-ness is now derived from the persisted `last_run` versus the most recent scheduled slot (`get_previous_auto_monitor_run`), instead of a 60-second window test. A slot missed while the Mac was asleep or off is picked up **once** on the next tick, and a rule already run for the current slot is not due again — so restarts cannot double-run. Daily, weekly, biweekly, monthly and quarterly are covered by tests. Timezone/DST handling (3.4) and unifying auto-scan with auto-monitor (3.5) remain open.
 
 | Task | Deliverable | Acceptance |
 |---|---|---|

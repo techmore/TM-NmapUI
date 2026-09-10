@@ -260,6 +260,96 @@ def get_next_auto_monitor_run(
     return None
 
 
+def _parse_last_run(value: Any) -> datetime | None:
+    text = _normalize_datetime_text(value)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _previous_daily_run(rule: dict[str, Any], *, now: datetime) -> datetime:
+    hour, minute = map(int, rule["time"].split(":"))
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate > now:
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def _previous_weekly_run(
+    rule: dict[str, Any], *, now: datetime, interval_weeks: int
+) -> datetime | None:
+    target_weekday = WEEKDAY_TO_INDEX.get(rule["day_of_week"], 6)
+    hour, minute = map(int, rule["time"].split(":"))
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    candidate -= timedelta(days=(candidate.weekday() - target_weekday) % 7)
+    if candidate > now:
+        candidate -= timedelta(days=7)
+    if interval_weeks <= 1:
+        return candidate
+
+    anchor = _parse_anchor(rule, now=now)
+    if candidate < anchor:
+        return None
+    anchor_week_start = (anchor - timedelta(days=anchor.weekday())).date()
+    while candidate >= anchor:
+        candidate_week_start = (candidate - timedelta(days=candidate.weekday())).date()
+        weeks_between = (candidate_week_start - anchor_week_start).days // 7
+        if weeks_between % interval_weeks == 0:
+            return candidate
+        candidate -= timedelta(days=7)
+    return None
+
+
+def _previous_monthly_run(
+    rule: dict[str, Any], *, now: datetime, interval_months: int
+) -> datetime | None:
+    """Most recent anchor-aligned monthly occurrence at or before ``now``.
+
+    Occurrences are generated forward from the anchor so the anchor's
+    day-of-month is preserved (stepping back from today would use today's day).
+    """
+    anchor = _parse_anchor(rule, now=now)
+    hour, minute = map(int, rule["time"].split(":"))
+    candidate = anchor.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate > now:
+        return None
+    # Bounded so a clock jump cannot loop forever.
+    for _ in range(2400):
+        following = _shift_months(candidate, interval_months)
+        if following > now:
+            break
+        candidate = following
+    return candidate
+
+
+def get_previous_auto_monitor_run(
+    rule: dict[str, Any], *, now: datetime | None = None
+) -> datetime | None:
+    """Return the most recent scheduled occurrence at or before ``now``.
+
+    This is what makes catch-up possible: after sleep, reboot or a long scan the
+    missed slot is still in the past, so the rule stays due until it has run.
+    """
+    now = now or datetime.now()
+    if not isinstance(rule, dict) or not rule.get("enabled"):
+        return None
+    recurrence = str(rule.get("recurrence") or "").strip().lower()
+    if recurrence == "daily":
+        return _previous_daily_run(rule, now=now)
+    if recurrence == "weekly":
+        return _previous_weekly_run(rule, now=now, interval_weeks=1)
+    if recurrence == "biweekly":
+        return _previous_weekly_run(rule, now=now, interval_weeks=2)
+    if recurrence == "monthly":
+        return _previous_monthly_run(rule, now=now, interval_months=1)
+    if recurrence == "quarterly":
+        return _previous_monthly_run(rule, now=now, interval_months=3)
+    return None
+
+
 def build_auto_monitor_rule_status(
     rule: dict[str, Any], *, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -280,6 +370,12 @@ def get_due_auto_monitor_rules(
     startup_at: datetime,
     startup_grace_seconds: int,
 ) -> list[dict[str, Any]]:
+    """Return enabled rules whose most recent scheduled slot has not run.
+
+    Due-ness is derived from the persisted ``last_run`` rather than from a
+    one-minute window, so a slot missed while the Mac was asleep or off is
+    picked up (once) on the next tick instead of being skipped silently.
+    """
     if (now - startup_at).total_seconds() < startup_grace_seconds:
         return []
 
@@ -287,7 +383,10 @@ def get_due_auto_monitor_rules(
     for rule in (auto_monitor_settings or {}).get("rules") or []:
         if not rule.get("enabled"):
             continue
-        next_run = get_next_auto_monitor_run(rule, now=now - timedelta(minutes=1))
-        if next_run is not None and next_run <= now:
+        slot = get_previous_auto_monitor_run(rule, now=now)
+        if slot is None:
+            continue
+        last_run = _parse_last_run(rule.get("last_run"))
+        if last_run is None or last_run < slot:
             due.append(rule)
     return due
