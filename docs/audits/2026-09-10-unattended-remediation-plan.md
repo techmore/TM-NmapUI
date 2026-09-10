@@ -224,13 +224,16 @@ A Launch**Daemon** would only be needed if scans must run while nobody is logged
 
 ---
 
-## 6. Decisions needed from you
+## 6. Decisions (locked 2026-09-10)
 
-1. **Privilege approach:** (a) scoped `sudo -n` allowlist [fastest, still root-equivalent inside nmap] vs (b) validating privileged helper [safer, more code]. Recommended: (a) now, (b) as hardening.
-2. **Must scans run while no user is logged in?** Yes → LaunchDaemon + root-owned data dir; No → user LaunchAgent (recommended).
-3. **Where does the product live?** Confirm the **Flask app + Swift menu-bar wrapper** is the single product, and the Node/Express tree is deleted or moved to an `archive/` tag (recommended: archive, then delete).
-4. **Canonical repo:** the 2026-08-22 plan locked `techmore/TM-NmapUI`, but `check_for_updates` and `install.sh` still point at `techmore/NmapUI`. Pick one.
-5. **Alerting channel** for unattended failures (macOS notification via `osascript`, email, or a webhook/healthchecks.io ping).
+1. **Privilege approach:** scoped `sudo -n` allowlist now; validating helper remains future hardening.
+2. **Scans while no user is logged in?** **Yes — this is an appliance.** A **system LaunchDaemon** is therefore required (not a user LaunchAgent).
+3. **Product shape:** one backend (**Flask + web UI**) is the cross-platform product; the **Swift menu-bar app is an optional Mac launcher**, not a second product. A native SwiftUI frontend, if pursued, is a separate frontend against the same API — not a rewrite of the scan engine.
+4. **Canonical repo:** **`techmore/TM-NmapUI`** (update check, download fallback and docs repointed).
+5. **Alerting:** launchd `KeepAlive` for restarts plus durable runtime-log records for now; an optional webhook is deferred.
+6. **Hard requirement:** the appliance must run **over a year without re-authenticating** and without a password prompt. That drives the long-lived session cookie (§Phase 4.2, implemented) and the prompt-free privilege path.
+
+**Note:** `install.sh` still installs the Node toolchain and does not create the venv; the appliance path is currently `install-daemon.sh` (which requires an existing `.venv`, created by `build.sh`). Reconciling `install.sh` remains Phase 5.1.
 
 ---
 
@@ -258,9 +261,9 @@ These are correctness fixes with no dependency on the privilege decision, so the
 - C4: `check_nmap` returns `None` and `check_vulners` returns `False` instead of `sys.exit(1)`; `startup_state["errors"]` is populated and `dependencies_ok` reflects nmap + vulners, so readiness returns 503 instead of the process dying.
 - 0.4: `.gitignore` now covers `data/`, `*.sqlite3`, `.hermes/`, `config/customers.yaml`, `docs/notes/eval-logs/`, `NmapUI.app/`; `git status` shows no runtime state.
 
-### Phase 1 — Privilege without prompts (1-2 days)
+### Phase 1 — Privilege without prompts (implemented on branch)
 
-**Blocked on decision §6.1/§6.2.**
+**Status:** 1.1-1.3 done — `nmapui/privileged.py` owns the prefix and the technique slot; `sudo -n` never prompts; a denied privileged scan retries as `-sT` with the full option list intact. 1.5 done — the wrapper's admin-privilege launch is deleted. 1.4 done — `install-daemon.sh` writes the scoped sudoers rule (visudo-validated) for `--user` mode; the default daemon runs as root so no sudo is needed at all. 1.6 documented in §10.1 (root-equivalent within nmap; validating helper remains Phase 1b hardening).
 
 | Task | Deliverable | Acceptance |
 |---|---|---|
@@ -271,7 +274,9 @@ These are correctness fixes with no dependency on the privilege decision, so the
 | 1.5 Stop running the server as root | `build.sh`/Swift launch path drops `with administrator privileges`; server runs as console user | `ps -o user= -p <pid>` shows the user, not root |
 | 1.6 Document the root-equivalence caveat | Security note in README + `docs/audits/` | Reviewed in plan doc |
 
-### Phase 2 — Durable supervision & recovery (1-2 days)
+### Phase 2 — Durable supervision & recovery (2.1-2.4 done, 2.5-2.6 open)
+
+**Status:** `packaging/macos/install-daemon.sh` installs a system LaunchDaemon with `RunAtLoad` + `KeepAlive` + `ThrottleInterval` (2.1), so the server comes back after a crash and starts at boot with nobody logged in (2.2). Readiness polling and log paths are wired to `/api/health/live` and `/Library/Logs/NmapUI` (2.3). The wrapper attaches to the daemon instead of fighting it for port 9000. Orphan/zombie reaping on startup (2.4) is **still open** — signal handlers and persisted-job reconciliation are not yet implemented. Duplicate-install cleanup (2.5) and recoverable-port fallback (2.6) are open.
 
 | Task | Deliverable | Acceptance |
 |---|---|---|
@@ -296,8 +301,8 @@ These are correctness fixes with no dependency on the privilege decision, so the
 
 | Task | Deliverable | Acceptance |
 |---|---|---|
-| 4.1 Constant-time credential compare | `hmac.compare_digest` in `auth.py` | Test |
-| 4.2 First-run credentials | Installer generates a strong password and stores it in the login keychain / `config` with 0600; UI shows it once | Fresh bundle authenticates without local-trust bypass |
+| 4.1 Constant-time credential compare | `hmac.compare_digest` in `auth.py` | **done** |
+| 4.2 First-run credentials + no re-auth | Installer generates a strong password (0600) ; long-lived signed session cookie (400 days) via `/login`, so the browser signs in once and stays signed in | **done** — verified live: 401 without creds, 200 with cookie/Basic, 401 on bad password, `Max-Age=34560000` |
 | 4.3 Reassess `NMAPUI_TRUST_LOCAL_UI` | Default off in the packaged run; make local trust opt-in and logged loudly | Status shows auth posture |
 | 4.4 Authenticate `/api/socket-token` | Require auth unless local trust is explicitly enabled | Test 401 without creds |
 | 4.5 Secrets at rest review | Confirm token/key file modes (0600) and that nothing logs secrets | Audit note |
