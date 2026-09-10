@@ -20,10 +20,16 @@ DATA_DIR = _resolve_data_dir()
 SCANS_DIR = DATA_DIR / "scans"
 VERSION_FILE = BASE_DIR / "VERSION"
 CURRENT_ASSIGNMENT_FILE = DATA_DIR / "current_assignment.json"
-AUTO_SCAN_CONFIG_FILE = BASE_DIR / "auto_scan_config.json"
+# Schedule state belongs in the data dir.  It used to live in BASE_DIR, which is
+# the app bundle in packaged builds: enabling auto-scan then silently failed to
+# persist (or was wiped by the next app update), so an appliance lost its
+# schedule.  The legacy location is still read once for migration.
+AUTO_SCAN_CONFIG_FILE = DATA_DIR / "auto_scan_config.json"
+LEGACY_AUTO_SCAN_CONFIG_FILE = BASE_DIR / "auto_scan_config.json"
 AUTO_SCAN_CONFIG_EXAMPLE_FILE = BASE_DIR / "config" / "auto_scan_config.example.json"
 AUTO_SCAN_SCHEDULER_LOCK_FILE = DATA_DIR / "auto_scan_scheduler.lock"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+SESSION_SECRET_FILE = DATA_DIR / "session.key"
 RUNTIME_DB_FILE = DATA_DIR / "runtime.sqlite3"
 GOOGLE_DRIVE_CREDENTIALS_FILE = BASE_DIR / "config" / "google_drive_credentials.json"
 GOOGLE_DRIVE_TOKEN_FILE = DATA_DIR / "google_drive_tokens.json"

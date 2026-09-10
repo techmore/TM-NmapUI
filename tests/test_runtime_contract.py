@@ -95,7 +95,7 @@ def test_template_uses_shared_scan_display_modules():
     assert "window.loadHostsFromStorage = loadHostsFromStorage;" in discovery_source
     assert "window.showHistoricalDataBanner = showHistoricalDataBanner;" in banner_source
     assert "window.showScanSummaryBanner = showScanSummaryBanner;" in banner_source
-    assert 'href="https://github.com/techmore/NmapUI"' in html
+    assert 'href="https://github.com/techmore/TM-NmapUI"' in html
     assert 'aria-label="Open NmapUI GitHub repository"' in html
     assert 'id="settings-nmap-version"' in html
     assert 'id="settings-vulners-version"' in html
@@ -351,7 +351,10 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'mkdir -p "$NMAPUI_DATA_DIR" "$NMAPUI_LOG_DIR"' in build_script
     assert 'stage_google_drive_credentials' in build_script
     assert "export NMAPUI_ALLOW_UNSAFE_WERKZEUG=true" in build_script
-    assert "export NMAPUI_TRUST_LOCAL_UI=true" in build_script
+    # Local-trust bypass is gone; the bundle signs in like everything else.
+    assert "export NMAPUI_TRUST_LOCAL_UI=true" not in build_script
+    assert "export NMAPUI_TRUST_LOCAL_UI" not in build_script
+    assert 'CREDENTIALS_FILE="$NMAPUI_DATA_DIR/credentials.env"' in build_script
     assert 'BUNDLE_PLAYWRIGHT_BROWSERS="$APP_NAME/Contents/Resources/playwright-browsers"' in build_script
     assert 'PLAYWRIGHT_BROWSERS_PATH="$BUNDLE_PLAYWRIGHT_BROWSERS" python -m playwright install chromium' in build_script
     assert 'export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright-browsers"' in build_script
@@ -381,8 +384,14 @@ def test_wrapper_launcher_quit_path_tracks_and_stops_runtime_tree():
     assert "func stopRuntimeShellCommand(wait: Bool) -> String" in launcher_source
     assert 'process.arguments = ["-lc", stopRuntimeShellCommand(wait: wait)]' in launcher_source
     assert 'escaped = escaped.replacingOccurrences(of: "\\n", with: "; ")' in launcher_source
-    assert 'let command = stopRuntimeShellCommand(wait: true)' in launcher_source
-    assert 'let appleScript = "do shell script \\(appleScriptEscaped(command)) with administrator privileges"' in launcher_source
+    # The appliance must never prompt for administrator privileges: privileged
+    # administration belongs to the LaunchDaemon installer, not the wrapper.
+    assert "with administrator privileges" not in launcher_source
+    assert "startFlaskWithPrivileges" not in launcher_source
+    assert "stopFlaskWithPrivileges" not in launcher_source
+    # It attaches to a daemon-managed server instead of starting a second one.
+    assert "let fixedRuntimePort = 9000" in launcher_source
+    assert "isLocalPortInUse(fixedRuntimePort)" in launcher_source
     assert 'if isQuitting {' in launcher_source
     assert 'isQuitting = true' in launcher_source
     assert 'stopFlask(wait: true)' in launcher_source

@@ -18,11 +18,11 @@ def test_check_for_updates_selects_mac_installer_asset(monkeypatch):
         def json(self):
             return {
                 "tag_name": "v2026.1.9.12_53",
-                "html_url": "https://github.com/techmore/NmapUI/releases/tag/v2026.1.9.12_53",
+                "html_url": "https://github.com/techmore/TM-NmapUI/releases/tag/v2026.1.9.12_53",
                 "body": "release notes",
                 "assets": [
-                    {"name": "NmapUI.pkg", "browser_download_url": "https://github.com/techmore/NmapUI/releases/download/v2026.1.9.12_53/NmapUI.pkg"},
-                    {"name": "NmapUI.dmg", "browser_download_url": "https://github.com/techmore/NmapUI/releases/download/v2026.1.9.12_53/NmapUI.dmg"},
+                    {"name": "NmapUI.pkg", "browser_download_url": "https://github.com/techmore/TM-NmapUI/releases/download/v2026.1.9.12_53/NmapUI.pkg"},
+                    {"name": "NmapUI.dmg", "browser_download_url": "https://github.com/techmore/TM-NmapUI/releases/download/v2026.1.9.12_53/NmapUI.dmg"},
                 ],
             }
 
@@ -34,7 +34,7 @@ def test_check_for_updates_selects_mac_installer_asset(monkeypatch):
     assert result["current_version"] == "v2026.1.1.00_00"
     assert result["latest_version"] == "v2026.1.9.12_53"
     assert result["asset_name"] == "NmapUI.dmg"
-    assert result["download_url"] == "https://github.com/techmore/NmapUI/releases/download/v2026.1.9.12_53/NmapUI.dmg"
+    assert result["download_url"] == "https://github.com/techmore/TM-NmapUI/releases/download/v2026.1.9.12_53/NmapUI.dmg"
     assert result["install_method"] == "manual_download"
 
 
@@ -49,7 +49,7 @@ def test_check_for_updates_reports_current_version_when_no_update(monkeypatch):
         def json(self):
             return {
                 "tag_name": "v2026.1.9.12_53",
-                "html_url": "https://github.com/techmore/NmapUI/releases/tag/v2026.1.9.12_53",
+                "html_url": "https://github.com/techmore/TM-NmapUI/releases/tag/v2026.1.9.12_53",
                 "body": "release notes",
                 "assets": [],
             }
@@ -62,7 +62,7 @@ def test_check_for_updates_reports_current_version_when_no_update(monkeypatch):
         "available": False,
         "current_version": "v2026.1.9.12_53",
         "latest_version": "v2026.1.9.12_53",
-        "release_url": "https://github.com/techmore/NmapUI/releases/tag/v2026.1.9.12_53",
+        "release_url": "https://github.com/techmore/TM-NmapUI/releases/tag/v2026.1.9.12_53",
     }
 
 
@@ -93,7 +93,7 @@ def test_perform_app_update_emits_manual_install_messages(monkeypatch):
                 "latest_version": "v2026.1.9.12_53",
                 "asset_name": "NmapUI.dmg",
                 "download_url": "https://example.com/NmapUI.dmg",
-                "release_url": "https://github.com/techmore/NmapUI/releases/tag/v2026.1.9.12_53",
+                "release_url": "https://github.com/techmore/TM-NmapUI/releases/tag/v2026.1.9.12_53",
             },
             "idle_state_manager": IdleStateStub(),
             "logger": app.logger,

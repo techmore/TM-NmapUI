@@ -39,7 +39,7 @@ def register_update_handlers(socketio, deps):
                 else:
                     message = "Opening release download page..."
             else:
-                download_url = "https://github.com/techmore/NmapUI/releases"
+                download_url = "https://github.com/techmore/TM-NmapUI/releases"
                 message = "Opening releases page..."
 
             emit("update_status", {"message": message})

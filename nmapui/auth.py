@@ -1,14 +1,44 @@
 import base64
+import hmac
 import ipaddress
 import os
 from functools import wraps
 
-from flask import jsonify, request
+from flask import jsonify, redirect, request
 from flask_socketio import emit
+
+from nmapui import session as session_module
+from nmapui.paths import SESSION_SECRET_FILE
 
 
 DEFAULT_AUTH_USERNAME = "admin"
 DEFAULT_AUTH_PASSWORD = "nmapui123"
+
+_session_secret_cache = None
+
+
+def get_session_secret():
+    """Return (and lazily create) the persisted session signing key."""
+    global _session_secret_cache
+    if _session_secret_cache is None:
+        _session_secret_cache = session_module.load_or_create_secret(SESSION_SECRET_FILE)
+    return _session_secret_cache
+
+
+def session_username():
+    """Return the username for a valid session cookie, else None."""
+    token = request.cookies.get(session_module.SESSION_COOKIE, "")
+    if not token:
+        return None
+    return session_module.verify_token(get_session_secret(), token)
+
+
+def wants_html():
+    """True when the caller is a browser navigating, not an API client."""
+    if request.path.startswith("/api/"):
+        return False
+    accept = (request.headers.get("Accept") or "").lower()
+    return "text/html" in accept or "*/*" in accept
 
 
 def get_auth_credentials():
@@ -92,7 +122,27 @@ def check_auth(username, password):
         return False
 
     expected_username, expected_password = get_auth_credentials()
-    return username == expected_username and password == expected_password
+    return hmac.compare_digest(username, expected_username) and hmac.compare_digest(
+        password, expected_password
+    )
+
+
+def set_session_cookie(response, username):
+    """Attach a long-lived signed session cookie to a response."""
+    response.set_cookie(
+        session_module.SESSION_COOKIE,
+        session_module.issue_token(get_session_secret(), username),
+        max_age=session_module.SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="Lax",
+        path="/",
+    )
+    return response
+
+
+def clear_session_cookie(response):
+    response.delete_cookie(session_module.SESSION_COOKIE, path="/")
+    return response
 
 
 def log_auth_posture():
@@ -119,16 +169,22 @@ def log_auth_posture():
 
 
 def require_auth(f):
-    """Decorator to require HTTP Basic Auth for Flask routes."""
+    """Decorator requiring a session cookie or HTTP Basic Auth."""
 
     @wraps(f)
     def decorated(*args, **kwargs):
-        auth = request.authorization
         if request_is_local_ui():
             return f(*args, **kwargs)
+        # A long-lived session cookie is the normal browser path; Basic auth
+        # remains for API clients and scripts.
+        if session_username():
+            return f(*args, **kwargs)
+        auth = request.authorization
         if not auth or not check_auth(auth.username, auth.password):
             if auth_uses_insecure_defaults():
                 return jsonify({"error": "Authentication is not configured securely"}), 503
+            if wants_html():
+                return redirect("/login")
             return jsonify({"error": "Unauthorized"}), 401
         return f(*args, **kwargs)
 

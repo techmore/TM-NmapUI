@@ -1,7 +1,23 @@
 from datetime import datetime, timezone
 
-from flask import after_this_request, jsonify, render_template, request, send_file
-from nmapui.auth import require_auth
+from flask import (
+    after_this_request,
+    jsonify,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    send_file,
+)
+from nmapui.auth import (
+    auth_uses_insecure_defaults,
+    check_auth,
+    clear_session_cookie,
+    require_auth,
+    request_is_local_ui,
+    session_username,
+    set_session_cookie,
+)
 from nmapui.handlers.scans import delete_scan_artifacts
 from nmapui.reporting import _resolve_artifact_file_path, build_artifact_downloads
 from nmapui.runtime_history import (
@@ -76,6 +92,48 @@ def register_core_routes(app, deps):
     @app.route("/")
     def index():
         return render_template("index.html")
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        """Browser login that issues a long-lived session cookie.
+
+        Kept separate from the API so an unattended appliance can authenticate
+        once and keep working for months without re-prompting.
+        """
+        error = None
+        if request.method == "POST":
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            if check_auth(username, password):
+                target = request.args.get("next") or "/"
+                if not target.startswith("/") or target.startswith("//"):
+                    target = "/"
+                return set_session_cookie(make_response(redirect(target)), username)
+            error = "Invalid credentials"
+        elif auth_uses_insecure_defaults():
+            error = (
+                "Authentication is not configured. Set NMAPUI_USERNAME and "
+                "NMAPUI_PASSWORD (or NMAPUI_ALLOW_DEFAULT_CREDENTIALS=true for a "
+                "local-only install) before signing in."
+            )
+        return render_template("login.html", error=error), (401 if error and request.method == "POST" else 200)
+
+    @app.route("/logout", methods=["GET", "POST"])
+    def logout():
+        return clear_session_cookie(make_response(redirect("/login")))
+
+    @app.route("/api/session/status")
+    @require_auth
+    def session_status():
+        username = session_username()
+        return jsonify(
+            {
+                "authenticated": bool(username) or request_is_local_ui(),
+                "username": username,
+                "local_trust": request_is_local_ui(),
+                "auth_configured": not auth_uses_insecure_defaults(),
+            }
+        )
 
     @app.route("/api/socket-token")
     def socket_token():
