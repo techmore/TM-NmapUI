@@ -3,15 +3,25 @@
 ## Quick Start
 
 ```bash
-# Run the installation script
+# Run the installation script (creates .venv and installs requirements)
 chmod +x install.sh
-./install.sh
+./install.sh --no-daemon
 
-# Start the application
-python app.py
+# Set sign-in credentials (protected routes return 503 without them)
+export NMAPUI_USERNAME=admin
+export NMAPUI_PASSWORD='choose-something-strong'
+
+# Start the application through the virtualenv
+./start.sh
 ```
 
-Then visit: http://127.0.0.1:9000
+Then visit: http://127.0.0.1:9000 and sign in at `/login`.
+
+For an appliance that starts at boot and scans while nobody is logged in:
+
+```bash
+sudo packaging/macos/install-daemon.sh
+```
 
 ## Manual Installation
 

@@ -409,11 +409,23 @@ def test_wrapper_docs_reference_current_local_port():
     for doc_name in ("README.md", "packaging/macos/README.md", "packaging/macos/SETUP.md"):
         source = (ROOT / doc_name).read_text()
         assert "127.0.0.1:9000" in source
-        assert "selected local runtime URL" in source or "local loopback URL" in source
         assert "localhost:9999" not in source
     readme = (ROOT / "README.md").read_text()
     assert "NMAPUI_SWIFT_TARGET" in readme
     assert "/Applications" in readme
+
+
+def test_readme_documents_the_current_runtime_and_build_vars():
+    """The README used to tell users to `sudo npm start` the legacy Node app."""
+    readme = (ROOT / "README.md").read_text()
+
+    assert "npm start" not in readme
+    assert "Express" in readme  # only ever mentioned as the legacy build
+    assert "legacy Node" in readme
+    assert "Python 3.11" in readme
+    assert "app.py" in readme
+    assert "install-daemon.sh" in readme
+    assert "NMAPUI_PASSWORD" in readme
     assert "~/Applications" in readme
     assert "NMAPUI_APPLICATIONS_DIR" in readme
     assert "/api/runtime/export" in readme

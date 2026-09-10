@@ -215,7 +215,7 @@ mkdir -p "$BUILD_DIR"
 # Run install.sh if .venv doesn't exist yet
 if [[ ! -d "$ROOT_DIR/.venv" && ! -d "$ROOT_DIR/venv" ]]; then
     echo "No virtual environment found — running install.sh first..."
-    bash "$ROOT_DIR/install.sh" || { echo "install.sh failed"; exit 1; }
+    bash "$ROOT_DIR/install.sh" --no-daemon || { echo "install.sh failed"; exit 1; }
 fi
 
 echo "Building NmapUI macOS wrapper..."
