@@ -870,6 +870,56 @@ def test_startup_checks_append_runtime_log_entries():
     ]
 
 
+def test_startup_checks_records_missing_dependencies_without_exiting():
+    """Missing nmap/vulners must degrade readiness, not terminate the process."""
+    startup_state = {}
+    versions = {}
+
+    run_startup_checks(
+        {
+            "begin_startup_state": lambda state, quick=False: state.update(
+                {"startup_complete": False, "errors": []}
+            ),
+            "check_arp_scan": lambda: False,
+            "check_nmap": lambda: None,
+            "check_vulners": lambda path: False,
+            "complete_startup_state": lambda state, traceroute_initialized=False: state.update(
+                {"startup_complete": True, "traceroute_initialized": traceroute_initialized}
+            ),
+            "get_app_version": lambda: "v1.0.0",
+            "get_default_interface_cached": lambda: "en0",
+            "get_versions": lambda: {"app": "v1.0.0"},
+            "load_auto_scan_config": lambda config: None,
+            "load_current_assignment": lambda: None,
+            "logger": type(
+                "LoggerStub",
+                (),
+                {
+                    "info": lambda self, *a, **k: None,
+                    "error": lambda self, *a, **k: None,
+                },
+            )(),
+            "run_traceroute": lambda target: {"target": target, "total_hops": 3},
+            "safe_emit": lambda *args, **kwargs: None,
+            "startup_state": startup_state,
+            "tool_versions": type(
+                "ToolVersionsStub",
+                (),
+                {"set_version": lambda self, key, value: versions.__setitem__(key, value)},
+            )(),
+            "auto_scan_config": {"enabled": False},
+            "runtime_store": None,
+            "vulners_script": __import__("pathlib").Path("/nonexistent/vulners.nse"),
+        },
+        quick=False,
+    )
+
+    assert startup_state["dependencies_ok"] is False
+    assert any("nmap" in error for error in startup_state["errors"])
+    assert any("Vulners" in error for error in startup_state["errors"])
+    assert versions["nmap"] == "Not installed"
+
+
 def test_traceroute_appends_success_runtime_log():
     entries = []
 

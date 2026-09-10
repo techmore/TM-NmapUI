@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 
 
 logger = logging.getLogger(__name__)
@@ -65,13 +64,20 @@ def check_arp_scan():
 
 
 def check_nmap():
-    """Ensure nmap is installed and return its version string."""
+    """Ensure nmap is installed and return its version string.
+
+    Returns ``None`` when nmap is unavailable instead of calling ``sys.exit``.
+    Exiting here used to kill the whole process before the HTTP server bound,
+    which made any missing-dependency restart an unrecoverable silent death for
+    an unattended deployment.  Callers record the failure in startup state so
+    ``/api/health/ready`` can report it.
+    """
     nmap_path = shutil.which("nmap")
     if not nmap_path:
         logger.error("nmap not found. Please install nmap:")
         logger.error("  macOS:  brew install nmap")
         logger.error("  Ubuntu: sudo apt install nmap")
-        sys.exit(1)
+        return None
 
     try:
         version = subprocess.check_output(["nmap", "--version"]).decode().split("\n")[0]
@@ -79,18 +85,22 @@ def check_nmap():
         return version
     except Exception as exc:
         logger.error("Could not get nmap version: %s", exc)
-        sys.exit(1)
+        return None
 
 
 def check_vulners(vulners_script):
-    """Verify the bundled vulners NSE script is present."""
+    """Verify the bundled vulners NSE script is present.
+
+    Returns ``True`` when usable.  A missing script degrades vulnerability
+    detection but must not terminate the server (see ``check_nmap``).
+    """
     if not vulners_script.exists():
         logger.error(
             "Vulners NSE script not found at %s. Run: git clone https://github.com/vulnersCom/nmap-vulners.git %s",
             vulners_script,
             vulners_script.parent,
         )
-        sys.exit(1)
+        return False
 
     vulners_dir = vulners_script.parent
     try:

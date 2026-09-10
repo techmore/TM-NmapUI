@@ -302,9 +302,9 @@ def test_start_auto_scan_thread_starts_when_lock_acquired():
     assert created["thread"].started is True
 
 
-def test_execute_auto_scan_emits_report_trigger_and_persists_last_run():
-    emitted = []
-    saved = {}
+def build_auto_scan_deps(**overrides):
+    """Build a complete execute_auto_scan dependency set for tests."""
+    saved = {"started": [], "report_calls": [], "customer_state": [], "targets": []}
 
     class RateLimiterStub:
         def can_scan(self, sid):
@@ -314,54 +314,97 @@ def test_execute_auto_scan_emits_report_trigger_and_persists_last_run():
         def record_scan(self, sid):
             saved["record_scan_sid"] = sid
 
-    execute_auto_scan(
-        deps={
-            "auto_scan_config": dict(DEFAULT_AUTO_SCAN_CONFIG),
-            "current_customer": {"name": "Acme Customer (0.82)"},
-            "get_last_scan_target": lambda: "192.168.1.0/24",
-            "logger": logging.getLogger(__name__),
-            "network_key": {"cidr": "10.0.0.0/24"},
-            "rate_limiter": RateLimiterStub(),
-            "safe_emit": lambda event, data=None: emitted.append((event, data)),
-            "save_auto_scan_config": lambda config: saved.setdefault("config", dict(config)),
-            "validate_target": lambda target: (True, None),
-        }
-    )
+    class JobRegistryStub:
+        def __init__(self, start_result=True):
+            self.start_result = start_result
+            self.completed = []
 
-    assert saved["can_scan_sid"] == AUTO_SCAN_SID
-    assert saved["record_scan_sid"] == AUTO_SCAN_SID
-    assert emitted == [
+        def start(self, sid, job_type, details=None):
+            saved["started"].append((sid, job_type, details))
+            return self.start_result
+
+        def complete(self, sid, job_type, status="completed", details=None):
+            self.completed.append((sid, job_type, status))
+
+    deps = {
+        "auto_scan_config": dict(DEFAULT_AUTO_SCAN_CONFIG),
+        "current_customer": {"id": "cust-1", "name": "Acme Customer (0.82)"},
+        "get_last_scan_target": lambda: "192.168.1.0/24",
+        "logger": logging.getLogger(__name__),
+        "network_key": {"cidr": "10.0.0.0/24"},
+        "rate_limiter": RateLimiterStub(),
+        "safe_emit": lambda event, data=None: saved.setdefault("emitted", []).append((event, data)),
+        "save_auto_scan_config": lambda config: saved.setdefault("config", dict(config)),
+        "validate_target": lambda target: (True, None),
+        "job_registry": JobRegistryStub(),
+        "emit_job_status": lambda sid, job_type: saved.setdefault("job_status", []).append((sid, job_type)),
+        "generate_report_task": lambda sid, payload: saved["report_calls"].append((sid, payload)),
+        "set_current_customer_state": lambda value, sid=None: saved["customer_state"].append((value, sid)),
+        "set_last_scan_target_state": lambda value, sid=None: saved["targets"].append((value, sid)),
+    }
+    deps.update(overrides)
+    return deps, saved
+
+
+def test_execute_auto_scan_enqueues_a_real_report_job():
+    deps, saved = build_auto_scan_deps()
+
+    execute_auto_scan(deps=deps)
+
+    assert saved["started"] == [
         (
-            "trigger_generate_report",
+            AUTO_SCAN_SID,
+            "report",
             {
                 "target": "192.168.1.0/24",
                 "customer_name": "Acme Customer",
+                "chunked": False,
                 "auto_scan": True,
             },
         )
     ]
+    assert saved["report_calls"] == [
+        (
+            AUTO_SCAN_SID,
+            {
+                "target": "192.168.1.0/24",
+                "customer_name": "Acme Customer",
+                "chunked": False,
+                "auto_scan": True,
+            },
+        )
+    ]
+    assert saved["job_status"] == [(AUTO_SCAN_SID, "report")]
+    assert saved["can_scan_sid"] == AUTO_SCAN_SID
+    assert saved["record_scan_sid"] == AUTO_SCAN_SID
     assert saved["config"]["last_run"] is not None
+    # The broken fire-and-forget Socket.IO event must no longer be emitted.
+    assert "trigger_generate_report" not in [event for event, _ in saved.get("emitted", [])]
+
+
+def test_execute_auto_scan_skips_when_a_report_job_is_already_running():
+    deps, saved = build_auto_scan_deps()
+    deps["job_registry"] = type(
+        "BusyJobRegistryStub",
+        (),
+        {"start": lambda self, sid, job_type, details=None: False},
+    )()
+
+    execute_auto_scan(deps=deps)
+
+    assert saved["report_calls"] == []
+    assert "config" not in saved
 
 
 def test_execute_auto_scan_emits_validation_error_without_running():
-    emitted = []
-
-    class RateLimiterStub:
-        def can_scan(self, sid):
-            raise AssertionError("rate limiter should not run when target is invalid")
-
-    execute_auto_scan(
-        deps={
-            "auto_scan_config": dict(DEFAULT_AUTO_SCAN_CONFIG),
-            "current_customer": {"name": "Acme Customer"},
-            "get_last_scan_target": lambda: "not-a-target",
-            "logger": logging.getLogger(__name__),
-            "network_key": {"cidr": ""},
-            "rate_limiter": RateLimiterStub(),
-            "safe_emit": lambda event, data=None: emitted.append((event, data)),
-            "save_auto_scan_config": lambda config: None,
-            "validate_target": lambda target: (False, "Invalid target"),
-        }
+    deps, saved = build_auto_scan_deps(
+        get_last_scan_target=lambda: "not-a-target",
+        network_key={"cidr": ""},
+        validate_target=lambda target: (False, "Invalid target"),
     )
 
-    assert emitted == [("auto_scan_error", {"error": "Invalid target"})]
+    execute_auto_scan(deps=deps)
+
+    assert saved["emitted"] == [("auto_scan_error", {"error": "Invalid target"})]
+    assert saved["started"] == []
+    assert saved["report_calls"] == []
