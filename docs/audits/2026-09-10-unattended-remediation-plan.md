@@ -276,7 +276,7 @@ These are correctness fixes with no dependency on the privilege decision, so the
 
 ### Phase 2 — Durable supervision & recovery (2.1-2.4 done, 2.5-2.6 open)
 
-**Status:** `packaging/macos/install-daemon.sh` installs a system LaunchDaemon with `RunAtLoad` + `KeepAlive` + `ThrottleInterval` (2.1), so the server comes back after a crash and starts at boot with nobody logged in (2.2). Readiness polling and log paths are wired to `/api/health/live` and `/Library/Logs/NmapUI` (2.3). The wrapper attaches to the daemon instead of fighting it for port 9000. Orphan/zombie reaping on startup (2.4) is **still open** — signal handlers and persisted-job reconciliation are not yet implemented. Duplicate-install cleanup (2.5) and recoverable-port fallback (2.6) are open.
+**Status:** `packaging/macos/install-daemon.sh` installs a system LaunchDaemon with `RunAtLoad` + `KeepAlive` + `ThrottleInterval` (2.1), so the server comes back after a crash and starts at boot with nobody logged in (2.2). Readiness polling and log paths are wired to `/api/health/live` and `/Library/Logs/NmapUI` (2.3). The wrapper attaches to the daemon instead of fighting it for port 9000. **2.4 done** — `nmapui/recovery.py` marks jobs left `running`/`cancelling` by a previous process as `interrupted` at startup (they used to replay as a permanently-running job that disabled the report button), and tracked child `nmap`/`arp-scan` processes are terminated on SIGTERM/SIGINT/exit (signal handlers skipped under pytest and off the main thread). Duplicate-install cleanup (2.5) and recoverable-port fallback (2.6) are open.
 
 | Task | Deliverable | Acceptance |
 |---|---|---|
@@ -303,8 +303,8 @@ These are correctness fixes with no dependency on the privilege decision, so the
 |---|---|---|
 | 4.1 Constant-time credential compare | `hmac.compare_digest` in `auth.py` | **done** |
 | 4.2 First-run credentials + no re-auth | Installer generates a strong password (0600) ; long-lived signed session cookie (400 days) via `/login`, so the browser signs in once and stays signed in | **done** — verified live: 401 without creds, 200 with cookie/Basic, 401 on bad password, `Max-Age=34560000` |
-| 4.3 Reassess `NMAPUI_TRUST_LOCAL_UI` | Default off in the packaged run; make local trust opt-in and logged loudly | Status shows auth posture |
-| 4.4 Authenticate `/api/socket-token` | Require auth unless local trust is explicitly enabled | Test 401 without creds |
+| 4.3 Reassess `NMAPUI_TRUST_LOCAL_UI` | Default off in the packaged run; make local trust opt-in and logged loudly | **done** — removed from `build.sh`; the bundle bootstraps credentials instead |
+| 4.4 Authenticate socket surface | Require a session (cookie/Basic) on Socket.IO `connect` and `get_initial_data`, and on `/api/socket-token` | **done** — the token is now CSRF-only; verified live: token 401 without creds, 200 with session/Basic |
 | 4.5 Secrets at rest review | Confirm token/key file modes (0600) and that nothing logs secrets | Audit note |
 | 4.6 CSP/XSS pass | Address known issue class (CSP header, `innerHTML` audit) | Header present; no unescaped sink |
 

@@ -136,8 +136,14 @@ def register_core_routes(app, deps):
         )
 
     @app.route("/api/socket-token")
+    @require_auth
     def socket_token():
-        """Loopback-only token for authenticating the Socket.IO handshake."""
+        """Loopback-only token for the Socket.IO handshake.
+
+        The token is CSRF protection only; the handshake additionally requires a
+        session. This route is authenticated too so a local process cannot even
+        collect the token without credentials.
+        """
         from flask import jsonify, request as flask_request
 
         remote = flask_request.remote_addr or ""

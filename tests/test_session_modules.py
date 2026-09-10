@@ -197,3 +197,16 @@ def test_health_endpoints_stay_public_for_supervision(monkeypatch):
         for path in ("/api/health/live", "/api/health/ready"):
             response = client.get(path, environ_overrides={"REMOTE_ADDR": "10.1.2.3"})
             assert response.status_code == 200, path
+
+
+def test_socket_token_requires_auth(monkeypatch):
+    """A local process must not collect the handshake token without creds."""
+    configure_auth(monkeypatch)
+    app = build_session_app()
+
+    with app.test_client() as client:
+        response = client.get(
+            "/api/socket-token", environ_overrides={"REMOTE_ADDR": "127.0.0.1"}
+        )
+
+    assert response.status_code == 401
