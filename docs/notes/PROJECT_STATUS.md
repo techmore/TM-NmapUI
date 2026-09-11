@@ -55,6 +55,25 @@ before integrating it; native/web parity is not yet verified.
 
 ## Backlog organization
 
+### Daemon review follow-up
+
+The installer now reads credentials as literal values instead of sourcing shell
+code, so the default `Application Support` path and passwords with shell
+characters work. Generated shell/plist paths are escaped, credentials are
+required, and runtime ownership supports the selected service user. Installation
+checks bounded readiness rather than liveness. Generated-artifact tests execute
+the wrapper without installing a service. A real subprocess test confirms that
+the scheduler lock is released after its owner receives SIGKILL.
+Follow-up validation: full suite **379 passed, 8 skipped**; installer dry run
+passed plist, sudoers and shell syntax checks. The six new tests all executed.
+
+Release blockers remain: the default daemon runs the web backend as root from
+a writable checkout/virtualenv, and `--user` still grants broad passwordless
+scanner execution. Neither is a completed least-privilege design. The in-process
+reaper cannot clean up children after SIGKILL. Keep PR #240 in draft pending
+privilege isolation and real reboot/sleep/child-process recovery and soak checks.
+No production LaunchDaemon was installed or restarted during this review.
+
 1. **Finish and integrate unattended baseline.** Review the local branch and run
    browser/packaged checks against this exact revision before merging. Complete
    reboot/sleep/crash verification and remaining security/privilege validation.

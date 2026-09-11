@@ -4,12 +4,13 @@ Two problems this solves for an appliance that restarts unattended:
 
 1. Jobs persisted as ``running`` by a previous process are replayed to every
    new browser as "running" forever, permanently disabling the report button.
-2. Child ``nmap``/``arp-scan`` processes are only tracked in memory, so a crash
-   or a SIGKILL leaves them orphaned, holding sockets and CPU.
+2. Child ``nmap``/``arp-scan`` processes need a termination signal when the
+   application shuts down normally or receives SIGTERM/SIGINT.
 
 ``reconcile_interrupted_jobs`` marks stale jobs interrupted at startup.
 ``install_process_reaper`` terminates tracked children on SIGTERM/SIGINT and at
-process exit.
+normal interpreter exit. SIGKILL cannot run these handlers; forced-crash child
+cleanup requires external process supervision and is not guaranteed here.
 """
 
 from __future__ import annotations
@@ -95,7 +96,7 @@ def install_process_reaper(*, job_registry, logger=logger) -> bool:
     if job_registry is None or not hasattr(job_registry, "terminate_all"):
         return False
 
-    # Always safe: runs on any interpreter exit path, including exceptions.
+    # Normal interpreter shutdown only; SIGKILL and os._exit bypass atexit.
     atexit.register(job_registry.terminate_all)
 
     if not _signal_handlers_are_safe():

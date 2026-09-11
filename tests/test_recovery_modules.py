@@ -1,5 +1,10 @@
 """Tests for unclean-shutdown recovery: stale jobs and orphaned processes."""
 
+from pathlib import Path
+import subprocess
+import sys
+
+from nmapui.handlers.auto_scan import acquire_auto_scan_scheduler_lock
 from nmapui.jobs import ClientJobRegistry
 from nmapui.recovery import (
     STALE_JOB_STATUSES,
@@ -113,3 +118,39 @@ def test_process_reaper_skips_signal_handlers_under_pytest():
 
 def test_process_reaper_requires_a_registry():
     assert install_process_reaper(job_registry=None) is False
+
+
+def test_scheduler_lock_releases_after_owner_is_killed(tmp_path):
+    """A real process crash must not permanently suppress scheduled work."""
+    lock_path = tmp_path / "scheduler.lock"
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from nmapui.handlers.auto_scan import acquire_auto_scan_scheduler_lock\n"
+        "lock = acquire_auto_scan_scheduler_lock(lock_file=Path(sys.argv[1]))\n"
+        "assert lock is not None\n"
+        "print('locked', flush=True)\n"
+        "sys.stdin.read()\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(lock_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        import select
+
+        readable, _, _ = select.select([process.stdout], [], [], 10)
+        assert readable, "Lock owner failed to start within ten seconds"
+        assert process.stdout.readline().strip() == "locked"
+        assert acquire_auto_scan_scheduler_lock(lock_file=lock_path) is None
+        process.kill()
+        process.wait(timeout=10)
+        recovered = acquire_auto_scan_scheduler_lock(lock_file=lock_path)
+        assert recovered is not None
+        recovered.close()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=10)
