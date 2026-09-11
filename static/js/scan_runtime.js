@@ -310,6 +310,18 @@ function highlightActiveScanHost(data) {
 let appVersion = null;
 
 function initializeScanRuntime(socket) {
+    socket.on('job_status', (job = {}) => {
+        if (job.job_type !== 'scan') return;
+        if (job.status === 'running' || job.status === 'cancelling') {
+            setScanUIActive(1, 'quick');
+            if (activeScanPhase !== 1) startPhaseTimer(1, job.started_at);
+        } else if (activeScanKind === 'quick') {
+            const elapsed = activePhaseStartedAt ? (Date.now() - activePhaseStartedAt) / 1000 : 0;
+            stopPhaseTimer(1, elapsed);
+            resetScanUI();
+        }
+    });
+
     socket.on('sync_state', (state) => {
         if (state.version) {
             appVersion = state.version;

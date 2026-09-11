@@ -15,15 +15,19 @@ before integrating it; native/web parity is not yet verified.
 - `main` / `origin/main`: `2828bd36`, PR #239 merged August 24. Latest CI passed
   unit/contract, browser regression and packaged Mac smoke jobs:
   https://github.com/techmore/TM-NmapUI/actions/runs/32763844258
-- Current `fix/unattended-operation`: `19dd4457`, 11 commits ahead of main,
-  none behind, no remote branch or PR. Includes two preservation/documentation
+- Initial review of `fix/unattended-operation`: `19dd4457`, 11 commits ahead of main,
+  none behind. It has since been pushed with validation fixes and documentation
+  updates in draft PR https://github.com/techmore/TM-NmapUI/pull/240.
+  The initial branch included two preservation/documentation
   commits and nine unattended-operation/documentation commits. Implemented work
   includes actual scheduled execution, degraded startup, daemon installation,
   prompt-free privilege paths, authentication, interrupted-job recovery,
   missed-schedule catch-up, and Flask installation documentation.
 - Verification today: `.venv/bin/python -m pytest -q` → **373 passed, 8 skipped**.
+  The explicitly enabled Mac packaged smoke subsequently passed (1 test, 249s).
   This does not establish real reboot, prolonged unattended operation, native UI
-  parity or Windows support. Browser and packaged tests are gated in this run.
+  parity or Windows support. Browser results require checking expected failures,
+  not just CI's overall success status (see #230 below).
 - `swift-native`: 29 commits unique relative to main; main has 10 absent from it.
   Keep for selective integration and native parity review, not a blind merge.
 - `alpha/mac-known-good-2026-09-07-1040` and tag
@@ -38,9 +42,16 @@ before integrating it; native/web parity is not yet verified.
 - Fetched/pruned the already-deleted remote runtime-contract branch.
 - Pruned only the dead `/private/tmp/nmapui-swift` worktree registration; the
   `swift-native` branch remains intact.
-- Closed #230: both its browser-CI and runtime-contract acceptance criteria are
-  supported by the successful main CI run above.
-- No open pull requests were present at review time.
+- Reopened #230 after discovering five expected-failure markers hidden behind
+  the successful CI status. Its initial closure in this review was premature.
+  The first explicit local browser run produced 2 passed, 5 xfailed. Fixes are
+  now in PR #240: use real network Socket.IO clients, initialize the test port
+  before the origin allowlist, isolate runtime data, supply actual comparison
+  assets, and test the current UI. Fixed Quick Scan job-state updates and report
+  reconnect classification. Final local browser result: **7 passed in 12.00s**,
+  no skips or expected failures. Leave #230 open until integration/CI proves it.
+- No open pull requests were present at initial review; draft #240 now tracks
+  the unattended baseline and validation fixes.
 
 ## Backlog organization
 
@@ -76,7 +87,9 @@ Use README and the September 10 audit's phase status as current context. The
 audit's original findings and some introductory notes describe earlier code;
 do not treat every finding as still unresolved. Its status says “Draft” despite
 later locked decisions and implementation updates. The January
-`CLAUDE_WORK_PLAN.md`, root AGENTS code map and BUILDING.md are stale.
+`CLAUDE_WORK_PLAN.md` remains historical. Root AGENTS now has current navigation
+above its old generated map, and BUILDING.md identifies the supported build path
+above its historical PyInstaller instructions.
 Do not remove legacy assets wholesale: verify Flask/static/report dependencies
 first. Keep the rollback archive intact; migrating it to release storage can be
 done separately without rewriting Git history.
