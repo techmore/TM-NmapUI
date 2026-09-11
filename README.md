@@ -162,11 +162,16 @@ Build environment variables:
 - `NMAPUI_MIGRATE_DB=1 ./build.sh` — migrate an existing runtime database during
   install; `NMAPUI_MIGRATE_DB_FROM=<path>` selects the explicit source database
 
-## Container
+## Cross-platform deployment
 
-The `Dockerfile` and `docker-compose.yml` in this repository still describe the
-**legacy Node runtime** and do not run the Flask app. Reconciling them is tracked
-in `docs/audits/2026-09-10-unattended-remediation-plan.md` (Phase 5.1).
+The deployment direction is a directly installed Flask backend with access to
+the host network, serving the web UI to browsers. Native Linux installation and
+service supervision still need validation; the current automated installer is
+macOS-specific. Windows scanner-host support has not been established.
+
+Container packaging is retired from the active roadmap (September 11, 2026).
+The retained `Dockerfile` and `docker-compose.yml` run the **legacy Node runtime**
+and are historical references, not supported installation paths.
 
 ## Repository Layout
 

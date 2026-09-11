@@ -3,10 +3,8 @@
 # Build script for the NmapUI macOS wrapper
 # Builds the Swift application bundle and opens it
 
-# Clean up any existing instances
-echo "Cleaning up any existing instances..."
-pkill -f "NmapUI.app" 2>/dev/null || true
-sleep 1  # Give processes time to terminate
+# Runtime cleanup below is scoped to the build and installation destinations.
+# A test build must not terminate other installed copies of the application.
 
 # Set variables
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

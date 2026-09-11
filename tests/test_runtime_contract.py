@@ -314,7 +314,6 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'if [[ "${NMAPUI_SKIP_OPEN:-}" == "1" ]]; then' in build_script
     assert 'echo "Skipping application auto-open because NMAPUI_SKIP_OPEN=1"' in build_script
     assert 'open "$INSTALLED_APP_NAME"' in build_script
-    assert 'pkill -f "NmapUI.app" 2>/dev/null || true' in build_script
     assert 'RUNTIME_PID_FILE_REL="Contents/Resources/nmapui-runtime.pid"' in build_script
     assert 'SHUTDOWN_MARKER_REL="Contents/Resources/nmapui-shutdown"' in build_script
     assert 'AUTO_SCAN_LOCK_REL="Contents/Resources/data/auto_scan_scheduler.lock"' in build_script

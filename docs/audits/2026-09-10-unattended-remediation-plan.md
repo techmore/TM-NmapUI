@@ -5,6 +5,12 @@
 **Author:** review pass (automated)
 **Status:** Draft for approval
 
+**September 11 direction update:** Container packaging is no longer an active
+deliverable, per the user's scanner-networking requirements. The cross-platform
+web target is a directly installed Flask backend with browser clients. Container
+conversion tasks below are historical and superseded; native Linux installation
+and service validation take their place. See `docs/notes/PROJECT_STATUS.md`.
+
 ---
 
 ## 1. Goal (as stated)

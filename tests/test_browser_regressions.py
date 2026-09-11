@@ -47,7 +47,7 @@ def _get_browser(playwright):
     try:
         return playwright.chromium.launch(headless=True)
     except Exception as error:  # pragma: no cover - only exercised in gated mode
-        pytest.skip(f"Playwright Chromium is not available: {error}")
+        pytest.fail(f"Browser regression coverage was enabled but Chromium could not launch: {error}")
 
 
 def _get_socket_sid(client):

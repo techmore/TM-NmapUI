@@ -1,5 +1,14 @@
 # Building and Packaging NmapUI for macOS
 
+> Historical PyInstaller workflow. The maintained Mac build uses the root
+> `build.sh` to bundle the Swift launcher, Flask application and a Python virtual
+> environment. Use Python 3.11+ and `./install.sh --no-daemon`, then
+> `NMAPUI_SKIP_OPEN=1 ./build.sh`. Set `NMAPUI_APPLICATIONS_DIR` to choose the
+> installation destination. The gated verification command is
+> `NMAPUI_RUN_PACKAGED_SMOKE=1 .venv/bin/python -m pytest -q tests/test_packaged_app_smoke.py`.
+> The instructions below are retained for the alternative PyInstaller path and
+> are not the current release procedure. See README.md for current setup.
+
 This guide explains how to build and package NmapUI for macOS distribution and how to smoke test a release candidate before publishing it.
 
 ## Prerequisites
