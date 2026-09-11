@@ -3,10 +3,8 @@
 # Build script for the NmapUI macOS wrapper
 # Builds the Swift application bundle and opens it
 
-# Clean up any existing instances
-echo "Cleaning up any existing instances..."
-pkill -f "NmapUI.app" 2>/dev/null || true
-sleep 1  # Give processes time to terminate
+# Runtime cleanup below is scoped to the build and installation destinations.
+# A test build must not terminate other installed copies of the application.
 
 # Set variables
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -215,7 +213,7 @@ mkdir -p "$BUILD_DIR"
 # Run install.sh if .venv doesn't exist yet
 if [[ ! -d "$ROOT_DIR/.venv" && ! -d "$ROOT_DIR/venv" ]]; then
     echo "No virtual environment found — running install.sh first..."
-    bash "$ROOT_DIR/install.sh" || { echo "install.sh failed"; exit 1; }
+    bash "$ROOT_DIR/install.sh" --no-daemon || { echo "install.sh failed"; exit 1; }
 fi
 
 echo "Building NmapUI macOS wrapper..."
@@ -365,7 +363,30 @@ export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright-browsers"
 # a separate production WSGI stack, so allow Werkzeug explicitly for this
 # packaged desktop entrypoint.
 export NMAPUI_ALLOW_UNSAFE_WERKZEUG=true
-export NMAPUI_TRUST_LOCAL_UI=true
+
+# The UI requires sign-in. Reuse the appliance credentials when the
+# LaunchDaemon installer created them, otherwise generate a per-install
+# password stored 0600 in the data dir. The old NMAPUI_TRUST_LOCAL_UI bypass
+# is deliberately not set: it made every loopback process fully trusted.
+CREDENTIALS_FILE="$NMAPUI_DATA_DIR/credentials.env"
+if [[ -f "$CREDENTIALS_FILE" ]]; then
+    NMAPUI_USERNAME="${NMAPUI_USERNAME:-$(awk -F= '/^NMAPUI_USERNAME=/{print $2; exit}' "$CREDENTIALS_FILE")}"
+    NMAPUI_PASSWORD="${NMAPUI_PASSWORD:-$(awk -F= '/^NMAPUI_PASSWORD=/{print $2; exit}' "$CREDENTIALS_FILE")}"
+    export NMAPUI_USERNAME NMAPUI_PASSWORD
+fi
+if [[ -z "${NMAPUI_USERNAME:-}" || -z "${NMAPUI_PASSWORD:-}" ]]; then
+    GENERATED_PASSWORD="$(openssl rand -hex 16 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(16))')"
+    export NMAPUI_USERNAME="${NMAPUI_USERNAME:-admin}"
+    export NMAPUI_PASSWORD="${NMAPUI_PASSWORD:-$GENERATED_PASSWORD}"
+    OLD_UMASK="$(umask)"
+    umask 077
+    {
+        echo "NMAPUI_USERNAME=$NMAPUI_USERNAME"
+        echo "NMAPUI_PASSWORD=$NMAPUI_PASSWORD"
+    } > "$CREDENTIALS_FILE"
+    umask "$OLD_UMASK"
+    echo "NmapUI sign-in generated; username: $NMAPUI_USERNAME (password in $CREDENTIALS_FILE)"
+fi
 
 # Run the NmapUI application
 exec python3 app.py

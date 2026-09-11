@@ -268,6 +268,26 @@ class ClientJobRegistry:
         with self._lock:
             self._processes.pop((sid, job_type), None)
 
+    def terminate_all(self) -> int:
+        """Terminate every tracked child process. Returns the count signalled.
+
+        Called by the shutdown reaper so a crash or SIGTERM does not leave
+        orphaned nmap/arp-scan processes behind.
+        """
+        with self._lock:
+            processes = list(self._processes.items())
+            self._processes.clear()
+
+        signalled = 0
+        for key, process in processes:
+            try:
+                if process.poll() is None:
+                    process.terminate()
+                    signalled += 1
+            except Exception:
+                logger.exception("Failed to terminate subprocess for %s", key)
+        return signalled
+
     def get(self, sid: str, job_type: str):
         with self._lock:
             job = self._jobs.get((sid, job_type))

@@ -144,7 +144,7 @@ Currently, when a network is identified (either automatically or manually), the 
 
 ## How to Create This Issue:
 
-1. Go to your GitHub repository: https://github.com/techmore/NmapUI
+1. Go to your GitHub repository: https://github.com/techmore/TM-NmapUI
 2. Click on "Issues" tab
 3. Click "New issue" button
 4. Copy and paste the content above (from "Title:" to the end)

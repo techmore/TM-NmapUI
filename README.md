@@ -1,178 +1,192 @@
-# TM-NMapUI
+# TM-NmapUI
 
-macOS-first network scanning and monitoring app powered by Nmap.
+macOS-first network scanning and monitoring appliance powered by Nmap, with a
+cross-platform web UI.
 
-## Quick Start
+The product is a **Python Flask application** (`app.py` + the `nmapui/` package)
+served over a loopback web UI, plus an optional macOS menu-bar wrapper. It is
+designed to run **unattended for long periods**: scans run on a schedule, survive
+reboots, and need no password prompt and no repeated sign-in.
+
+## Quick Start (appliance)
 
 ```bash
 git clone https://github.com/techmore/TM-NmapUI.git
 cd TM-NmapUI
-./install.sh
-sudo npm start
+
+./install.sh                              # toolchain + virtualenv + Playwright
+sudo packaging/macos/install-daemon.sh    # start at boot, keep alive, no prompts
 ```
 
-The app will open its local UI automatically. If you need to access it directly, use the loopback URL shown by the launcher, usually `http://127.0.0.1:9000`.
+`install-daemon.sh` installs a system LaunchDaemon and generates sign-in
+credentials once, printing where to read them:
 
-`npm start` also checks for missing Node packages and installs them automatically, so a clean checkout will recover if `node_modules/` has not been created yet.
+```bash
+sudo cat "/Library/Application Support/NmapUI/credentials.env"
+```
+
+Then open <http://127.0.0.1:9000> and sign in once. The session lasts about 13
+months, so a browser stays signed in across restarts.
+
+Validate the daemon without changing anything:
+
+```bash
+packaging/macos/install-daemon.sh --dry-run
+```
+
+## Quick Start (development)
+
+```bash
+./install.sh --no-daemon
+./start.sh          # runs .venv/bin/python app.py
+```
+
+Set credentials before starting, otherwise protected routes return HTTP 503:
+
+```bash
+export NMAPUI_USERNAME=admin
+export NMAPUI_PASSWORD='choose-something-strong'
+./start.sh
+```
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|------------|
-| Runtime | Node.js |
-| Desktop Shell | Swift menu bar app |
-| Web Framework | Express |
+| Runtime | Python 3.11+ |
+| Web framework | Flask + Flask-SocketIO |
 | Real-time | Socket.IO |
 | Scanner | Nmap + NSE (Nmap Scripting Engine) |
-| PDF Generation | wkhtmltopdf / Chromium |
-| XML Processing | xml2js |
-| Scheduling | node-cron |
-| HTTP Client | axios |
-| Cloud Sync | Google Drive helper |
+| PDF generation | Playwright Chromium, with wkhtmltopdf / Chrome fallbacks |
+| XML processing | `xml.etree.ElementTree` + `xsltproc` |
+| Scheduler | In-process scheduler thread with a cross-process `flock` lock |
+| Persistence | SQLite (WAL) plus JSON artifacts |
+| macOS shell | Swift menu-bar wrapper (optional launcher) |
 
 ## Requirements
 
-- **macOS** (primary target)
-- **Homebrew** (for package management)
-- **Node.js** (via Homebrew)
-- **Nmap** (with script database updated)
-- **wkhtmltopdf** or **Chromium** (for PDF generation)
-- **xsltproc** (for HTML report styling)
+- **Python 3.11 or newer**
+- **nmap** (with an updated script database)
+- **xsltproc** (Homebrew `libxslt`)
+- **Playwright Chromium**, or Chrome/wkhtmltopdf for PDF output
+- macOS for the LaunchDaemon and menu-bar wrapper; the web app also runs on Linux
 
-All dependencies are installed automatically by `install.sh`.
+`install.sh` installs these with Homebrew.
 
-## Installation & Quick Start (macOS)
+## Scans
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/techmore/NmapUI.git
-   cd NmapUI
-   ```
+- **Quick Scan** — fast discovery of live hosts
+- **Complete Scan** — full port/service scan with OS detection and vulners CVEs
+- **Dragnet Scan** — rescan every host from a previous discovery
+- **VPN Helper** — batched Phase 2 for remote, high-latency or very large scopes
+  (see `docs/vpn-helper-design.md`)
 
-2. Build and launch the menu bar app:
-   ```bash
-   open NmapUIMenuBar.app
-   ```
+Reports include host/IP/MAC/vendor, open ports and service versions, detected CVEs
+with CVSS scores, and a network topology fingerprint. HTML and PDF are written
+under the data directory.
 
-   After launch, look for the network icon in your macOS menu bar. The app serves NmapUI on a local loopback URL, defaulting to `http://127.0.0.1:9000` and falling back to the next available local port if needed.
-   The menu bar app now exposes a `Launch at Login` toggle and an `Uninstall NmapUI` menu action. Uninstall removes the login item registration first and then moves the app bundle to the Trash.
+## Scheduling
 
-   > **Prerequisites**: Xcode Command Line Tools (`xcode-select --install`) and [Homebrew](https://brew.sh) are needed by `install.sh` to pull in `nmap`, `arp-scan`, etc.
+Auto-scan runs inside a daily window; Auto-Monitor runs per-customer rules daily,
+weekly, biweekly, monthly or quarterly. Due-ness is derived from the persisted
+`last_run` versus the most recent scheduled slot, so a run missed while the Mac
+slept or was powered off is picked up **once** on the next tick rather than
+silently skipped.
 
-## Container Build
+## Authentication
 
-If you want a more atomic install path, the repository now includes a container build that packages the Node runtime with its scan/report tooling.
+- Credentials come from `NMAPUI_USERNAME` / `NMAPUI_PASSWORD`.
+- Browsers sign in at `/login` and receive a signed, long-lived session cookie.
+- API clients can use HTTP Basic auth.
+- `NMAPUI_TRUST_LOCAL_UI=true` disables authentication for loopback callers. It is
+  **not** set by the packaged app or the daemon, because every local process is a
+  loopback caller.
 
-Build the image:
-```bash
-docker build -t nmapui:container .
-```
-
-Run it with Docker Compose:
-```bash
-docker compose up --build
-```
-
-The container listens on `0.0.0.0:9000` and persists runtime data in `/data`. The app now reads mutable files from that directory, so scan history, settings, reports, and temporary scan artifacts survive restarts. If you want to override defaults locally, set `NMAPUI_DATA_DIR`, `NMAPUI_PORT`, or `PORT` in your shell or a compose `.env` file.
-
-Notes:
-- The container includes `nmap`, `xsltproc`, `wkhtmltopdf`, Chromium, `traceroute`, and `python3` for the helper scripts.
-- Network scanning still depends on the runtime’s network permissions. The bundled compose file adds `NET_ADMIN` and `NET_RAW`, which are typically required for fuller scan capabilities.
-- For environments like Apple Container Machines, the same image can be used as a starting point, but you may need to adjust network exposure or host access based on the target runtime’s policies.
-- The container healthcheck hits `/api/app-identity`, which is a lightweight readiness signal for orchestration.
-
-## Repository Layout
-
-- Root: stable entrypoints and runtime files such as `server.js`, `install.sh`, and `deploy.sh`
-- `NmapUI.app/` and `NmapUIMenuBar.app/`: macOS app bundles produced by the current packaging flow
-- `packaging/macos/`: Swift/AppKit shell scaffold for the macOS-native direction
-- `docs/guides/`: user and maintainer guides
-- `docs/notes/`: internal implementation notes and working analysis
-- `docs/audits/`: deeper audit writeups that are not part of the main setup flow
-
-Runtime-only files such as `auto_scan_config.json`, generated scan outputs, local wrapper binaries, and ad hoc scratch directories should stay untracked.
-
-## Admin Commands
+## Administration
 
 Export the runtime database from the Settings tab, or download it directly:
 
 ```bash
-curl -OJ http://127.0.0.1:9000/api/runtime/export
+curl -OJ -u admin:"$NMAPUI_PASSWORD" http://127.0.0.1:9000/api/runtime/export
 ```
 
-If you are migrating an existing runtime database into the menu bar app bundle, copy the runtime data directory into the bundle resources before launch:
+Health and readiness:
 
 ```bash
-cp /path/to/runtime.sqlite3 NmapUIMenuBar.app/Contents/Resources/data/runtime.sqlite3
+curl http://127.0.0.1:9000/api/health/live
+curl http://127.0.0.1:9000/api/health/ready
 ```
 
-The current repository does not include the old `build.sh` installer flow referenced in earlier notes.
-
-## Build Environment Variables
-
-The macOS wrapper build accepts the following environment variables:
-
-- `NMAPUI_SWIFT_TARGET` - Override the Swift compilation target (defaults are picked from `uname -m`: `arm64-apple-macosx13.0` or `x86_64-apple-macosx13.0`)
-- `NMAPUI_APPLICATIONS_DIR` - Override the install destination; otherwise the bundle goes to `/Applications` when writable, or `~/Applications`
-- `NMAPUI_MIGRATE_DB=1 ./build.sh` - Migrate an existing runtime database during install
-- `NMAPUI_MIGRATE_DB_FROM=<path>` - Explicit source database for the migration
-
-## Runtime Maintenance
-
-Backfill scan artifacts and customer history into the SQLite runtime store:
+Daemon lifecycle:
 
 ```bash
-python3 scripts/backfill_runtime_store.py
+sudo launchctl kickstart -k system/com.techmore.nmapui   # restart
+sudo launchctl print system/com.techmore.nmapui          # status
+sudo packaging/macos/install-daemon.sh --uninstall       # remove
 ```
 
-## Usage
+Logs live in `/Library/Logs/NmapUI/` (`server.out.log`, `server.err.log`), plus
+the rotated application log in the data directory.
 
-### Start the app
+Backfill scan artifacts into the runtime store:
 
 ```bash
-sudo npm start
+.venv/bin/python scripts/backfill_runtime_store.py
 ```
 
-The launcher starts the local runtime on port 9000 by default and opens the app shell around it. On the macOS wrapper, the menu bar icon is the primary way back into the app.
+## Nightly self-check
 
-### Scans
-
-- **Quick Scan** - Fast discovery of live hosts on the network
-- **Complete Scan** - Full port scan with OS detection and vulnerability scripts
-- **Dragnet Scan** - Scan all hosts from previous discovery with exhaustive options
-
-### VPN Helper
-
-VPN Helper is intended for remote/VPN or large-scope scans. Phase 1 discovery uses the normal scan path. After discovery completes, VPN Helper batches the successful live IPs into Phase 2.1 service/version scans and Phase 2.2 vulners scans. OS detection is disabled by default in VPN Helper mode; enable **Force OS Detection (-O)** when OS fingerprinting is worth the extra time and instability risk.
-
-Normal Complete scans keep the faster combined Phase 2 behavior. Use VPN Helper when Phase 2 stalls, crashes, or the scan is running across a slow VPN.
-
-### Auto-Monitor
-
-Schedule automatic scans to run daily, weekly, monthly, or hourly. Results are saved to `reports_archive/` and optionally synced to Google Drive.
-
-### Reports
-
-HTML and PDF reports are generated after each scan. Reports include:
-- Discovered hosts with IP, MAC, hostname, vendor
-- Open ports and service versions
-- Detected CVEs with CVSS scores
-- Network topology fingerprint
-
-## Directory Structure
-
+```bash
+scripts/nightly_product_eval.sh --run
 ```
-.
-├── server.js           # Main local runtime
-├── install.sh         # Dependency installer
-├── package.json      # Node dependencies
-├── google_drive.py   # Google Drive sync helper
-├── nmap-modern.xsl  # Report stylesheet
-├── config.json      # App configuration
-├── history.json    # Scan history
-├── reports_archive/ # Generated reports
-└── static/         # Frontend assets
+
+Boots the Flask app on port 9000, probes liveness, identity, the UI and a static
+asset, and writes a JSON report under `docs/notes/eval-logs/`.
+
+## Building the macOS bundle
+
+```bash
+./build.sh
 ```
+
+Compiles the Swift menu-bar wrapper, bundles a virtualenv with the Python
+resources, and installs `NmapUI.app`. The wrapper attaches to the daemon when it
+is running; it never requests administrator privileges.
+
+Build environment variables:
+
+- `NMAPUI_SWIFT_TARGET` — override the Swift target (defaults from `uname -m`)
+- `NMAPUI_APPLICATIONS_DIR` — install destination (`/Applications` when writable,
+  otherwise `~/Applications`)
+- `NMAPUI_SKIP_OPEN=1` — build without launching
+- `NMAPUI_MIGRATE_DB=1 ./build.sh` — migrate an existing runtime database during
+  install; `NMAPUI_MIGRATE_DB_FROM=<path>` selects the explicit source database
+
+## Cross-platform deployment
+
+The deployment direction is a directly installed Flask backend with access to
+the host network, serving the web UI to browsers. Native Linux installation and
+service supervision still need validation; the current automated installer is
+macOS-specific. Windows scanner-host support has not been established.
+
+Container packaging is retired from the active roadmap (September 11, 2026).
+The retained `Dockerfile` and `docker-compose.yml` run the **legacy Node runtime**
+and are historical references, not supported installation paths.
+
+## Repository Layout
+
+- `/` — stable entrypoints: `app.py`, `start.sh`, `install.sh`, `build.sh`
+- `nmapui/` — application package (scanning, reporting, scheduling, runtime DB)
+- `nmapui/handlers/` — HTTP and Socket.IO route registration
+- `tests/` — pytest suite, including browser regressions and a packaged smoke test
+- `packaging/macos/` — Swift menu-bar wrapper and `install-daemon.sh`
+- `packaging/pyinstaller/` — alternative standalone bundle spec
+- `docs/guides/`, `docs/notes/`, `docs/audits/` — guides, notes and audits
+- `server.js`, `index.html`, `static/js/`, `package.json` — **legacy Node/Express
+  build kept only as a rollback reference** (`releases/TM-NmapUI-mac-known-good.md`)
+
+Runtime state (`data/`, `*.sqlite3`, `logs/`, `config/customers.yaml`, eval logs
+and app bundles) is gitignored and must stay out of version control.
 
 ## License
 

@@ -159,6 +159,11 @@ def build_runtime_bindings(
                 safe_emit=safe_emit,
                 save_auto_scan_config=save_auto_scan_config,
                 validate_target=validate_target,
+                job_registry=job_registry,
+                emit_job_status=emit_job_status,
+                generate_report_task=generate_report_task_provider(),
+                set_current_customer_state=set_current_customer_state,
+                set_last_scan_target_state=set_last_scan_target_state,
             )
         )
 

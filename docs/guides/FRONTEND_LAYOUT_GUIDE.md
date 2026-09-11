@@ -48,4 +48,4 @@ This page has a small set of layout rules. New sections should follow these inst
 - The discovery table section in [`/Users/techmore/projects/NmapUI/templates/index.html`](/Users/techmore/projects/NmapUI/templates/index.html) is the canonical breakout-band example.
 - The modal wrappers in [`/Users/techmore/projects/NmapUI/templates/index.html`](/Users/techmore/projects/NmapUI/templates/index.html) are the canonical modal-shell example.
 - The customer/history/auto-scan inputs in [`/Users/techmore/projects/NmapUI/templates/index.html`](/Users/techmore/projects/NmapUI/templates/index.html) are the canonical shared form-control example.
-- Follow this guide for future layout refactors tied to [#74](https://github.com/techmore/NmapUI/issues/74).
+- Follow this guide for future layout refactors tied to [#74](https://github.com/techmore/TM-NmapUI/issues/74).

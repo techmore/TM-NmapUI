@@ -4,7 +4,11 @@ from datetime import datetime, timedelta
 import re
 from pathlib import Path
 
-from .paths import AUTO_SCAN_CONFIG_EXAMPLE_FILE, AUTO_SCAN_CONFIG_FILE
+from .paths import (
+    AUTO_SCAN_CONFIG_EXAMPLE_FILE,
+    AUTO_SCAN_CONFIG_FILE,
+    LEGACY_AUTO_SCAN_CONFIG_FILE,
+)
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
@@ -82,8 +86,41 @@ def build_auto_scan_status_payload(
     return payload
 
 
+def migrate_legacy_auto_scan_config() -> bool:
+    """Move schedule state out of the app bundle into the data dir.
+
+    Returns True when a legacy file was migrated.  Safe to call repeatedly.
+    """
+    if AUTO_SCAN_CONFIG_FILE.exists() or not LEGACY_AUTO_SCAN_CONFIG_FILE.exists():
+        return False
+    try:
+        payload = json.loads(LEGACY_AUTO_SCAN_CONFIG_FILE.read_text())
+    except Exception as exc:
+        logger.warning(
+            "Could not migrate legacy auto scan config from %s: %s",
+            LEGACY_AUTO_SCAN_CONFIG_FILE,
+            exc,
+        )
+        return False
+    if not isinstance(payload, dict):
+        return False
+    try:
+        AUTO_SCAN_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(AUTO_SCAN_CONFIG_FILE, payload)
+    except Exception as exc:
+        logger.error("Failed to write migrated auto scan config: %s", exc)
+        return False
+    logger.info(
+        "Migrated auto scan config from %s to %s",
+        LEGACY_AUTO_SCAN_CONFIG_FILE,
+        AUTO_SCAN_CONFIG_FILE,
+    )
+    return True
+
+
 def load_auto_scan_config(target_config: dict) -> None:
     """Load auto scan configuration into a mutable target mapping."""
+    migrate_legacy_auto_scan_config()
     for config_file in (AUTO_SCAN_CONFIG_FILE, AUTO_SCAN_CONFIG_EXAMPLE_FILE):
         if not config_file.exists():
             continue

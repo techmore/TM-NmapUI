@@ -89,6 +89,7 @@ from nmapui.runtime import (
     get_app_version,
 )
 from nmapui.runtime_db import create_runtime_state_store
+from nmapui.recovery import install_process_reaper, reconcile_interrupted_jobs
 from nmapui.runtime_history import backfill_runtime_history_artifacts
 from nmapui.runtime_log import append_runtime_log
 from nmapui.runtime_services import create_runtime_services
@@ -230,6 +231,13 @@ settings_state = load_settings_state(
     remote_sync_secret_path=REMOTE_SYNC_SECRET_FILE,
     remote_sync_secret_key_path=REMOTE_SYNC_SECRET_KEY_FILE,
 )
+
+# Unclean-shutdown recovery. Jobs persisted as "running" by a previous process
+# would otherwise be replayed to every new tab forever, permanently disabling
+# the report button; tracked child scan processes are reaped on shutdown so a
+# crash does not leave orphaned nmap/arp-scan behind.
+reconcile_interrupted_jobs(runtime_store=runtime_store, logger=logger)
+install_process_reaper(job_registry=job_registry, logger=logger)
 
 event_helpers = build_event_helpers(
     socketio=socketio,

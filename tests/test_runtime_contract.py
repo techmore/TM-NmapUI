@@ -95,7 +95,7 @@ def test_template_uses_shared_scan_display_modules():
     assert "window.loadHostsFromStorage = loadHostsFromStorage;" in discovery_source
     assert "window.showHistoricalDataBanner = showHistoricalDataBanner;" in banner_source
     assert "window.showScanSummaryBanner = showScanSummaryBanner;" in banner_source
-    assert 'href="https://github.com/techmore/NmapUI"' in html
+    assert 'href="https://github.com/techmore/TM-NmapUI"' in html
     assert 'aria-label="Open NmapUI GitHub repository"' in html
     assert 'id="settings-nmap-version"' in html
     assert 'id="settings-vulners-version"' in html
@@ -314,7 +314,6 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'if [[ "${NMAPUI_SKIP_OPEN:-}" == "1" ]]; then' in build_script
     assert 'echo "Skipping application auto-open because NMAPUI_SKIP_OPEN=1"' in build_script
     assert 'open "$INSTALLED_APP_NAME"' in build_script
-    assert 'pkill -f "NmapUI.app" 2>/dev/null || true' in build_script
     assert 'RUNTIME_PID_FILE_REL="Contents/Resources/nmapui-runtime.pid"' in build_script
     assert 'SHUTDOWN_MARKER_REL="Contents/Resources/nmapui-shutdown"' in build_script
     assert 'AUTO_SCAN_LOCK_REL="Contents/Resources/data/auto_scan_scheduler.lock"' in build_script
@@ -351,7 +350,10 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'mkdir -p "$NMAPUI_DATA_DIR" "$NMAPUI_LOG_DIR"' in build_script
     assert 'stage_google_drive_credentials' in build_script
     assert "export NMAPUI_ALLOW_UNSAFE_WERKZEUG=true" in build_script
-    assert "export NMAPUI_TRUST_LOCAL_UI=true" in build_script
+    # Local-trust bypass is gone; the bundle signs in like everything else.
+    assert "export NMAPUI_TRUST_LOCAL_UI=true" not in build_script
+    assert "export NMAPUI_TRUST_LOCAL_UI" not in build_script
+    assert 'CREDENTIALS_FILE="$NMAPUI_DATA_DIR/credentials.env"' in build_script
     assert 'BUNDLE_PLAYWRIGHT_BROWSERS="$APP_NAME/Contents/Resources/playwright-browsers"' in build_script
     assert 'PLAYWRIGHT_BROWSERS_PATH="$BUNDLE_PLAYWRIGHT_BROWSERS" python -m playwright install chromium' in build_script
     assert 'export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright-browsers"' in build_script
@@ -381,8 +383,14 @@ def test_wrapper_launcher_quit_path_tracks_and_stops_runtime_tree():
     assert "func stopRuntimeShellCommand(wait: Bool) -> String" in launcher_source
     assert 'process.arguments = ["-lc", stopRuntimeShellCommand(wait: wait)]' in launcher_source
     assert 'escaped = escaped.replacingOccurrences(of: "\\n", with: "; ")' in launcher_source
-    assert 'let command = stopRuntimeShellCommand(wait: true)' in launcher_source
-    assert 'let appleScript = "do shell script \\(appleScriptEscaped(command)) with administrator privileges"' in launcher_source
+    # The appliance must never prompt for administrator privileges: privileged
+    # administration belongs to the LaunchDaemon installer, not the wrapper.
+    assert "with administrator privileges" not in launcher_source
+    assert "startFlaskWithPrivileges" not in launcher_source
+    assert "stopFlaskWithPrivileges" not in launcher_source
+    # It attaches to a daemon-managed server instead of starting a second one.
+    assert "let fixedRuntimePort = 9000" in launcher_source
+    assert "isLocalPortInUse(fixedRuntimePort)" in launcher_source
     assert 'if isQuitting {' in launcher_source
     assert 'isQuitting = true' in launcher_source
     assert 'stopFlask(wait: true)' in launcher_source
@@ -400,11 +408,23 @@ def test_wrapper_docs_reference_current_local_port():
     for doc_name in ("README.md", "packaging/macos/README.md", "packaging/macos/SETUP.md"):
         source = (ROOT / doc_name).read_text()
         assert "127.0.0.1:9000" in source
-        assert "selected local runtime URL" in source or "local loopback URL" in source
         assert "localhost:9999" not in source
     readme = (ROOT / "README.md").read_text()
     assert "NMAPUI_SWIFT_TARGET" in readme
     assert "/Applications" in readme
+
+
+def test_readme_documents_the_current_runtime_and_build_vars():
+    """The README used to tell users to `sudo npm start` the legacy Node app."""
+    readme = (ROOT / "README.md").read_text()
+
+    assert "npm start" not in readme
+    assert "Express" in readme  # only ever mentioned as the legacy build
+    assert "legacy Node" in readme
+    assert "Python 3.11" in readme
+    assert "app.py" in readme
+    assert "install-daemon.sh" in readme
+    assert "NMAPUI_PASSWORD" in readme
     assert "~/Applications" in readme
     assert "NMAPUI_APPLICATIONS_DIR" in readme
     assert "/api/runtime/export" in readme

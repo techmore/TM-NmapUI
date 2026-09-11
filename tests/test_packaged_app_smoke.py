@@ -1,11 +1,12 @@
 import os
+import base64
 from pathlib import Path
 import shutil
 import socket
 import subprocess
 import sys
 import time
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 
@@ -21,13 +22,13 @@ def _find_free_port():
         return sock.getsockname()[1]
 
 
-def _wait_for_url(url, *, timeout=60):
+def _wait_for_url(url, *, timeout=60, headers=None):
     deadline = time.time() + timeout
     last_error = None
 
     while time.time() < deadline:
         try:
-            with urlopen(url, timeout=5) as response:
+            with urlopen(Request(url, headers=headers or {}), timeout=5) as response:
                 return response.read().decode("utf-8", errors="replace")
         except Exception as error:  # pragma: no cover - exercised only in smoke mode
             last_error = error
@@ -37,7 +38,7 @@ def _wait_for_url(url, *, timeout=60):
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="packaged-app smoke test is macOS-only")
-def test_build_script_output_launches_and_serves_health():
+def test_build_script_output_launches_and_serves_health(tmp_path):
     if os.environ.get("NMAPUI_RUN_PACKAGED_SMOKE") != "1":
         pytest.skip("Set NMAPUI_RUN_PACKAGED_SMOKE=1 to run packaged-app smoke coverage")
 
@@ -49,6 +50,15 @@ def test_build_script_output_launches_and_serves_health():
     env = os.environ.copy()
     env["NMAPUI_SKIP_OPEN"] = "1"
     env["NMAPUI_PORT"] = str(port)
+    env["NMAPUI_APPLICATIONS_DIR"] = str(tmp_path / "Applications")
+    env["NMAPUI_DATA_DIR"] = str(tmp_path / "data")
+    env["NMAPUI_LOG_DIR"] = str(tmp_path / "logs")
+    env["NMAPUI_USERNAME"] = "smoke-test"
+    env["NMAPUI_PASSWORD"] = "isolated-smoke-test-password"
+    env["NMAPUI_TRUST_LOCAL_UI"] = "false"
+    authorization = base64.b64encode(
+        f"{env['NMAPUI_USERNAME']}:{env['NMAPUI_PASSWORD']}".encode()
+    ).decode()
 
     subprocess.run(
         ["bash", "build.sh"],
@@ -72,7 +82,10 @@ def test_build_script_output_launches_and_serves_health():
 
     try:
         health_body = _wait_for_url(f"http://127.0.0.1:{port}/api/health/live", timeout=90)
-        index_body = _wait_for_url(f"http://127.0.0.1:{port}/", timeout=30)
+        index_body = _wait_for_url(
+            f"http://127.0.0.1:{port}/", timeout=30,
+            headers={"Authorization": f"Basic {authorization}"},
+        )
 
         assert "ok" in health_body.lower()
         assert "Dashboard" in index_body

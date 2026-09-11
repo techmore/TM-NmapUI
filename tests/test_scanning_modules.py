@@ -79,3 +79,35 @@ def test_is_private_ip_supports_private_and_cgnat_ranges():
     assert is_private_ip("192.168.1.10") is True
     assert is_private_ip("100.64.1.10") is True
     assert is_private_ip("8.8.8.8") is False
+
+
+def test_check_nmap_returns_none_instead_of_exiting_when_missing(monkeypatch):
+    """A missing nmap must degrade the server, not kill it before it binds."""
+    monkeypatch.setattr(scanning.shutil, "which", lambda name: None)
+
+    assert scanning.check_nmap() is None
+
+
+def test_check_nmap_returns_none_instead_of_exiting_on_version_failure(monkeypatch):
+    monkeypatch.setattr(scanning.shutil, "which", lambda name: "/usr/bin/nmap")
+
+    def raise_oserror(*args, **kwargs):
+        raise OSError("nmap exploded")
+
+    monkeypatch.setattr(scanning.subprocess, "check_output", raise_oserror)
+
+    assert scanning.check_nmap() is None
+
+
+def test_check_vulners_returns_false_instead_of_exiting_when_missing(tmp_path):
+    """A missing vulners script degrades CVE detection but must not exit."""
+    missing = tmp_path / "vulners.nse"
+
+    assert scanning.check_vulners(missing) is False
+
+
+def test_check_vulners_returns_true_when_present(tmp_path):
+    script = tmp_path / "vulners.nse"
+    script.write_text("-- vulners")
+
+    assert scanning.check_vulners(script) is True

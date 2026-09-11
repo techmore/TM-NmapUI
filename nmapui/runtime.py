@@ -110,7 +110,7 @@ def check_for_updates():
     current_version = get_app_version()
     try:
         response = requests.get(
-            "https://api.github.com/repos/techmore/NmapUI/releases/latest", timeout=10
+            "https://api.github.com/repos/techmore/TM-NmapUI/releases/latest", timeout=10
         )
         response.raise_for_status()
         latest_release = response.json()
