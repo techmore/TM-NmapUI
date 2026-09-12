@@ -26,6 +26,10 @@ import shutil
 logger = logging.getLogger(__name__)
 
 SUDO = "sudo"
+# Root-owned validating wrapper installed by packaging/macos/install-daemon.sh.
+# When present it replaces raw `sudo -n nmap`, so sudoers never grants the
+# scanner binaries directly.
+DEFAULT_SCANNER_HELPER = "/usr/local/libexec/nmapui-privileged-scanner"
 
 PERMISSION_DENIED_TOKENS = (
     "permission denied",
@@ -37,6 +41,22 @@ PERMISSION_DENIED_TOKENS = (
     "no tty present",
     "sudo:",
 )
+
+
+def scanner_helper_path() -> str:
+    """Path to the privileged scanner wrapper, or "" when unavailable."""
+    override = str(os.environ.get("NMAPUI_SCAN_HELPER", "") or "").strip()
+    candidate = override or DEFAULT_SCANNER_HELPER
+    try:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    except OSError:
+        return ""
+    return ""
+
+
+def scanner_helper_installed() -> bool:
+    return bool(scanner_helper_path())
 
 
 def is_root() -> bool:
@@ -52,15 +72,19 @@ def sudo_available() -> bool:
 def privileged_prefix() -> list[str]:
     """Return the argv prefix that grants scan privileges.
 
-    * root             -> ``[]`` (already privileged)
-    * non-root + sudo  -> ``["sudo", "-n"]`` (fails fast, never prompts)
-    * otherwise        -> ``[]`` (unprivileged; caller must fall back)
+    * root               -> ``[]`` (already privileged)
+    * non-root + helper  -> ``["sudo", "-n", <helper>]`` (argv re-validated)
+    * non-root + sudo    -> ``["sudo", "-n"]`` (development fallback)
+    * otherwise          -> ``[]`` (unprivileged; caller must fall back)
     """
     if is_root():
         return []
-    if sudo_available():
-        return [SUDO, "-n"]
-    return []
+    if not sudo_available():
+        return []
+    helper = scanner_helper_path()
+    if helper:
+        return [SUDO, "-n", helper]
+    return [SUDO, "-n"]
 
 
 def nmap_argv(

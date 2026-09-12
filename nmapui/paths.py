@@ -4,9 +4,30 @@ from typing import Optional
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-VULNERS_SCRIPT = BASE_DIR / "nmap-vulners" / "vulners.nse"
-XSL_STYLESHEET = BASE_DIR / "nmap-modern.xsl"
-XSL_STYLESHEET_PDF = BASE_DIR / "nmap-pdf-olive-legacy.xsl"
+
+
+def _privileged_asset(name: str, fallback: Path) -> Path:
+    """Prefer the root-owned asset copy used by the privileged scanner helper.
+
+    The helper refuses `--script`/`--stylesheet` paths that are not inside the
+    root-owned asset directory, so a writable checkout cannot smuggle executable
+    Lua into a root-run nmap. Falls back to the checkout for development.
+    """
+    asset_dir = str(os.environ.get("NMAPUI_PRIVILEGED_ASSETS", "") or "").strip()
+    if asset_dir:
+        candidate = Path(asset_dir).expanduser() / name
+        if candidate.exists():
+            return candidate
+    return fallback
+
+
+VULNERS_SCRIPT = _privileged_asset(
+    "vulners.nse", BASE_DIR / "nmap-vulners" / "vulners.nse"
+)
+XSL_STYLESHEET = _privileged_asset("nmap-modern.xsl", BASE_DIR / "nmap-modern.xsl")
+XSL_STYLESHEET_PDF = _privileged_asset(
+    "nmap-pdf-olive-legacy.xsl", BASE_DIR / "nmap-pdf-olive-legacy.xsl"
+)
 
 
 def _resolve_data_dir() -> Path:

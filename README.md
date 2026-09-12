@@ -102,6 +102,23 @@ silently skipped.
   **not** set by the packaged app or the daemon, because every local process is a
   loopback caller.
 
+## Privilege model
+
+Privileged scans (SYN scan, OS detection, ARP) never require the web backend to
+run as root:
+
+- `install-daemon.sh` runs the backend as a **non-root** service account and
+  refuses to default to root (`--allow-root` overrides deliberately).
+- sudoers grants `NOPASSWD` for **one validating helper only** —
+  `/usr/local/libexec/nmapui-privileged-scanner` — never for `nmap` or
+  `arp-scan` directly.
+- That helper re-validates the program, the scan technique, every flag, the
+  target, and any `--script`/`--stylesheet`/output path. Scripts and stylesheets
+  must live in the root-owned asset directory (`/usr/local/share/nmapui`), so a
+  writable checkout cannot inject Lua into a root-run nmap.
+- If the helper is absent (development), the app falls back to `sudo -n nmap`
+  and then to an unprivileged `-sT` scan, always surfacing the fallback.
+
 ## Administration
 
 Export the runtime database from the Settings tab, or download it directly:

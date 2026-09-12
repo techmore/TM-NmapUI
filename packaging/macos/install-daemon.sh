@@ -6,16 +6,25 @@
 #   * the server starts at boot and after a crash (RunAtLoad + KeepAlive),
 #   * it runs with no user logged in,
 #   * it never asks for a password after this one-time install,
-#   * scans are privileged because the daemon runs as root.
+#   * scans are privileged through a root-owned validating helper, not by
+#     running the web backend as root.
+#
+# Least privilege: the web backend runs as a non-root user. sudoers grants
+# NOPASSWD for packaging/macos/nmapui-privileged-scanner only — never for nmap
+# itself — and that helper re-validates every flag, path and target. Root-owned
+# copies of vulners.nse and the stylesheets are staged so a writable checkout
+# cannot inject Lua into a root-run nmap.
 #
 # Usage:
-#   sudo packaging/macos/install-daemon.sh              # install + start
-#   sudo packaging/macos/install-daemon.sh --uninstall  # stop + remove
-#        packaging/macos/install-daemon.sh --dry-run    # validate only, no root
+#   sudo packaging/macos/install-daemon.sh                 # install + start
+#   sudo packaging/macos/install-daemon.sh --uninstall     # stop + remove
+#        packaging/macos/install-daemon.sh --dry-run       # validate, no root
 #
 # Options:
-#   --user <name>   Run the daemon as <name> instead of root. Requires the
-#                   sudoers rule this script also installs.
+#   --user <name>   Run the web backend as <name> (default: the account that
+#                   invoked sudo). Required unless --allow-root is given.
+#   --allow-root    Run the backend as root. Discouraged: it re-exposes the
+#                   whole web surface as root.
 #
 set -euo pipefail
 
@@ -26,6 +35,9 @@ LABEL="com.techmore.nmapui"
 PLIST_PATH="/Library/LaunchDaemons/${LABEL}.plist"
 SUDOERS_PATH="/etc/sudoers.d/nmapui"
 WRAPPER_PATH="/usr/local/bin/nmapui-run"
+HELPER_PATH="/usr/local/libexec/nmapui-privileged-scanner"
+HELPER_SOURCE="$SCRIPT_DIR/nmapui-privileged-scanner"
+ASSET_DIR="/usr/local/share/nmapui"
 DATA_DIR="/Library/Application Support/NmapUI"
 LOG_DIR="/Library/Logs/NmapUI"
 CREDENTIALS_FILE="$DATA_DIR/credentials.env"
@@ -34,20 +46,42 @@ PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 APP_PATH="$ROOT_DIR/app.py"
 
 MODE="install"
-RUN_USER="root"
+RUN_USER=""
+ALLOW_ROOT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) MODE="dry-run"; shift ;;
     --uninstall) MODE="uninstall"; shift ;;
     --user) RUN_USER="${2:?--user needs a value}"; shift 2 ;;
-    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --allow-root) ALLOW_ROOT=1; shift ;;
+    -h|--help) sed -n '2,31p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 log() { printf '[nmapui-daemon] %s\n' "$*"; }
 die() { printf '[nmapui-daemon] ERROR: %s\n' "$*" >&2; exit 1; }
+
+resolve_run_user() {
+  # Resolve the service account. Non-root by default: the privileged scanner
+  # helper exists precisely so the web backend does not need to be root.
+  # Called only by install/dry-run so the script stays sourceable for tests.
+  [[ -n "${RUN_USER:-}" ]] && return 0
+
+  if [[ "$ALLOW_ROOT" == "1" ]]; then
+    RUN_USER="root"
+  elif [[ "$MODE" == "dry-run" ]]; then
+    # Validation only: use the invoking account so artifacts can be checked
+    # without making the production service-account decision.
+    RUN_USER="${SUDO_USER:-$(id -un)}"
+  else
+    RUN_USER="${SUDO_USER:-}"
+    if [[ -z "$RUN_USER" || "$RUN_USER" == "root" ]]; then
+      die "refusing to run the web backend as root. Pass --user <name> (for example your admin account), or --allow-root to override deliberately."
+    fi
+  fi
+}
 
 require_root() {
   if [[ "$(id -u)" != "0" ]]; then
@@ -105,7 +139,7 @@ if [[ ! -r "$credentials_file" ]]; then
 fi
 while IFS='=' read -r name value || [[ -n "$name" ]]; do
   case "$name" in
-    NMAPUI_DATA_DIR|NMAPUI_LOG_DIR|NMAPUI_HOST|NMAPUI_PORT|NMAPUI_ALLOW_UNSAFE_WERKZEUG|NMAPUI_USERNAME|NMAPUI_PASSWORD)
+    NMAPUI_DATA_DIR|NMAPUI_LOG_DIR|NMAPUI_HOST|NMAPUI_PORT|NMAPUI_ALLOW_UNSAFE_WERKZEUG|NMAPUI_USERNAME|NMAPUI_PASSWORD|NMAPUI_PRIVILEGED_ASSETS)
       export "$name=$value" ;;
     ''|'#'*) ;;
     *) echo "Unsupported setting in NmapUI credentials file: $name" >&2; exit 1 ;;
@@ -121,14 +155,10 @@ WRAPPER
 build_sudoers() {
   local target="$1"
   {
-    echo "# NmapUI: allow the app user to run scans without a password prompt."
-    echo "# One-time install; the appliance must never prompt for a password."
-    if [[ -n "$NMAP_PATH" ]]; then
-      echo "${RUN_USER} ALL=(root) NOPASSWD: ${NMAP_PATH}"
-    fi
-    if [[ -n "$ARP_SCAN_PATH" ]]; then
-      echo "${RUN_USER} ALL=(root) NOPASSWD: ${ARP_SCAN_PATH}"
-    fi
+    echo "# NmapUI: allow the service user to request privileged scans without a"
+    echo "# password prompt. Only the validating helper is granted — never nmap or"
+    echo "# arp-scan directly — so the backend cannot ask root to run anything else."
+    echo "${RUN_USER} ALL=(root) NOPASSWD: ${HELPER_PATH}"
   } > "$target"
 }
 
@@ -145,6 +175,7 @@ validate_sudoers() {
 }
 
 dry_run() {
+  resolve_run_user
   local stage
   stage="$(mktemp -d)"
   log "dry run: staging artifacts in $stage"
@@ -160,9 +191,18 @@ dry_run() {
   validate_sudoers "$stage/nmapui.sudoers"
   bash -n "$stage/nmapui-run"
 
+  [[ -f "$HELPER_SOURCE" ]] || die "helper source not found: $HELPER_SOURCE"
+  "$PYTHON_BIN" -m py_compile "$HELPER_SOURCE" || die "helper failed to compile"
+  grep -q "NOPASSWD: ${HELPER_PATH}" "$stage/nmapui.sudoers" \
+    || die "sudoers rule does not grant the helper"
+  if grep -qE "NOPASSWD:.*(bin/nmap|bin/arp-scan)" "$stage/nmapui.sudoers"; then
+    die "sudoers rule must not grant nmap or arp-scan directly"
+  fi
+
   log "plist:    OK ($stage/$LABEL.plist)"
-  log "sudoers:  OK ($stage/nmapui.sudoers)"
+  log "sudoers:  OK ($stage/nmapui.sudoers, helper only)"
   log "wrapper:  OK ($stage/nmapui-run)"
+  log "helper:   OK ($HELPER_SOURCE)"
   log "python:   $PYTHON_BIN"
   log "nmap:     ${NMAP_PATH:-<not found>}"
   log "arp-scan: ${ARP_SCAN_PATH:-<not found>}"
@@ -175,8 +215,10 @@ uninstall() {
   require_root --uninstall
   log "stopping and removing ${LABEL}"
   launchctl bootout "system/${LABEL}" 2>/dev/null || true
-  rm -f "$PLIST_PATH" "$SUDOERS_PATH" "$WRAPPER_PATH"
-  log "removed plist, sudoers rule and wrapper"
+  rm -f "$PLIST_PATH" "$SUDOERS_PATH" "$WRAPPER_PATH" "$HELPER_PATH"
+  rm -f "$ASSET_DIR"/vulners.nse "$ASSET_DIR"/nmap-modern.xsl "$ASSET_DIR"/nmap-pdf-olive-legacy.xsl
+  rmdir "$ASSET_DIR" 2>/dev/null || true
+  log "removed plist, sudoers rule, wrapper, helper and staged assets"
   log "data and logs left in place: $DATA_DIR, $LOG_DIR"
 }
 
@@ -191,6 +233,7 @@ set_runtime_permissions() {
 }
 
 install_daemon() {
+  resolve_run_user
   [[ "$(id -u)" == "0" ]] || die "must run as root. Re-run with: sudo $0"
   [[ -x "$PYTHON_BIN" ]] || die "virtualenv python not found: $PYTHON_BIN (run ./install.sh or build.sh first)"
   [[ -f "$APP_PATH" ]] || die "app.py not found: $APP_PATH"
@@ -218,6 +261,7 @@ install_daemon() {
       echo "NMAPUI_HOST=127.0.0.1"
       echo "NMAPUI_PORT=9000"
       echo "NMAPUI_ALLOW_UNSAFE_WERKZEUG=true"
+      echo "NMAPUI_PRIVILEGED_ASSETS=${ASSET_DIR}"
       echo "NMAPUI_USERNAME=admin"
       echo "NMAPUI_PASSWORD=${password}"
     } > "$CREDENTIALS_FILE"
@@ -233,6 +277,22 @@ install_daemon() {
 
   log "installing wrapper $WRAPPER_PATH"
   build_wrapper "$WRAPPER_PATH"
+
+  log "staging root-owned scan assets in $ASSET_DIR"
+  install -d -m 0755 -o root -g wheel "$ASSET_DIR"
+  for asset in vulners.nse; do
+    [[ -f "$ROOT_DIR/nmap-vulners/$asset" ]] || die "missing scan asset: $ROOT_DIR/nmap-vulners/$asset"
+    install -m 0444 -o root -g wheel "$ROOT_DIR/nmap-vulners/$asset" "$ASSET_DIR/$asset"
+  done
+  for asset in nmap-modern.xsl nmap-pdf-olive-legacy.xsl; do
+    [[ -f "$ROOT_DIR/$asset" ]] || die "missing scan asset: $ROOT_DIR/$asset"
+    install -m 0444 -o root -g wheel "$ROOT_DIR/$asset" "$ASSET_DIR/$asset"
+  done
+
+  log "installing privileged scanner helper $HELPER_PATH"
+  [[ -f "$HELPER_SOURCE" ]] || die "helper source not found: $HELPER_SOURCE"
+  install -d -m 0755 -o root -g wheel "$(dirname "$HELPER_PATH")"
+  install -m 0755 -o root -g wheel "$HELPER_SOURCE" "$HELPER_PATH"
 
   log "installing sudoers rule $SUDOERS_PATH"
   local staged_sudoers

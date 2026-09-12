@@ -36,7 +36,6 @@ before integrating it; native/web parity is not yet verified.
   20 patch-unique commits; it is not proven redundant.
 
 ## Cleanup completed
-
 - Removed local and remote `fix/zombie-jobs-disable-scan-buttons` after verifying
   its tip is an ancestor of main (merged PR #238).
 - Fetched/pruned the already-deleted remote runtime-contract branch.
@@ -67,12 +66,16 @@ the scheduler lock is released after its owner receives SIGKILL.
 Follow-up validation: full suite **379 passed, 8 skipped**; installer dry run
 passed plist, sudoers and shell syntax checks. The six new tests all executed.
 
-Release blockers remain: the default daemon runs the web backend as root from
-a writable checkout/virtualenv, and `--user` still grants broad passwordless
-scanner execution. Neither is a completed least-privilege design. The in-process
-reaper cannot clean up children after SIGKILL. Keep PR #240 in draft pending
-privilege isolation and real reboot/sleep/child-process recovery and soak checks.
-No production LaunchDaemon was installed or restarted during this review.
+Release blockers: the web backend no longer runs as root by default and sudoers
+no longer grants `nmap`/`arp-scan` directly — the installer now stages
+root-owned assets, installs a validating helper
+(`packaging/macos/nmapui-privileged-scanner`) and grants `NOPASSWD` for that
+helper alone. What remains unverified is everything that needs root: **no
+production LaunchDaemon has been installed, rebooted, killed or soaked**, and
+the non-root service-account path has never executed end to end. The in-process
+reaper still cannot clean up children after `SIGKILL`, and the helper's
+allowlist has unit coverage but no live privileged run. Keep PR #240 in draft
+pending those checks.
 
 1. **Finish and integrate unattended baseline.** Review the local branch and run
    browser/packaged checks against this exact revision before merging. Complete

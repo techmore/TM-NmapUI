@@ -269,7 +269,7 @@ These are correctness fixes with no dependency on the privilege decision, so the
 
 ### Phase 1 — Privilege without prompts (implemented on branch)
 
-**Status:** 1.1-1.3 done — `nmapui/privileged.py` owns the prefix and the technique slot; `sudo -n` never prompts; a denied privileged scan retries as `-sT` with the full option list intact. 1.5 done — the wrapper's admin-privilege launch is deleted. 1.4 done — `install-daemon.sh` writes the scoped sudoers rule (visudo-validated) for `--user` mode; the default daemon runs as root so no sudo is needed at all. 1.6 documented in §10.1 (root-equivalent within nmap; validating helper remains Phase 1b hardening).
+**Status:** 1.1-1.5 done — `nmapui/privileged.py` owns the prefix and the technique slot; `sudo -n` never prompts; a denied privileged scan retries as `-sT` with the full option list intact; the wrapper's admin-privilege launch is deleted. **1.6 done (validating helper implemented).** `packaging/macos/nmapui-privileged-scanner` is a root-owned wrapper that re-validates the program, technique, every flag, the target and all paths; sudoers now grants it alone, never `nmap`/`arp-scan`; the installer stages root-owned assets so a writable checkout cannot inject Lua into a root nmap; and the backend defaults to a **non-root** service account, refusing `root` unless `--allow-root`. Unit coverage: allowlisted quick/comprehensive/deep requests accepted; unknown and forbidden flags, out-of-tree script/output paths, option-like targets, shell metacharacters, multiple techniques and non-numeric values rejected. **Not yet verified:** any live privileged run — no LaunchDaemon has been installed.
 
 | Task | Deliverable | Acceptance |
 |---|---|---|

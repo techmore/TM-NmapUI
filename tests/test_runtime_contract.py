@@ -468,8 +468,13 @@ def test_runtime_uses_separate_web_and_pdf_stylesheets():
     app_runtime_source = (ROOT / "nmapui" / "app_runtime.py").read_text()
     fingerprinter_source = (ROOT / "customer_fingerprint.py").read_text()
 
-    assert 'XSL_STYLESHEET = BASE_DIR / "nmap-modern.xsl"' in paths_source
-    assert 'XSL_STYLESHEET_PDF = BASE_DIR / "nmap-pdf-olive-legacy.xsl"' in paths_source
+    # Web and PDF stylesheets stay distinct, and both prefer the root-owned
+    # asset copy so the privileged helper accepts the path.
+    assert 'XSL_STYLESHEET = _privileged_asset(' in paths_source
+    assert '"nmap-modern.xsl"' in paths_source
+    assert '"nmap-pdf-olive-legacy.xsl"' in paths_source
+    assert "def _privileged_asset(" in paths_source
+    assert 'NMAPUI_PRIVILEGED_ASSETS' in paths_source
     assert "def _resolve_data_dir() -> Path:" in paths_source
     assert 'override = str(os.environ.get("NMAPUI_DATA_DIR", "") or "").strip()' in paths_source
     assert "DATA_DIR = _resolve_data_dir()" in paths_source
