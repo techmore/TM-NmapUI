@@ -6,14 +6,15 @@
 #   * the server starts at boot and after a crash (RunAtLoad + KeepAlive),
 #   * it runs with no user logged in,
 #   * it never asks for a password after this one-time install,
-#   * scans are privileged through a root-owned validating helper, not by
-#     running the web backend as root.
+#   * scans are privileged, with no privilege prompts at any point.
 #
-# Least privilege: the web backend runs as a non-root user. sudoers grants
-# NOPASSWD for packaging/macos/nmapui-privileged-scanner only — never for nmap
-# itself — and that helper re-validates every flag, path and target. Root-owned
-# copies of vulners.nse and the stylesheets are staged so a writable checkout
-# cannot inject Lua into a root-run nmap.
+# The appliance runs as root by default. That is the simplest configuration that
+# actually works: no sudoers dependency, full SYN/OS/ARP capability, and nothing
+# to go wrong. `--user <name>` opts into the least-privilege path instead, where
+# sudoers grants NOPASSWD for packaging/macos/nmapui-privileged-scanner only
+# (never nmap itself) and that helper re-validates every flag, path and target.
+# In both modes root-owned copies of vulners.nse and the stylesheets are staged
+# so a writable checkout cannot inject Lua into a root-run nmap.
 #
 # Usage:
 #   sudo packaging/macos/install-daemon.sh                 # install + start
@@ -21,10 +22,9 @@
 #        packaging/macos/install-daemon.sh --dry-run       # validate, no root
 #
 # Options:
-#   --user <name>   Run the web backend as <name> (default: the account that
-#                   invoked sudo). Required unless --allow-root is given.
-#   --allow-root    Run the backend as root. Discouraged: it re-exposes the
-#                   whole web surface as root.
+#   --user <name>   Run the web backend as <name> instead of root (least
+#                   privilege; uses the validating scanner helper).
+#   --allow-root    Deprecated no-op: root is already the default.
 #
 set -euo pipefail
 
@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
     --uninstall) MODE="uninstall"; shift ;;
     --user) RUN_USER="${2:?--user needs a value}"; shift 2 ;;
     --allow-root) ALLOW_ROOT=1; shift ;;
-    -h|--help) sed -n '2,31p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,29p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -64,23 +64,17 @@ log() { printf '[nmapui-daemon] %s\n' "$*"; }
 die() { printf '[nmapui-daemon] ERROR: %s\n' "$*" >&2; exit 1; }
 
 resolve_run_user() {
-  # Resolve the service account. Non-root by default: the privileged scanner
-  # helper exists precisely so the web backend does not need to be root.
-  # Called only by install/dry-run so the script stays sourceable for tests.
+  # This appliance platform runs as root deliberately: it is the simplest thing
+  # that actually works, needs no sudoers entry, and gives the scanner full
+  # SYN/OS/ARP capability with no privilege plumbing. Root is therefore the
+  # default, and installing requires no extra decision.
+  #
+  # `--user <name>` opts into the non-root path instead, which uses the
+  # validating helper (packaging/macos/nmapui-privileged-scanner) that this
+  # installer also stages. Called only by install/dry-run so the script stays
+  # sourceable for tests.
   [[ -n "${RUN_USER:-}" ]] && return 0
-
-  if [[ "$ALLOW_ROOT" == "1" ]]; then
-    RUN_USER="root"
-  elif [[ "$MODE" == "dry-run" ]]; then
-    # Validation only: use the invoking account so artifacts can be checked
-    # without making the production service-account decision.
-    RUN_USER="${SUDO_USER:-$(id -un)}"
-  else
-    RUN_USER="${SUDO_USER:-}"
-    if [[ -z "$RUN_USER" || "$RUN_USER" == "root" ]]; then
-      die "refusing to run the web backend as root. Pass --user <name> (for example your admin account), or --allow-root to override deliberately."
-    fi
-  fi
+  RUN_USER="root"
 }
 
 require_root() {
@@ -155,10 +149,16 @@ WRAPPER
 build_sudoers() {
   local target="$1"
   {
-    echo "# NmapUI: allow the service user to request privileged scans without a"
-    echo "# password prompt. Only the validating helper is granted — never nmap or"
-    echo "# arp-scan directly — so the backend cannot ask root to run anything else."
-    echo "${RUN_USER} ALL=(root) NOPASSWD: ${HELPER_PATH}"
+    if [[ "$RUN_USER" == "root" ]]; then
+      # Running the backend as root needs no privilege escalation at all.
+      echo "# NmapUI: backend runs as root (default), so no sudoers grant is needed."
+      echo "# The validating helper is still installed for the --user mode."
+    else
+      echo "# NmapUI: allow the service user to request privileged scans without a"
+      echo "# password prompt. Only the validating helper is granted — never nmap or"
+      echo "# arp-scan directly — so the backend cannot ask root to run anything else."
+      echo "${RUN_USER} ALL=(root) NOPASSWD: ${HELPER_PATH}"
+    fi
   } > "$target"
 }
 
@@ -193,14 +193,20 @@ dry_run() {
 
   [[ -f "$HELPER_SOURCE" ]] || die "helper source not found: $HELPER_SOURCE"
   "$PYTHON_BIN" -m py_compile "$HELPER_SOURCE" || die "helper failed to compile"
-  grep -q "NOPASSWD: ${HELPER_PATH}" "$stage/nmapui.sudoers" \
-    || die "sudoers rule does not grant the helper"
-  if grep -qE "NOPASSWD:.*(bin/nmap|bin/arp-scan)" "$stage/nmapui.sudoers"; then
-    die "sudoers rule must not grant nmap or arp-scan directly"
+  if [[ "$RUN_USER" != "root" ]]; then
+    grep -q "NOPASSWD: ${HELPER_PATH}" "$stage/nmapui.sudoers" \
+      || die "sudoers rule does not grant the helper"
+    if grep -qE "NOPASSWD:.*(bin/nmap|bin/arp-scan)" "$stage/nmapui.sudoers"; then
+      die "sudoers rule must not grant nmap or arp-scan directly"
+    fi
   fi
 
   log "plist:    OK ($stage/$LABEL.plist)"
-  log "sudoers:  OK ($stage/nmapui.sudoers, helper only)"
+  if [[ "$RUN_USER" == "root" ]]; then
+    log "sudoers:  OK ($stage/nmapui.sudoers, no grant needed in root mode)"
+  else
+    log "sudoers:  OK ($stage/nmapui.sudoers, helper only)"
+  fi
   log "wrapper:  OK ($stage/nmapui-run)"
   log "helper:   OK ($HELPER_SOURCE)"
   log "python:   $PYTHON_BIN"

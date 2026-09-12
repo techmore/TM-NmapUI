@@ -104,18 +104,22 @@ silently skipped.
 
 ## Privilege model
 
-Privileged scans (SYN scan, OS detection, ARP) never require the web backend to
-run as root:
+The appliance runs as **root** by default. That is the simplest configuration
+that works: nothing depends on sudoers, the scanner has full SYN/OS/ARP
+capability, and there is no privilege plumbing to fail at 3am.
 
-- `install-daemon.sh` runs the backend as a **non-root** service account and
-  refuses to default to root (`--allow-root` overrides deliberately).
-- sudoers grants `NOPASSWD` for **one validating helper only** —
-  `/usr/local/libexec/nmapui-privileged-scanner` — never for `nmap` or
-  `arp-scan` directly.
-- That helper re-validates the program, the scan technique, every flag, the
-  target, and any `--script`/`--stylesheet`/output path. Scripts and stylesheets
-  must live in the root-owned asset directory (`/usr/local/share/nmapui`), so a
-  writable checkout cannot inject Lua into a root-run nmap.
+- `sudo packaging/macos/install-daemon.sh` installs the daemon as root. No
+  sudoers entry is written, because none is needed.
+- The backend binds loopback only and requires sign-in (see above), and the
+  local-trust bypass is off, so "root" does not mean "open".
+- `--user <name>` opts into least privilege instead: the backend runs as that
+  account and sudoers grants `NOPASSWD` for **one validating helper only**
+  (`/usr/local/libexec/nmapui-privileged-scanner`), never for `nmap` or
+  `arp-scan` directly. That helper re-validates the program, the scan technique,
+  every flag, the target, and any `--script`/`--stylesheet`/output path.
+- In **both** modes the installer stages root-owned copies of `vulners.nse` and
+  the stylesheets in `/usr/local/share/nmapui`, so a writable checkout cannot
+  inject Lua into a root-run nmap. The helper requires those paths.
 - If the helper is absent (development), the app falls back to `sudo -n nmap`
   and then to an unprivileged `-sT` scan, always surfacing the fallback.
 

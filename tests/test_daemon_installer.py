@@ -145,23 +145,55 @@ def test_sudoers_is_valid_and_uses_an_absolute_helper_path(tmp_path):
     assert target.read_text().splitlines()[-1].startswith("scanner ALL=(root) NOPASSWD: /")
 
 
-def test_default_install_refuses_to_run_the_backend_as_root(tmp_path):
-    """Least privilege is the default; --allow-root must be explicit."""
+def test_default_install_runs_the_backend_as_root():
+    """Root is the platform default: no sudoers dependency, no extra decision."""
     installer = Path(__file__).resolve().parents[1] / "packaging/macos/install-daemon.sh"
     result = subprocess.run(
         [
             "bash",
             "-c",
-            'source "$INSTALLER"\nMODE="install"\nRUN_USER=""\nALLOW_ROOT=0\n'
-            "unset SUDO_USER\nresolve_run_user",
+            'source "$INSTALLER"\nMODE="install"\nRUN_USER=""\n'
+            "unset SUDO_USER\nresolve_run_user\nprintf '%s' \"$RUN_USER\"",
         ],
         env={**os.environ, "INSTALLER": str(installer)},
         text=True,
         capture_output=True,
         timeout=10,
+        check=True,
     )
-    assert result.returncode != 0
-    assert "refusing to run the web backend as root" in result.stderr
+    assert result.stdout == "root"
+
+
+def test_user_flag_opts_into_the_least_privilege_path():
+    installer = Path(__file__).resolve().parents[1] / "packaging/macos/install-daemon.sh"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$INSTALLER"\nMODE="install"\nRUN_USER="scanner"\n'
+            "resolve_run_user\nprintf '%s' \"$RUN_USER\"",
+        ],
+        env={**os.environ, "INSTALLER": str(installer)},
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=True,
+    )
+    assert result.stdout == "scanner"
+
+
+def test_root_mode_needs_no_sudoers_grant(tmp_path):
+    target = tmp_path / "nmapui.sudoers"
+    installer_call(
+        'HELPER_PATH="/usr/local/libexec/nmapui-privileged-scanner"\n'
+        'RUN_USER="root"\n'
+        'build_sudoers "$TEST_TARGET"\n'
+        'validate_sudoers "$TEST_TARGET"',
+        {"TEST_TARGET": str(target)},
+    )
+    content = target.read_text()
+    assert "NOPASSWD" not in content
+    assert "no sudoers grant is needed" in content
 
 
 def test_allow_root_is_accepted_when_explicit():

@@ -66,16 +66,21 @@ the scheduler lock is released after its owner receives SIGKILL.
 Follow-up validation: full suite **379 passed, 8 skipped**; installer dry run
 passed plist, sudoers and shell syntax checks. The six new tests all executed.
 
-Release blockers: the web backend no longer runs as root by default and sudoers
-no longer grants `nmap`/`arp-scan` directly — the installer now stages
-root-owned assets, installs a validating helper
-(`packaging/macos/nmapui-privileged-scanner`) and grants `NOPASSWD` for that
-helper alone. What remains unverified is everything that needs root: **no
-production LaunchDaemon has been installed, rebooted, killed or soaked**, and
-the non-root service-account path has never executed end to end. The in-process
-reaper still cannot clean up children after `SIGKILL`, and the helper's
-allowlist has unit coverage but no live privileged run. Keep PR #240 in draft
-pending those checks.
+Release blockers: privilege isolation is **implemented but optional**. The
+installer now stages root-owned assets and ships a validating helper
+(`packaging/macos/nmapui-privileged-scanner`) that sudoers can grant instead of
+`nmap` itself, and `--user <name>` runs the backend as a non-root account. Per
+the September 12 platform decision, **root remains the default**: this platform
+treats root as the goal, so the daemon installs as root with no sudoers
+dependency and no extra decision. That keeps the earlier residual risk
+deliberately accepted — the web backend is root, mitigated by loopback-only
+binding, enforced sign-in and the removed local-trust bypass.
+
+What remains unverified is everything that needs root: **no production
+LaunchDaemon has been installed, rebooted, killed or soaked**, and neither mode
+has executed a live privileged scan end to end. The in-process reaper still
+cannot clean up children after `SIGKILL`. Keep PR #240 in draft pending those
+checks.
 
 1. **Finish and integrate unattended baseline.** Review the local branch and run
    browser/packaged checks against this exact revision before merging. Complete
