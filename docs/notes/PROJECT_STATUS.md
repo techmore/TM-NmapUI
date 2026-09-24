@@ -15,11 +15,12 @@ before integrating it; native/web parity is not yet verified.
 - `main` / `origin/main`: `2828bd36`, PR #239 merged August 24. Latest CI passed
   unit/contract, browser regression and packaged Mac smoke jobs:
   https://github.com/techmore/TM-NmapUI/actions/runs/32763844258
-- Draft PR #240 is at remote commit `b2d52a3b`; the local
-  `fix/unattended-operation` branch has two newer commits (`5bb6556e` adds the
-  validating scanner helper, `70bffdce` makes root the default appliance mode)
-  plus the reviewed fixes documented below. Changes still need to be committed
-  and pushed to PR #240 so CI can check the current head.
+- Draft PR #240 is at remote commit `5ff6227c`, which passes all three hosted
+  checks (unit/contract, browser, packaged Mac smoke):
+  https://github.com/techmore/TM-NmapUI/actions/runs/36056558604
+  The review started from `b2d52a3b`. It adds `5bb6556e` (validating scanner
+  helper), `70bffdce` (root-default appliance mode), and `5ff6227c` (review fixes
+  and current documentation).
 - Local verification on September 24: `.venv/bin/python -m pytest -q` → **405
   passed, 9 skipped**; explicit browser regressions → **8 passed in 13.21s**;
   packaged Mac smoke → **1 passed in 52.63s**. Both root and `--user` installer
@@ -49,8 +50,9 @@ before integrating it; native/web parity is not yet verified.
   now in PR #240: use real network Socket.IO clients, initialize the test port
   before the origin allowlist, isolate runtime data, supply actual comparison
   assets, and test the current UI. Fixed Quick Scan job-state updates and report
-  reconnect classification. Final local browser result: **7 passed in 12.00s**,
-  no skips or expected failures. Leave #230 open until integration/CI proves it.
+  reconnect classification. The latest local browser result is **8 passed in
+  13.21s**, with no skips or expected failures. Leave #230 open until its fixes
+  integrate.
 - PR #240 remains a draft while real privileged scan, reboot/sleep, crash and
   unattended soak verification are outstanding.
 - Closed #160 as a duplicate of the more detailed, high-priority #106 after
