@@ -455,9 +455,12 @@ function initializeDiscoveryUI(socket) {
 
     socket.on('versions', data => {
         console.log('Versions received:', data);
-        const nmapVersion = data.nmap || 'Not found';
-        const vulnersVersion = data.vulners || 'Not found';
-        const arpScanVersion = data.arp_scan || 'Not found';
+        // Quick startup deliberately skips dependency checks, so null means
+        // "not checked" rather than "not installed". Full startup reports
+        // missing tools explicitly as "Not installed".
+        const nmapVersion = data.nmap || 'Not checked';
+        const vulnersVersion = data.vulners || 'Not checked';
+        const arpScanVersion = data.arp_scan || 'Not checked';
         const appVersion = data.app || 'v--.--.--.__';
 
         document.getElementById('app-version').textContent = appVersion;

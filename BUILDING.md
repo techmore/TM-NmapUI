@@ -1,158 +1,66 @@
-# Building and Packaging NmapUI for macOS
+# Building NmapUI for macOS
 
-> Historical PyInstaller workflow. The maintained Mac build uses the root
-> `build.sh` to bundle the Swift launcher, Flask application and a Python virtual
-> environment. Use Python 3.11+ and `./install.sh --no-daemon`, then
-> `NMAPUI_SKIP_OPEN=1 ./build.sh`. Set `NMAPUI_APPLICATIONS_DIR` to choose the
-> installation destination. The gated verification command is
-> `NMAPUI_RUN_PACKAGED_SMOKE=1 .venv/bin/python -m pytest -q tests/test_packaged_app_smoke.py`.
-> The instructions below are retained for the alternative PyInstaller path and
-> are not the current release procedure. See README.md for current setup.
+NmapUI's supported Mac application is a Swift menu-bar launcher bundled with the
+Flask app and a project virtual environment. It is built by the root `build.sh`;
+PyInstaller is not the current release path.
 
-This guide explains how to build and package NmapUI for macOS distribution and how to smoke test a release candidate before publishing it.
+## Prepare the toolchain
 
-## Prerequisites
-
-1. **Python Environment**: Python 3.8+ with virtual environment
-2. **Dependencies**: Install build tools and dependencies
-   ```bash
-   pip install pyinstaller
-   # Also ensure Nmap, ARP-Scan, wkhtmltopdf, xsltproc are available (for testing)
-   ```
-
-3. **macOS Development Tools**: Xcode command line tools
-   ```bash
-   xcode-select --install
-   ```
-
-## Building the Application Bundle
-
-1. **Activate virtual environment** (if not already active)
-   ```bash
-   source .venv/bin/activate
-   ```
-
-2. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Run PyInstaller**
-   ```bash
-   pyinstaller --clean packaging/pyinstaller/nmapui.spec
-   ```
-
-   This creates `dist/NmapUI.app` - a standalone macOS application bundle.
-
-## Testing the Bundle
-
-1. **Test startup**
-   ```bash
-   ./dist/NmapUI.app/Contents/MacOS/NmapUI --quick &
-   sleep 5 && kill %1
-   ```
-   Check for successful startup messages.
-
-2. **Health check**
-   ```bash
-   NMAPUI_HOST=127.0.0.1 NMAPUI_PORT=9000 ./dist/NmapUI.app/Contents/MacOS/NmapUI --quick &
-   APP_PID=$!
-   sleep 5
-   curl http://127.0.0.1:9000/api/health
-   kill $APP_PID
-   ```
-   Expected result: JSON with `"status": "ok"` and an `app_version`.
-
-3. **Full test** (optional)
-   - Run the app and access `http://127.0.0.1:9000`
-   - Test core functionality
-
-## Creating Distribution Packages
-
-### PKG Installer
+Use macOS 13 or later, Xcode command-line tools, Homebrew and Python 3.11 or
+newer. From the repository root:
 
 ```bash
-pkgbuild --root ./dist --identifier com.techmore.nmapui --version 1.0.0 --install-location /Applications NmapUI.pkg
+./install.sh --no-daemon
+source .venv/bin/activate
 ```
 
-### DMG Disk Image
+The installer prepares the scanner dependencies, Python packages and the
+Playwright Chromium runtime used for PDF output.
+
+## Build and run
 
 ```bash
-# Prepare contents
-mkdir -p dmg_temp
-cp -r dist/NmapUI.app dmg_temp/
-cp NmapUI.pkg dmg_temp/
-ln -s /Applications dmg_temp/Applications
-
-# Create DMG
-hdiutil create -volname "NmapUI Installer" -srcfolder dmg_temp -ov -format UDZO NmapUI.dmg
-
-# Cleanup
-rm -rf dmg_temp
+NMAPUI_SKIP_OPEN=1 ./build.sh
 ```
 
-## Automated Deployment
+The script compiles the Swift launcher, bundles the Flask application and its
+virtual environment, then installs `NmapUI.app` into `/Applications` when
+permitted or `~/Applications` otherwise. It opens the app after a normal build;
+`NMAPUI_SKIP_OPEN=1` skips that launch. Set `NMAPUI_APPLICATIONS_DIR` to choose
+the install directory.
 
-Use the provided deployment script:
-
-```bash
-./deploy.sh
-```
-
-This script will:
-- Read version from `VERSION` file or generate timestamp-based version (v2026.1.9.12_01 format)
-- Build the application bundle with PyInstaller
-- Create PKG and DMG packages
-- Create a GitHub release with the packages attached (requires `gh` CLI authentication)
-
-The script automatically determines the version using the same method as the application.
-
-## Release Smoke Test
-
-Before publishing a stable build:
+To launch the Flask app directly during development:
 
 ```bash
 source .venv/bin/activate
-python -m py_compile app.py
-NMAPUI_HOST=127.0.0.1 NMAPUI_PORT=9000 NMAPUI_DEBUG=false python app.py --quick &
-APP_PID=$!
-sleep 5
-curl http://127.0.0.1:9000/api/health
-kill $APP_PID
+export NMAPUI_USERNAME=admin
+export NMAPUI_PASSWORD='choose-a-strong-password'
+./start.sh
 ```
 
-Recommended manual checks:
-- Open `http://127.0.0.1:9000`
-- Confirm Quick Scan launches
-- Confirm Generate PDF launches and the button disables while the job runs
-- Confirm Stop cancels the active scan/report job
+## Validate a build
 
-## Code Signing and Notarization (Production)
+The packaged smoke test builds in an isolated temporary application directory,
+starts the bundled server with temporary data and credentials, and checks the
+authenticated UI and health endpoint:
 
-For production releases, you should:
-
-1. **Code Sign** the .app bundle
-2. **Sign** the .pkg installer
-3. **Notarize** with Apple for macOS 10.15+
-
-Example code signing:
 ```bash
-codesign --deep --force --verify --verbose --sign "Developer ID Application: Your Name" dist/NmapUI.app
+NMAPUI_RUN_PACKAGED_SMOKE=1 .venv/bin/python -m pytest -q tests/test_packaged_app_smoke.py
 ```
 
-## Troubleshooting
+Check the appliance installer without installing or starting a LaunchDaemon:
 
-- **Bundle fails to start**: Check PyInstaller warnings in `build/nmapui/warn-nmapui.txt`
-- **Missing modules**: Add to `hiddenimports` in `packaging/pyinstaller/nmapui.spec`
-- **Large bundle size**: Consider excluding unnecessary modules in the spec file
-
-## File Structure After Build
-
+```bash
+packaging/macos/install-daemon.sh --dry-run
+packaging/macos/install-daemon.sh --dry-run --user "$(id -un)"
 ```
-dist/
-├── NmapUI.app/          # macOS application bundle
-└── ...
 
-NmapUI.pkg               # Installer package
-NmapUI.dmg               # Distribution disk image
-```
+The first validates the default root service configuration. The second checks
+the optional non-root service account and validating scanner helper. Neither
+command installs a service.
+
+## Legacy packaging
+
+`packaging/pyinstaller/nmapui.spec` and `deploy.sh` are retained as historical
+references. `deploy.sh` can publish a GitHub release and does not build the
+supported Swift menu-bar application; do not use it for current releases.

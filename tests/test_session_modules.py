@@ -210,3 +210,21 @@ def test_socket_token_requires_auth(monkeypatch):
         )
 
     assert response.status_code == 401
+
+
+def test_authenticated_remote_browser_can_fetch_socket_token(monkeypatch):
+    """Remote web clients still need a signed session to start a socket."""
+    configure_auth(monkeypatch)
+    monkeypatch.setattr(auth_module, "_session_secret_cache", b"k" * 32, raising=False)
+    app = build_session_app()
+    cookie = session_module.issue_token(b"k" * 32, "scanner")
+
+    with app.test_client() as client:
+        client.set_cookie(session_module.SESSION_COOKIE, cookie)
+        response = client.get(
+            "/api/socket-token",
+            environ_overrides={"REMOTE_ADDR": "10.1.2.3"},
+        )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"token": "token"}

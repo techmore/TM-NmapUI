@@ -98,6 +98,10 @@ silently skipped.
 - Credentials come from `NMAPUI_USERNAME` / `NMAPUI_PASSWORD`.
 - Browsers sign in at `/login` and receive a signed, long-lived session cookie.
 - API clients can use HTTP Basic auth.
+- The server binds to loopback by default. Remote browser access requires an
+  explicit `NMAPUI_HOST` and `NMAPUI_ALLOWED_ORIGINS` configuration, valid sign-in,
+  and a trusted VPN or HTTPS terminated by a reverse proxy. Socket.IO checks
+  the same origin allowlist and the authenticated session.
 - `NMAPUI_TRUST_LOCAL_UI=true` disables authentication for loopback callers. It is
   **not** set by the packaged app or the daemon, because every local process is a
   loopback caller.
@@ -110,7 +114,7 @@ capability, and there is no privilege plumbing to fail at 3am.
 
 - `sudo packaging/macos/install-daemon.sh` installs the daemon as root. No
   sudoers entry is written, because none is needed.
-- The backend binds loopback only and requires sign-in (see above), and the
+- The backend binds loopback by default and requires sign-in (see above); the
   local-trust bypass is off, so "root" does not mean "open".
 - `--user <name>` opts into least privilege instead: the backend runs as that
   account and sudoers grants `NOPASSWD` for **one validating helper only**

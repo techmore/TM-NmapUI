@@ -225,6 +225,23 @@ def test_reports_tab_renders_saved_report_and_view_action(browser_server, playwr
     context.close()
 
 
+def test_quick_start_shows_tool_versions_as_unchecked_not_missing(
+    browser_server, playwright_browser
+):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.wait_for_function(
+            """() => document.getElementById('settings-nmap-version').textContent === 'Nmap: Not checked'
+            && document.getElementById('settings-vulners-version').textContent === 'Vulners: Not checked'
+            && document.getElementById('settings-arpscan-version').textContent === 'ARP-Scan: Not checked'"""
+        )
+    finally:
+        context.close()
+
+
 def test_history_tab_renders_diff_summary(browser_server, playwright_browser, scan_fixture):
     context = playwright_browser.new_context()
     page = context.new_page()

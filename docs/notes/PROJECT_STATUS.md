@@ -1,4 +1,4 @@
-# Project status — 2026-09-11
+# Project status — 2026-09-24
 
 ## Product direction
 
@@ -15,25 +15,27 @@ before integrating it; native/web parity is not yet verified.
 - `main` / `origin/main`: `2828bd36`, PR #239 merged August 24. Latest CI passed
   unit/contract, browser regression and packaged Mac smoke jobs:
   https://github.com/techmore/TM-NmapUI/actions/runs/32763844258
-- Initial review of `fix/unattended-operation`: `19dd4457`, 11 commits ahead of main,
-  none behind. It has since been pushed with validation fixes and documentation
-  updates in draft PR https://github.com/techmore/TM-NmapUI/pull/240.
-  The initial branch included two preservation/documentation
-  commits and nine unattended-operation/documentation commits. Implemented work
-  includes actual scheduled execution, degraded startup, daemon installation,
-  prompt-free privilege paths, authentication, interrupted-job recovery,
-  missed-schedule catch-up, and Flask installation documentation.
-- Verification today: `.venv/bin/python -m pytest -q` → **373 passed, 8 skipped**.
-  The explicitly enabled Mac packaged smoke subsequently passed (1 test, 249s).
-  This does not establish real reboot, prolonged unattended operation, native UI
-  parity or Windows support. Browser results require checking expected failures,
-  not just CI's overall success status (see #230 below).
+- Draft PR #240 is at remote commit `b2d52a3b`; the local
+  `fix/unattended-operation` branch has two newer commits (`5bb6556e` adds the
+  validating scanner helper, `70bffdce` makes root the default appliance mode)
+  plus the reviewed fixes documented below. Changes still need to be committed
+  and pushed to PR #240 so CI can check the current head.
+- Local verification on September 24: `.venv/bin/python -m pytest -q` → **405
+  passed, 9 skipped**; explicit browser regressions → **8 passed in 13.21s**;
+  packaged Mac smoke → **1 passed in 52.63s**. Both root and `--user` installer
+  dry runs passed. A direct app launch returned healthy liveness/readiness,
+  authenticated login and issued a Socket.IO token. A real Quick Scan of
+  `127.0.0.1` completed, but as the unprivileged development process Nmap
+  reported zero hosts and ARP enrichment skipped for lack of privileges. This
+  confirms why the installed privileged path still needs a live test.
 - `swift-native`: 29 commits unique relative to main; main has 10 absent from it.
   Keep for selective integration and native parity review, not a blind merge.
 - `alpha/mac-known-good-2026-09-07-1040` and tag
   `alpha-mac-known-good-2026.09.07-1040`: preserve as the intentional rollback.
 - `claude/quirky-torvalds`: keep pending review. `git cherry origin/main` reports
   20 patch-unique commits; it is not proven redundant.
+- No other local or remote feature branch is both merged and disposable. Keep
+  the active unattended branch, alpha rollback, and unique native/Claude work.
 
 ## Cleanup completed
 - Removed local and remote `fix/zombie-jobs-disable-scan-buttons` after verifying
@@ -49,8 +51,11 @@ before integrating it; native/web parity is not yet verified.
   assets, and test the current UI. Fixed Quick Scan job-state updates and report
   reconnect classification. Final local browser result: **7 passed in 12.00s**,
   no skips or expected failures. Leave #230 open until integration/CI proves it.
-- No open pull requests were present at initial review; draft #240 now tracks
-  the unattended baseline and validation fixes.
+- PR #240 remains a draft while real privileged scan, reboot/sleep, crash and
+  unattended soak verification are outstanding.
+- Closed #160 as a duplicate of the more detailed, high-priority #106 after
+  consolidating its header/summary parity and related #154/#155 tasks. Keep #230
+  open until its fixes merge; keep #223, #226 and #237 for native Mac work.
 
 ## Backlog organization
 
@@ -63,8 +68,11 @@ required, and runtime ownership supports the selected service user. Installation
 checks bounded readiness rather than liveness. Generated-artifact tests execute
 the wrapper without installing a service. A real subprocess test confirms that
 the scheduler lock is released after its owner receives SIGKILL.
-Follow-up validation: full suite **379 passed, 8 skipped**; installer dry run
-passed plist, sudoers and shell syntax checks. The six new tests all executed.
+Follow-up validation: full suite **405 passed, 9 skipped**; browser regressions
+**8 passed**; packaged Mac smoke **1 passed in 52.63s**. Both installer dry runs
+passed plist, sudoers, wrapper and helper checks. The app also passed live
+health, login and socket-token checks in an isolated process; authenticated
+remote token access now has a dedicated unit test.
 
 Release blockers: privilege isolation is **implemented but optional**. The
 installer now stages root-owned assets and ships a validating helper
@@ -74,13 +82,14 @@ the September 12 platform decision, **root remains the default**: this platform
 treats root as the goal, so the daemon installs as root with no sudoers
 dependency and no extra decision. That keeps the earlier residual risk
 deliberately accepted — the web backend is root, mitigated by loopback-only
-binding, enforced sign-in and the removed local-trust bypass.
+  binding by default, enforced sign-in and the removed local-trust bypass.
 
 What remains unverified is everything that needs root: **no production
 LaunchDaemon has been installed, rebooted, killed or soaked**, and neither mode
-has executed a live privileged scan end to end. The in-process reaper still
-cannot clean up children after `SIGKILL`. Keep PR #240 in draft pending those
-checks.
+has executed a live privileged scan end to end. The unprivileged UI scan of
+loopback completed but found no hosts; production discovery needs the privileged
+service. The in-process reaper still cannot clean up children after `SIGKILL`.
+Keep PR #240 in draft pending those checks.
 
 1. **Finish and integrate unattended baseline.** Review the local branch and run
    browser/packaged checks against this exact revision before merging. Complete
@@ -114,9 +123,9 @@ Use README and the September 10 audit's phase status as current context. The
 audit's original findings and some introductory notes describe earlier code;
 do not treat every finding as still unresolved. Its status says “Draft” despite
 later locked decisions and implementation updates. The January
-`CLAUDE_WORK_PLAN.md` remains historical. Root AGENTS now has current navigation
-above its old generated map, and BUILDING.md identifies the supported build path
-above its historical PyInstaller instructions.
+`CLAUDE_WORK_PLAN.md` remains historical. Root AGENTS has current navigation
+above its generated map; BUILDING, SETUP, release checklist and repository
+layout now describe the supported Flask/Swift path.
 Do not remove legacy assets wholesale: verify Flask/static/report dependencies
 first. Keep the rollback archive intact; migrating it to release storage can be
 done separately without rewriting Git history.

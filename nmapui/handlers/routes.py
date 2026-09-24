@@ -138,17 +138,15 @@ def register_core_routes(app, deps):
     @app.route("/api/socket-token")
     @require_auth
     def socket_token():
-        """Loopback-only token for the Socket.IO handshake.
+        """Return the CSRF token to an authenticated browser session.
 
-        The token is CSRF protection only; the handshake additionally requires a
-        session. This route is authenticated too so a local process cannot even
-        collect the token without credentials.
+        The token is not a credential: Socket.IO separately requires a session
+        or Basic credentials, and its configured origin allowlist controls which
+        browser origins may connect. Requiring a session here supports browsers
+        on another machine without opening the socket to unauthenticated clients.
         """
-        from flask import jsonify, request as flask_request
+        from flask import jsonify
 
-        remote = flask_request.remote_addr or ""
-        if remote not in {"127.0.0.1", "::1"}:
-            return jsonify({"error": "forbidden"}), 403
         return jsonify({"token": deps["socket_auth_token"]})
 
     @app.route("/api/health")
