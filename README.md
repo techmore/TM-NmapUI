@@ -1,14 +1,15 @@
 # TM-NmapUI
 
-macOS-first network scanning and monitoring appliance powered by Nmap, with a
-cross-platform web UI.
+Network scanning and monitoring appliance for macOS and Ubuntu, powered by Nmap,
+with a cross-platform web UI.
 
 The product is a **Python Flask application** (`app.py` + the `nmapui/` package)
-served over a loopback web UI, plus an optional macOS menu-bar wrapper. It is
-designed to run **unattended for long periods**: scans run on a schedule, survive
-reboots, and need no password prompt and no repeated sign-in.
+running directly on the scanner host and serving a browser UI. macOS has an
+optional menu-bar wrapper and LaunchDaemon for unattended operation. Ubuntu is
+also a target scanner host; its supported installer and service setup are still
+being built. See [deployment status](#cross-platform-deployment).
 
-## Quick Start (appliance)
+## Quick Start (macOS appliance)
 
 ```bash
 git clone https://github.com/techmore/TM-NmapUI.git
@@ -34,12 +35,16 @@ Validate the daemon without changing anything:
 packaging/macos/install-daemon.sh --dry-run
 ```
 
-## Quick Start (development)
+For Ubuntu host setup, see [the setup guide](docs/guides/SETUP.md#ubuntu-scanner-host).
+
+## Quick Start (macOS development)
 
 ```bash
 ./install.sh --no-daemon
 ./start.sh          # runs .venv/bin/python app.py
 ```
+
+On Ubuntu, use the manual host setup below instead of the macOS Homebrew installer.
 
 Set credentials before starting, otherwise protected routes return HTTP 503:
 
@@ -67,11 +72,13 @@ export NMAPUI_PASSWORD='choose-something-strong'
 
 - **Python 3.11 or newer**
 - **nmap** (with an updated script database)
-- **xsltproc** (Homebrew `libxslt`)
+- **xsltproc** (Homebrew `libxslt` on macOS; Ubuntu package on Linux)
 - **Playwright Chromium**, or Chrome/wkhtmltopdf for PDF output
-- macOS for the LaunchDaemon and menu-bar wrapper; the web app also runs on Linux
+- macOS or Ubuntu as the intended scanner host; the Swift menu-bar wrapper and
+  LaunchDaemon are macOS-only
 
-`install.sh` installs these with Homebrew.
+`install.sh` installs these with Homebrew on macOS. Ubuntu setup is currently
+manual; see the setup guide.
 
 ## Scans
 
@@ -89,9 +96,9 @@ under the data directory.
 
 Auto-scan runs inside a daily window; Auto-Monitor runs per-customer rules daily,
 weekly, biweekly, monthly or quarterly. Due-ness is derived from the persisted
-`last_run` versus the most recent scheduled slot, so a run missed while the Mac
-slept or was powered off is picked up **once** on the next tick rather than
-silently skipped.
+`last_run` versus the most recent scheduled slot, so a run missed while the
+scanner host slept or was powered off is picked up **once** on the next tick
+rather than silently skipped.
 
 ## Authentication
 
@@ -189,10 +196,14 @@ Build environment variables:
 
 ## Cross-platform deployment
 
-The deployment direction is a directly installed Flask backend with access to
-the host network, serving the web UI to browsers. Native Linux installation and
-service supervision still need validation; the current automated installer is
-macOS-specific. Windows scanner-host support has not been established.
+The scanner-host targets are macOS and Ubuntu. Each host runs the Flask backend
+directly with access to its network interfaces, and users can connect through a
+browser on another platform. macOS currently has the bundled menu-bar launcher
+and LaunchDaemon installer. Ubuntu can run the Flask app manually, but a
+supported Ubuntu installer, `systemd` service, privileged scan setup and
+deployment validation are still outstanding; track that work in
+[the Ubuntu deployment issue](https://github.com/techmore/TM-NmapUI/issues/241).
+Windows is not a scanner-host target in the current plan.
 
 Container packaging is retired from the active roadmap (September 11, 2026).
 The retained `Dockerfile` and `docker-compose.yml` run the **legacy Node runtime**

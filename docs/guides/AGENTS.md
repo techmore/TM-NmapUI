@@ -7,7 +7,8 @@ repository.
 
 - The maintained application is Flask (`app.py` and `nmapui/`).
 - The supported macOS bundle uses root `build.sh`; PyInstaller and `deploy.sh`
-  are historical references.
+  are historical references. macOS and Ubuntu are scanner-host targets, but
+  Ubuntu service packaging is not implemented yet.
 - Container deployment is retired. Preserve the scanner host's direct network
   access requirement.
 - Python 3.11 is the CI baseline; use `.venv/bin/python -m pytest -q` for the

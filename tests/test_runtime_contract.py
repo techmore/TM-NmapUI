@@ -816,7 +816,7 @@ def test_frontend_layout_guide_and_page_shell_exist():
     assert "For modal close buttons, use `icon-button` instead of repeating text-color hover stacks." in guide
     assert "For modal/footer action buttons, use `action-button` with an intent variant" in guide
     assert "For smaller action rows such as history filters, add a shared size helper" in guide
-    assert "/Users/techmore/projects/NmapUI/templates/index.html" in guide
+    assert "[`templates/index.html`](../../templates/index.html)" in guide
 
 
 def test_auto_scan_config_has_tracked_example_only():

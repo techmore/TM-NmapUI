@@ -1,9 +1,9 @@
 # NmapUI Setup
 
-NmapUI is a Flask scanner service with a browser interface. The browser can run
-on another operating system; the machine running Flask must have direct access
-to the network interfaces and scanner tools. Windows scanner-host support has
-not been verified.
+NmapUI is a Flask scanner service with a browser interface. The scanner-host
+targets are macOS and Ubuntu. The browser can run on another operating system;
+the machine running Flask must have direct access to the network interfaces and
+scanner tools.
 
 ## macOS appliance
 
@@ -37,24 +37,31 @@ packaging/macos/install-daemon.sh --dry-run
 packaging/macos/install-daemon.sh --dry-run --user "$(id -un)"
 ```
 
-## Linux development host
+## Ubuntu scanner host
 
-Install Python 3.11 or newer, Nmap and `xsltproc` using the distribution's
-package manager, then prepare the application environment:
+Ubuntu can run the Flask app directly on the scanner host. This is a manual
+runtime setup; a supported installer and `systemd` service are tracked in
+[issue #241](https://github.com/techmore/TM-NmapUI/issues/241).
+Install Python 3.11 or newer, then run these commands from the repository root:
 
 ```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip nmap arp-scan xsltproc
+python3 --version  # Confirm this is 3.11 or newer
 python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m playwright install chromium
+.venv/bin/python -m pip install -r requirements.txt
+sudo .venv/bin/python -m playwright install-deps chromium
+.venv/bin/python -m playwright install chromium
 export NMAPUI_USERNAME=admin
 export NMAPUI_PASSWORD='choose-a-strong-password'
 ./start.sh
 ```
 
-The Mac LaunchDaemon installer does not provide Linux service supervision.
-Run the app under a service manager configured for the Linux host if it must
-start at boot.
+Run the app as a regular account for manual use; Nmap then uses a connect scan
+and ARP enrichment may be unavailable. Ubuntu's production privilege model,
+boot-time service supervision, upgrades and unattended scan behavior still need
+implementation and validation. The macOS LaunchDaemon installer does not
+provide Linux service supervision.
 
 ## Network access
 

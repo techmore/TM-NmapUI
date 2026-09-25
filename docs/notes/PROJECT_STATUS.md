@@ -1,24 +1,27 @@
-# Project status — 2026-09-24
+# Project status — 2026-09-25
 
 ## Product direction
 
-The intended destination is a native macOS experience and a cross-platform web
-experience. The September 10 remediation plan records one shared Flask backend;
-a future native SwiftUI frontend should use that API rather than duplicate the
-scan engine. The current Mac product is a Swift menu-bar launcher around Flask.
-The older `swift-native` branch contains substantial native UI and its own scan,
-report, privilege-helper and scheduling implementation. Reconcile those designs
-before integrating it; native/web parity is not yet verified.
+The deployment targets are macOS and Ubuntu scanner hosts, with a
+cross-platform browser UI. The September 10 remediation plan records one shared
+Flask backend; a future native SwiftUI frontend should use that API rather than
+duplicate the scan engine. The current Mac product is a Swift menu-bar launcher
+around Flask. macOS has a LaunchDaemon installer. Ubuntu can run the app
+manually, but does not yet have a supported installer, `systemd` unit,
+production privilege model or host-level validation. The older `swift-native`
+branch contains substantial native UI and its own scan, report, privilege-helper
+and scheduling implementation. Reconcile those designs before integrating it;
+native/web parity is not yet verified.
 
 ## Where work stopped
 
 - `main` / `origin/main`: `2828bd36`, PR #239 merged August 24. Latest CI passed
   unit/contract, browser regression and packaged Mac smoke jobs:
   https://github.com/techmore/TM-NmapUI/actions/runs/32763844258
-- Draft PR #240 is at remote commit `5ff6227c`, which passes all three hosted
+- Draft PR #240 is at remote commit `ec842d56`, which passes all three hosted
   checks (unit/contract, browser, packaged Mac smoke):
-  https://github.com/techmore/TM-NmapUI/actions/runs/36056558604
-  The review started from `b2d52a3b`. It adds `5bb6556e` (validating scanner
+  https://github.com/techmore/TM-NmapUI/actions/runs/36057099197
+  The implementation review started from `b2d52a3b`. It adds `5bb6556e` (validating scanner
   helper), `70bffdce` (root-default appliance mode), and `5ff6227c` (review fixes
   and current documentation).
 - Local verification on September 24: `.venv/bin/python -m pytest -q` → **405
@@ -51,8 +54,8 @@ before integrating it; native/web parity is not yet verified.
   before the origin allowlist, isolate runtime data, supply actual comparison
   assets, and test the current UI. Fixed Quick Scan job-state updates and report
   reconnect classification. The latest local browser result is **8 passed in
-  13.21s**, with no skips or expected failures. Leave #230 open until its fixes
-  integrate.
+  13.21s**, with no skips or expected failures. PR #240 also adds live/replayed
+  state coverage for #161; leave both issues open until the PR merges.
 - PR #240 remains a draft while real privileged scan, reboot/sleep, crash and
   unattended soak verification are outstanding.
 - Closed #160 as a duplicate of the more detailed, high-priority #106 after
@@ -96,23 +99,25 @@ Keep PR #240 in draft pending those checks.
 1. **Finish and integrate unattended baseline.** Review the local branch and run
    browser/packaged checks against this exact revision before merging. Complete
    reboot/sleep/crash verification and remaining security/privilege validation.
-2. **Cross-platform web distribution.** Directly install the shared Flask backend
-   on the scanner host and use browser clients. Per the September 11 user
-   decision, container networking is unsuitable for the intended deployment;
-   container packaging is retired from the active roadmap. Verify native Linux
-   installation/service supervision and explicitly define whether Windows means
-   browser access only or a local scanner host. Existing container files remain
-   historical references to the legacy Node runtime.
+2. **Ubuntu scanner-host deployment.** macOS and Ubuntu are the scanner-host
+   targets; browser clients can run cross-platform. The app runs manually on
+   Ubuntu, but a supported installer, `systemd` supervision, privileged scanning
+   model, upgrade/uninstall path and host validation remain open in
+   [#241](https://github.com/techmore/TM-NmapUI/issues/241). Per the September 11
+   user decision, container networking is unsuitable for the intended
+   deployment; container packaging is retired from the active roadmap. Windows
+   is not a scanner-host target. Existing container files remain historical
+   references to the legacy Node runtime.
 3. **Native Mac frontend (#223).** Inventory reusable SwiftUI screens and connect
    them to the shared backend. Keep #226 (lifecycle extraction) and #237 (helper
    authorization) open: their implementation appears on the unmerged Swift line,
    not established in the canonical product.
-4. **Reports.** #106 and #160 overlap. Recommend retaining detailed #106 as the
-   canonical initiative and closing #160 as duplicate after preserving any unique
-   requirements. Existing PDF fixes do not prove full visual parity.
-5. **Operational follow-through.** Retain #161 (multi-tab state), #163 (data
-   lifecycle), #164 (security). Remaining audit work includes DST, retention,
-   secrets/CSP review, safe upgrades, and duplicate-install handling. Remote Mac
+4. **Reports.** #160 has been closed as a duplicate of detailed, canonical #106
+   after its unique requirements were consolidated. Existing PDF fixes do not
+   prove full visual parity.
+5. **Operational follow-through.** Close #161 with PR #240 after merge; retain
+   #163 (data lifecycle) and #164 (security). Remaining audit work includes DST,
+   retention, secrets/CSP review, safe upgrades, and duplicate-install handling. Remote Mac
    management through DigitalOcean is recorded in the preserved release notes,
    but is not verified implemented.
 6. **Later features.** #4 remote sync, #10 pause/resume, #14 GoWitness and #31 VLAN
