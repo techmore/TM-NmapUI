@@ -1,40 +1,28 @@
 # Repository Layout
 
-This project keeps a small root and pushes specialized assets into dedicated directories.
+The maintained product is a shared Flask application targeting macOS and Ubuntu
+scanner hosts, with a cross-platform browser UI and an optional macOS menu-bar
+launcher. Ubuntu service packaging is still in progress.
 
-## Canonical Layout
+## Current code
 
-- `/`
-  - Stable entrypoints and top-level project metadata
-  - Examples: `app.py`, `requirements.txt`, `README.md`, `install.sh`, `deploy.sh`
-- `packaging/macos/`
-  - macOS menu bar wrapper source and wrapper-specific documentation
-- `packaging/pyinstaller/`
-  - PyInstaller spec and packaging configuration
-- `docs/guides/`
-  - setup, testing, release, and contributor-facing guides
-- `docs/notes/`
-  - implementation notes, work plans, and one-off analysis documents
-- `docs/audits/`
-  - audit reports and detailed investigation writeups
-- `tests/`
-  - automated regression coverage
+- `/` — `app.py`, `start.sh`, `install.sh`, `build.sh`, requirements and version
+- `nmapui/` — scanning, reporting, scheduling, authentication and runtime state
+- `nmapui/handlers/` — HTTP and Socket.IO route registration
+- `templates/`, `static/` — the shared web interface
+- `packaging/macos/` — Swift launcher, LaunchDaemon installer and scanner helper
+- Ubuntu installer and systemd service — tracked in issue #241; not yet shipped
+- `tests/` — unit, contract, browser and packaged-app checks
+- `docs/guides/`, `docs/notes/`, `docs/audits/` — setup, product status and review
 
-## Root Rules
+## Historical references
 
-Keep the repository root limited to files that a contributor should expect to open immediately when building, running, or packaging the app.
+- `packaging/pyinstaller/` and `deploy.sh` describe a retired packaging path.
+- `server.js`, root `index.html`, `static/js/`, `package.json`, `Dockerfile` and
+  `docker-compose.yml` are legacy Node runtime references. Containers are not a
+  supported deployment because the scanner needs direct host networking.
+- Keep the known-good Mac alpha archive and branch available as rollback
+  references.
 
-Do not add the following to the root:
-
-- generated binaries or app bundles
-- screenshots or sample outputs
-- one-off analysis markdown files
-- wrapper-specific documentation
-- packaging-only configuration that can live under `packaging/`
-
-Keep runtime-only state out of version control:
-
-- generated XML or report output
-- local scheduler state such as `auto_scan_config.json`
-- built wrapper binaries or `.app` bundles
-- scratch project directories or screenshots
+Runtime state (`data/`, SQLite files, logs, local customer configuration,
+generated reports and built `.app` bundles) stays out of version control.

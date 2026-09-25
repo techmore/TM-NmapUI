@@ -54,7 +54,8 @@ def test_runtime_status_route_reports_active_jobs():
     }
 
 
-def test_runtime_settings_summary_reports_settings_state():
+def test_runtime_settings_summary_reports_settings_state(monkeypatch):
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
     app = Flask(__name__)
 
     class RuntimeStoreStub:

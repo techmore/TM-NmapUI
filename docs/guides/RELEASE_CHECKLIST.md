@@ -1,46 +1,55 @@
-# Stable Release Checklist
+# NmapUI Release Checklist
 
-Use this checklist when preparing the next stable NmapUI release.
+Use this checklist for a candidate build. It covers the current Flask app and
+macOS menu-bar bundle. Ubuntu is also a scanner-host target; complete the
+Ubuntu support gate before claiming Ubuntu deployment support. That work is
+tracked in [issue #241](https://github.com/techmore/TM-NmapUI/issues/241).
 
-## Build Readiness
+## Build and automated checks
 
-- `python -m py_compile app.py` passes
-- `pip install -r requirements.txt` succeeds in a clean virtualenv
-- `VERSION` is present and correct for the release
-- Local branch is pushed and reviewable
+- [ ] Confirm `VERSION` and the release branch are current and pushed.
+- [ ] Run `source .venv/bin/activate` and `python -m py_compile app.py`.
+- [ ] Run `.venv/bin/python -m pytest -q`.
+- [ ] Run `NMAPUI_RUN_BROWSER_REGRESSION=1 .venv/bin/python -m pytest -q tests/test_browser_regressions.py`.
+- [ ] Run the packaged Mac smoke test:
+  `NMAPUI_RUN_PACKAGED_SMOKE=1 .venv/bin/python -m pytest -q tests/test_packaged_app_smoke.py`.
+- [ ] Run both non-mutating daemon checks:
+  `packaging/macos/install-daemon.sh --dry-run` and
+  `packaging/macos/install-daemon.sh --dry-run --user "$(id -un)"`.
 
-## Runtime Smoke Test
+## Browser and scan checks
 
-```bash
-source .venv/bin/activate
-NMAPUI_HOST=127.0.0.1 NMAPUI_PORT=9000 NMAPUI_DEBUG=false python app.py --quick &
-APP_PID=$!
-sleep 5
-curl http://127.0.0.1:9000/api/health
-kill $APP_PID
-```
+- [ ] Sign in with configured credentials; confirm protected routes and the
+  Socket.IO connection work after a page reload.
+- [ ] Run Quick Scan against a network you are authorized to scan. Verify the
+  discovered hosts and report history.
+- [ ] Generate a report, open its HTML and PDF, and confirm the PDF layout.
+- [ ] Stop a running scan or report and confirm its controls return to idle.
+- [ ] Save and reload auto-scan settings; confirm one missed scheduled run is
+  caught up after restart.
 
-Expected:
-- Health response includes `status: ok`
-- `app_version` is populated
+## Appliance checks
 
-## Core Manual Checks
+- [ ] Install on a test Mac and confirm the service is loopback-bound and
+  authentication is required.
+- [ ] Verify privileged SYN/OS/ARP scanning from the installed service account.
+- [ ] Reboot and sleep/wake the Mac; confirm the service and scheduler recover.
+- [ ] Terminate the service during a scan and confirm the scan and report state
+  recover without duplicate scheduled work.
+- [ ] Run an unattended soak and review service logs, data retention, and disk
+  growth.
 
-- Quick Scan starts and completes
-- Generate PDF starts and streams progress
-- Stop cancels an active scan or report
-- Archive/history view opens
-- HTML/XML/PDF artifact links work for an existing scan
-- Auto-scan settings save and reload correctly
+## Ubuntu support gate
 
-## Packaging Checks
+- [ ] Select the supported Ubuntu LTS baseline and verify Python 3.11 or newer.
+- [ ] Install from a clean host using documented direct-host setup with access
+  to the scanner's real network interfaces.
+- [ ] Verify the chosen privilege model completes SYN/OS and ARP discovery.
+- [ ] Verify the systemd unit's credentials, data/log ownership, readiness,
+  restart behavior, and loopback binding.
+- [ ] Test reboot, scan interruption recovery, upgrade and uninstall.
+- [ ] Pass Ubuntu CI checks and record a live scan on the supported host.
 
-- `pyinstaller --clean packaging/pyinstaller/nmapui.spec` succeeds
-- `dist/NmapUI.app` launches
-- Packaged app responds on `http://127.0.0.1:9000/api/health`
-
-## Release Notes
-
-- Document major changes since the previous stable build
-- Call out any known limitations
-- Note required system dependencies: `nmap`, `xsltproc`, `wkhtmltopdf` or fallback PDF tooling
+Do not treat the dry run or packaged smoke test as evidence that reboot,
+privileged scanning or prolonged unattended operation passed. `deploy.sh` and
+the PyInstaller spec are historical and are not supported release procedures.

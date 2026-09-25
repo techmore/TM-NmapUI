@@ -1,5 +1,6 @@
 import subprocess
 
+from nmapui.auto_scan import build_auto_scan_status_payload
 from nmapui.runtime_log import append_runtime_log
 
 
@@ -45,15 +46,24 @@ def run_startup_checks(deps, quick=False):
     default_interface = get_default_interface_cached()
     logger.info(f"Default Network Interface: {default_interface}")
 
+    errors = startup_state.setdefault("errors", [])
+
     if quick:
         logger.info("Quick mode: skipping dependency checks")
         startup_state["dependencies_ok"] = True
     else:
         logger.info("\nChecking nmap...")
-        tool_versions.set_version("nmap", check_nmap())
+        nmap_version = check_nmap()
+        if nmap_version:
+            tool_versions.set_version("nmap", nmap_version)
+        else:
+            tool_versions.set_version("nmap", "Not installed")
+            errors.append("nmap is not installed or not on PATH")
 
         logger.info("\nChecking vulners script...")
-        check_vulners(vulners_script)
+        vulners_ok = bool(check_vulners(vulners_script))
+        if not vulners_ok:
+            errors.append(f"Vulners NSE script missing at {vulners_script}")
         vulners_dir = vulners_script.parent
         if vulners_dir.exists():
             try:
@@ -92,7 +102,15 @@ def run_startup_checks(deps, quick=False):
                 tool_versions.set_version("arp_scan", "arp-scan (version unknown)")
         else:
             tool_versions.set_version("arp_scan", "Not installed")
-        startup_state["dependencies_ok"] = True
+        # arp-scan is optional; nmap and the vulners script are required for a
+        # full scan, so readiness reflects only those two.
+        startup_state["dependencies_ok"] = bool(nmap_version) and vulners_ok
+        if not startup_state["dependencies_ok"]:
+            logger.error(
+                "Startup dependency checks failed; server will start in degraded "
+                "mode and /api/health/ready will report not ready: %s",
+                "; ".join(errors),
+            )
 
     logger.info("\nLoading previous customer assignment...")
     load_current_assignment()
@@ -130,4 +148,3 @@ def run_startup_checks(deps, quick=False):
         message="Startup checks completed",
         payload={"dependencies_ok": startup_state.get("dependencies_ok", False)},
     )
-from nmapui.auto_scan import build_auto_scan_status_payload

@@ -14,7 +14,6 @@ from persistence import remove_scan_metadata_index_entry, upsert_scan_metadata_i
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCANS_DIR = ROOT / "data" / "scans"
 
 
 def _require_browser_regression_enabled():
@@ -47,19 +46,25 @@ def _get_browser(playwright):
     try:
         return playwright.chromium.launch(headless=True)
     except Exception as error:  # pragma: no cover - only exercised in gated mode
-        pytest.skip(f"Playwright Chromium is not available: {error}")
+        pytest.fail(f"Browser regression coverage was enabled but Chromium could not launch: {error}")
+
+
+def _connect_socket(browser_server):
+    # Flask-SocketIO's in-process test_client replaces the server's packet
+    # senders globally, breaking the real browser connections under test.
+    import socketio
+
+    client = socketio.Client(handle_sigint=False, reconnection=False, request_timeout=5)
+    client.connect(browser_server["base_url"], transports=["polling"])
+    return client
 
 
 def _get_socket_sid(client):
-    client.emit("whoami")
-    for event in client.get_received():
-        if event["name"] == "whoami":
-            return event["args"][0]["sid"]
-    raise AssertionError("whoami event did not return a socket session id")
+    return client.get_sid("/")
 
 
 @pytest.fixture(scope="session")
-def browser_server():
+def browser_server(tmp_path_factory):
     _require_browser_regression_enabled()
 
     os.environ.setdefault("NMAPUI_TRUST_LOCAL_UI", "true")
@@ -67,23 +72,18 @@ def browser_server():
     os.environ.setdefault("NMAPUI_DEBUG", "false")
     os.environ.setdefault("NMAPUI_USERNAME", "scanner")
     os.environ.setdefault("NMAPUI_PASSWORD", "secret-pass")
-    # The socketio test client and Playwright pages do not carry the loopback
+    # The network Socket.IO client and Playwright pages do not carry the loopback
     # token; disable socket auth for browser regressions.
     os.environ.setdefault("NMAPUI_SOCKET_AUTH_DISABLED", "true")
 
+    port = _find_free_port()
+    # The app builds its explicit origin allowlist at import time. Use that
+    # same port for the test server rather than binding a different one later.
+    os.environ["NMAPUI_PORT"] = str(port)
+    data_dir = tmp_path_factory.mktemp("browser-runtime")
+    os.environ["NMAPUI_DATA_DIR"] = str(data_dir)
     app_module = importlib.import_module("app")
 
-    if not hasattr(app_module, "_browser_test_whoami_registered"):
-        from flask import request
-        from flask_socketio import emit
-
-        @app_module.socketio.on("whoami")
-        def _browser_test_whoami():
-            emit("whoami", {"sid": request.sid})
-
-        app_module._browser_test_whoami_registered = True
-
-    port = _find_free_port()
     server_thread = threading.Thread(
         target=lambda: app_module.socketio.run(
             app_module.app,
@@ -101,6 +101,7 @@ def browser_server():
     yield {
         "app_module": app_module,
         "base_url": f"http://127.0.0.1:{port}",
+        "scans_dir": data_dir / "scans",
     }
 
 
@@ -118,10 +119,11 @@ def playwright_browser():
 
 
 @pytest.fixture
-def scan_fixture():
+def scan_fixture(browser_server):
+    scans_dir = browser_server["scans_dir"]
     fixture_id = uuid.uuid4().hex[:8]
     customer_name = f"Browser Regression {fixture_id}"
-    customer_root = SCANS_DIR / customer_name
+    customer_root = scans_dir / customer_name
     primary_dir = customer_root / "2026-03-14" / "scan_120000_198.51.100.0_24"
     baseline_dir = customer_root / "2026-03-13" / "scan_110000_198.51.100.0_24"
 
@@ -158,6 +160,11 @@ def scan_fixture():
             "status": "completed",
             "completed_successfully": True,
             "diff_summary": diff_summary,
+            "asset_snapshot": (
+                [{"ip": "198.51.100.10", "ports": "80,443"},
+                 {"ip": "198.51.100.12", "ports": "22"}]
+                if diff_summary else [{"ip": "198.51.100.10", "ports": "80"}]
+            ),
         }
         (scan_dir / "metadata.json").write_text(__import__("json").dumps(metadata, indent=2))
         (scan_dir / "scan_web.html").write_text(
@@ -165,13 +172,13 @@ def scan_fixture():
         )
         (scan_dir / "scan_report.pdf").write_bytes(b"%PDF-1.4\n% browser fixture\n")
         (scan_dir / "scan.xml").write_text("<nmaprun></nmaprun>")
-        upsert_scan_metadata_index_entry(SCANS_DIR, scan_dir, metadata)
+        upsert_scan_metadata_index_entry(scans_dir, scan_dir, metadata)
         # Mirror into the runtime sqlite store: /api/runtime/reports reads only from
         # the store, so JSON-index-only writes are invisible to the running server.
         import sys as _sys
         runtime_store = getattr(_sys.modules.get("app"), "runtime_store", None)
         if runtime_store is not None:
-            rel = str(scan_dir.relative_to(SCANS_DIR))
+            rel = str(scan_dir.relative_to(scans_dir))
             runtime_store.upsert_report_artifact(
                 scan_path=rel,
                 customer_id=str(metadata.get("customer_id", "") or ""),
@@ -189,8 +196,10 @@ def scan_fixture():
         }
     finally:
         for scan_dir in (primary_dir, baseline_dir):
+            if runtime_store is not None:
+                runtime_store.delete_report_artifact(str(scan_dir.relative_to(scans_dir)))
             if scan_dir.exists():
-                remove_scan_metadata_index_entry(SCANS_DIR, scan_dir)
+                remove_scan_metadata_index_entry(scans_dir, scan_dir)
         if customer_root.exists():
             shutil.rmtree(customer_root, ignore_errors=True)
 
@@ -216,12 +225,30 @@ def test_reports_tab_renders_saved_report_and_view_action(browser_server, playwr
     context.close()
 
 
+def test_quick_start_shows_tool_versions_as_unchecked_not_missing(
+    browser_server, playwright_browser
+):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.wait_for_function(
+            """() => document.getElementById('settings-nmap-version').textContent === 'Nmap: Not checked'
+            && document.getElementById('settings-vulners-version').textContent === 'Vulners: Not checked'
+            && document.getElementById('settings-arpscan-version').textContent === 'ARP-Scan: Not checked'"""
+        )
+    finally:
+        context.close()
+
+
 def test_history_tab_renders_diff_summary(browser_server, playwright_browser, scan_fixture):
     context = playwright_browser.new_context()
     page = context.new_page()
 
     page.goto(browser_server["base_url"], wait_until="domcontentloaded")
     page.locator("#tab-history-btn").click()
+    page.locator("#history-focus-all-btn").click()
 
     history_list = page.locator("#history-tab-list")
     fixture_card = history_list.locator("article").filter(
@@ -235,17 +262,20 @@ def test_history_tab_renders_diff_summary(browser_server, playwright_browser, sc
     context.close()
 
 
-@pytest.mark.xfail(reason="#230: mixed test_client + browser socket interplay; protocol bridge in progress", strict=False)
 def test_history_tab_compares_selected_scan_pair(browser_server, playwright_browser, scan_fixture):
     context = playwright_browser.new_context()
     page = context.new_page()
 
     page.goto(browser_server["base_url"], wait_until="domcontentloaded")
     page.locator("#tab-history-btn").click()
+    page.locator("#history-focus-all-btn").click()
 
-    history_cards = page.locator("#history-tab-list article")
-    history_cards.first.get_by_role("button", name="Select Base").click()
-    history_cards.nth(1).get_by_role("button", name="Compare to Base").click()
+    history_cards = page.locator("#history-tab-list article").filter(
+        has=page.locator("h3", has_text=scan_fixture["customer_name"])
+    )
+    # History is newest first: compare the current scan against the older base.
+    history_cards.nth(1).get_by_role("button", name="Select Base").click()
+    history_cards.first.get_by_role("button", name="Compare to Base").click()
 
     page.locator("#history-compare-panel").wait_for()
     page.locator("#history-compare-summary").get_by_text("new host(s)").wait_for()
@@ -255,10 +285,9 @@ def test_history_tab_compares_selected_scan_pair(browser_server, playwright_brow
     context.close()
 
 
-@pytest.mark.xfail(reason="#230: mixed test_client + browser socket interplay; protocol bridge in progress", strict=False)
 def test_second_tab_replays_active_report_state(browser_server, playwright_browser):
     app_module = browser_server["app_module"]
-    owner_client = app_module.socketio.test_client(app_module.app)
+    owner_client = _connect_socket(browser_server)
     owner_sid = _get_socket_sid(owner_client)
 
     app_module.set_current_customer_state(
@@ -299,6 +328,7 @@ def test_second_tab_replays_active_report_state(browser_server, playwright_brows
         for page in (first_page, second_page):
             page.goto(browser_server["base_url"], wait_until="domcontentloaded")
             page.locator("#scan-target").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
             page.wait_for_function(
                 "() => document.getElementById('scan-target').value === '198.51.100.0/24'"
             )
@@ -309,7 +339,7 @@ def test_second_tab_replays_active_report_state(browser_server, playwright_brows
                 "() => document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
             )
             page.wait_for_function(
-                "() => !document.getElementById('start-scan-btn').classList.contains('card-pulsing')"
+                "() => !document.getElementById('start-scan-btn').classList.contains('ring-4')"
             )
     finally:
         app_module.broadcaster.end_job(owner_sid, job_type="report")
@@ -318,10 +348,9 @@ def test_second_tab_replays_active_report_state(browser_server, playwright_brows
         context.close()
 
 
-@pytest.mark.xfail(reason="#230: mixed test_client + browser socket interplay; protocol bridge in progress", strict=False)
 def test_second_tab_replays_active_scan_state(browser_server, playwright_browser):
     app_module = browser_server["app_module"]
-    owner_client = app_module.socketio.test_client(app_module.app)
+    owner_client = _connect_socket(browser_server)
     owner_sid = _get_socket_sid(owner_client)
 
     app_module.set_current_customer_state(
@@ -362,6 +391,7 @@ def test_second_tab_replays_active_scan_state(browser_server, playwright_browser
         for page in (first_page, second_page):
             page.goto(browser_server["base_url"], wait_until="domcontentloaded")
             page.locator("#scan-target").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
             page.wait_for_function(
                 "() => document.getElementById('scan-target').value === '198.51.100.0/24'"
             )
@@ -369,10 +399,10 @@ def test_second_tab_replays_active_scan_state(browser_server, playwright_browser
                 "() => document.getElementById('report-status-text').textContent.includes('Running quick scan')"
             )
             page.wait_for_function(
-                "() => document.getElementById('feedback-container').textContent.includes('Running quick scan on 198.51.100.0/24')"
+                "() => document.getElementById('report-status-text').textContent.includes('Running quick scan on 198.51.100.0/24')"
             )
             page.wait_for_function(
-                "() => document.getElementById('start-scan-btn').classList.contains('card-pulsing')"
+                "() => document.getElementById('start-scan-btn').classList.contains('ring-4')"
             )
             page.wait_for_function(
                 "() => !document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
@@ -384,7 +414,6 @@ def test_second_tab_replays_active_scan_state(browser_server, playwright_browser
         context.close()
 
 
-@pytest.mark.xfail(reason="#230: mixed test_client + browser socket interplay; protocol bridge in progress", strict=False)
 def test_existing_open_tabs_receive_live_report_state(browser_server, playwright_browser):
     app_module = browser_server["app_module"]
     browser = playwright_browser
@@ -396,8 +425,9 @@ def test_existing_open_tabs_receive_live_report_state(browser_server, playwright
         for page in (first_page, second_page):
             page.goto(browser_server["base_url"], wait_until="domcontentloaded")
             page.locator("#scan-target").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
 
-        owner_client = app_module.socketio.test_client(app_module.app)
+        owner_client = _connect_socket(browser_server)
         owner_sid = _get_socket_sid(owner_client)
         try:
             app_module.set_last_scan_target_state(value="198.51.100.0/24", sid=owner_sid)
@@ -430,7 +460,7 @@ def test_existing_open_tabs_receive_live_report_state(browser_server, playwright
                     "() => document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
                 )
                 page.wait_for_function(
-                    "() => !document.getElementById('start-scan-btn').classList.contains('card-pulsing')"
+                    "() => !document.getElementById('start-scan-btn').classList.contains('ring-4')"
                 )
                 page.wait_for_function(
                     "() => document.getElementById('report-status-text').textContent.includes('Generating report')"
@@ -443,7 +473,6 @@ def test_existing_open_tabs_receive_live_report_state(browser_server, playwright
         context.close()
 
 
-@pytest.mark.xfail(reason="#230: mixed test_client + browser socket interplay; protocol bridge in progress", strict=False)
 def test_existing_open_tabs_receive_live_scan_state(browser_server, playwright_browser):
     app_module = browser_server["app_module"]
     browser = playwright_browser
@@ -455,8 +484,9 @@ def test_existing_open_tabs_receive_live_scan_state(browser_server, playwright_b
         for page in (first_page, second_page):
             page.goto(browser_server["base_url"], wait_until="domcontentloaded")
             page.locator("#scan-target").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
 
-        owner_client = app_module.socketio.test_client(app_module.app)
+        owner_client = _connect_socket(browser_server)
         owner_sid = _get_socket_sid(owner_client)
         try:
             app_module.set_last_scan_target_state(value="198.51.100.0/24", sid=owner_sid)
@@ -482,13 +512,13 @@ def test_existing_open_tabs_receive_live_scan_state(browser_server, playwright_b
 
             for page in (first_page, second_page):
                 page.wait_for_function(
-                    "() => document.getElementById('start-scan-btn').classList.contains('card-pulsing')"
+                    "() => document.getElementById('start-scan-btn').classList.contains('ring-4')"
                 )
                 page.wait_for_function(
                     "() => !document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
                 )
                 page.wait_for_function(
-                    "() => document.getElementById('feedback-container').textContent.includes('Running quick scan on 198.51.100.0/24')"
+                    "() => document.getElementById('report-status-text').textContent.includes('Running quick scan on 198.51.100.0/24')"
                 )
         finally:
             app_module.broadcaster.end_job(owner_sid, job_type="scan")

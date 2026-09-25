@@ -357,7 +357,8 @@ def test_generate_pdf_from_saved_rejects_invalid_payload(monkeypatch):
     assert "pdf_calls" not in observed
 
 
-def test_connect_replays_active_scan_events_to_new_tab():
+def test_connect_replays_active_scan_events_to_new_tab(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
 
     class BroadcasterStub:
@@ -400,7 +401,7 @@ def test_connect_replays_active_scan_events_to_new_tab():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["job_lookup"] == ("owner-sid", "scan")
@@ -498,7 +499,8 @@ def test_generate_report_broadcasts_running_job_status_to_existing_open_tabs(mon
     }
 
 
-def test_connect_replays_active_report_events_to_new_tab():
+def test_connect_replays_active_report_events_to_new_tab(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
 
     class BroadcasterStub:
@@ -546,7 +548,7 @@ def test_connect_replays_active_report_events_to_new_tab():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["active_lookups"] == ["scan", "report"]
@@ -567,7 +569,8 @@ def test_connect_replays_active_report_events_to_new_tab():
     ]
 
 
-def test_connect_hydrates_new_tab_from_shared_snapshot_without_active_scan():
+def test_connect_hydrates_new_tab_from_shared_snapshot_without_active_scan(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
     emitted = []
 
@@ -593,7 +596,7 @@ def test_connect_hydrates_new_tab_from_shared_snapshot_without_active_scan():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["customer_state"][0][1]["id"] == "cust-999"
@@ -610,7 +613,8 @@ def test_connect_hydrates_new_tab_from_shared_snapshot_without_active_scan():
     assert "initial_data" in [event for _, event, _ in emitted]
 
 
-def test_connect_hydrates_new_tab_from_sqlite_snapshot_without_active_scan():
+def test_connect_hydrates_new_tab_from_sqlite_snapshot_without_active_scan(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
     emitted = []
 
@@ -652,7 +656,7 @@ def test_connect_hydrates_new_tab_from_sqlite_snapshot_without_active_scan():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["customer_state"][0][1]["id"] == "cust-sqlite"
@@ -663,7 +667,8 @@ def test_connect_hydrates_new_tab_from_sqlite_snapshot_without_active_scan():
     assert emitted[2][2] == {"last_scan_target": "10.10.10.0/24"}
 
 
-def test_connect_normalizes_persisted_last_scan_target_snapshot_dict():
+def test_connect_normalizes_persisted_last_scan_target_snapshot_dict(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
     emitted = []
 
@@ -705,14 +710,15 @@ def test_connect_normalizes_persisted_last_scan_target_snapshot_dict():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["target_state"][0][1] == "10.10.10.0/24"
     assert emitted[2][2] == {"last_scan_target": "10.10.10.0/24"}
 
 
-def test_connect_emits_persisted_active_job_status_without_active_owner():
+def test_connect_emits_persisted_active_job_status_without_active_owner(monkeypatch):
+    configure_auth(monkeypatch)
     emitted = []
 
     class BroadcasterStub:
@@ -766,7 +772,7 @@ def test_connect_emits_persisted_active_job_status_without_active_owner():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert emitted[-2][1] == "job_status"
@@ -780,7 +786,8 @@ def test_connect_emits_persisted_active_job_status_without_active_owner():
     )
 
 
-def test_connect_clears_stale_broadcast_slot_when_no_scan_job():
+def test_connect_clears_stale_broadcast_slot_when_no_scan_job(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
 
     class BroadcasterStub:
@@ -804,7 +811,7 @@ def test_connect_clears_stale_broadcast_slot_when_no_scan_job():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["job_lookup"] == ("owner-sid", "scan")

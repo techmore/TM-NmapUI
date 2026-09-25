@@ -1,5 +1,35 @@
 # PROJECT KNOWLEDGE BASE
 
+## Current navigation (updated 2026-09-25)
+
+The generated map below is historical. The product is Flask (`app.py` wiring,
+`nmapui/` implementation), with `templates/index.html` and an optional Swift
+launcher in `packaging/macos/NmapUIMenuBarLauncher.swift`. macOS and Ubuntu are
+the scanner-host targets; Ubuntu installer and systemd support are unfinished.
+Native SwiftUI work is on the unmerged `swift-native` branch. Read
+`docs/notes/PROJECT_STATUS.md` first.
+
+- Scanning: `nmapui/scanning.py`, `nmapui/workflows.py`, `nmapui/privileged.py`.
+- Routes/events: `nmapui/handlers/`; scheduling: `nmapui/auto_monitor.py`,
+  `nmapui/auto_scan_runtime.py`, `nmapui/handlers/auto_scan.py`.
+- Reports: `nmapui/reporting.py`; Drive: `nmapui/google_drive.py`.
+- Authentication/session: `nmapui/auth.py`, `nmapui/session.py`.
+- Runtime storage/recovery: `nmapui/runtime_db.py`, `nmapui/recovery.py`.
+- Build: root `build.sh`; boot supervision: `packaging/macos/install-daemon.sh`.
+- Verification: `.venv/bin/python -m pytest -q`. Browser and packaged tests need
+  `NMAPUI_RUN_BROWSER_REGRESSION=1` / `NMAPUI_RUN_PACKAGED_SMOKE=1` respectively.
+- CI tests Python 3.11. Lint is not currently enforced by CI; `.flake8` uses a
+  160-column limit. Do not assume the historical lint commands are configured.
+- Container packaging is retired from the active plan. Keep direct host
+  networking for the scanner and share the Flask backend across frontends.
+- The current service installer is macOS-only; do not describe Ubuntu as
+  unattended or production-ready until its installer, privilege model and
+  systemd supervision are implemented and verified.
+- Preserve the known-good alpha branch/tag. Do not delete legacy runtime/static
+  assets without checking active Flask and report dependencies.
+
+## Historical generated map
+
 **Generated:** 2026-01-09 23:43:19
 **Commit:** 4d345bef0712992199b2de854732d6d5e606cf05
 **Branch:** dev
