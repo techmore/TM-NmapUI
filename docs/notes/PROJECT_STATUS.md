@@ -18,7 +18,7 @@ native/web parity is not yet verified.
 - `main` / `origin/main`: `2828bd36`, PR #239 merged August 24. Latest CI passed
   unit/contract, browser regression and packaged Mac smoke jobs:
   https://github.com/techmore/TM-NmapUI/actions/runs/32763844258
-- Draft PR #240 is at remote commit `ec842d56`, which passes all three hosted
+- Draft PR #240 is open and mergeable. Its latest hosted run passed all three
   checks (unit/contract, browser, packaged Mac smoke):
   https://github.com/techmore/TM-NmapUI/actions/runs/36057099197
   The implementation review started from `b2d52a3b`. It adds `5bb6556e` (validating scanner

@@ -1,7 +1,8 @@
 # Repository Layout
 
-The maintained product is a Flask application with an optional macOS
-menu-bar launcher.
+The maintained product is a shared Flask application targeting macOS and Ubuntu
+scanner hosts, with a cross-platform browser UI and an optional macOS menu-bar
+launcher. Ubuntu service packaging is still in progress.
 
 ## Current code
 
@@ -9,7 +10,8 @@ menu-bar launcher.
 - `nmapui/` — scanning, reporting, scheduling, authentication and runtime state
 - `nmapui/handlers/` — HTTP and Socket.IO route registration
 - `templates/`, `static/` — the shared web interface
-- `packaging/macos/` — Swift launcher, daemon installer and scanner helper
+- `packaging/macos/` — Swift launcher, LaunchDaemon installer and scanner helper
+- Ubuntu installer and systemd service — tracked in issue #241; not yet shipped
 - `tests/` — unit, contract, browser and packaged-app checks
 - `docs/guides/`, `docs/notes/`, `docs/audits/` — setup, product status and review
 

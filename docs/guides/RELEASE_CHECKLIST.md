@@ -1,8 +1,9 @@
 # NmapUI Release Checklist
 
 Use this checklist for a candidate build. It covers the current Flask app and
-macOS menu-bar bundle; real appliance service operation needs a Mac capable of
-installing and rebooting the LaunchDaemon.
+macOS menu-bar bundle. Ubuntu is also a scanner-host target; complete the
+Ubuntu support gate before claiming Ubuntu deployment support. That work is
+tracked in [issue #241](https://github.com/techmore/TM-NmapUI/issues/241).
 
 ## Build and automated checks
 
@@ -37,6 +38,17 @@ installing and rebooting the LaunchDaemon.
   recover without duplicate scheduled work.
 - [ ] Run an unattended soak and review service logs, data retention, and disk
   growth.
+
+## Ubuntu support gate
+
+- [ ] Select the supported Ubuntu LTS baseline and verify Python 3.11 or newer.
+- [ ] Install from a clean host using documented direct-host setup with access
+  to the scanner's real network interfaces.
+- [ ] Verify the chosen privilege model completes SYN/OS and ARP discovery.
+- [ ] Verify the systemd unit's credentials, data/log ownership, readiness,
+  restart behavior, and loopback binding.
+- [ ] Test reboot, scan interruption recovery, upgrade and uninstall.
+- [ ] Pass Ubuntu CI checks and record a live scan on the supported host.
 
 Do not treat the dry run or packaged smoke test as evidence that reboot,
 privileged scanning or prolonged unattended operation passed. `deploy.sh` and
