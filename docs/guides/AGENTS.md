@@ -10,7 +10,8 @@ repository.
   are historical references. macOS and Ubuntu are scanner-host targets.
   Ubuntu's installer and systemd unit are implemented as a candidate and have
   disposable-VM lifecycle validation; physical-interface scans, an unattended
-  soak, hosted CI on the current candidate, and release remain outstanding.
+  soak and release remain outstanding. Hosted CI passed all four jobs on
+  `17fa8ad1`; later code revisions require fresh checks.
 - Container deployment is retired. Preserve the scanner host's direct network
   access requirement.
 - Python 3.11 is the CI baseline; use `.venv/bin/python -m pytest -q` for the

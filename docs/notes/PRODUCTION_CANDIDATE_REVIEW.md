@@ -51,14 +51,13 @@ packaged app after that run. Disposable Ubuntu 24.04 ARM64
 VM evidence covers installed lifecycle and privileged loopback scanning, as
 described in [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
-## Next publication step
+## Publication and hosted validation
 
-The candidate can be committed on `fix/unattended-operation` and pushed to its
-existing draft PR so hosted CI evaluates the reviewed code. Refresh that PR's
-title and description around the service, auth and reporting changes listed
-above, and keep the PR draft
-while completing the scanner-host acceptance gates. The user approved this
-branch update on September 29; hosted candidate checks remain pending.
+The candidate was committed on `fix/unattended-operation` and pushed to its
+existing draft PR with user approval on September 29. Its title and description
+cover the service, auth and reporting changes listed above. Keep the PR draft
+while completing scanner-host acceptance. All four hosted checks passed on
+`17fa8ad1` in [run 36625140587](https://github.com/techmore/TM-NmapUI/actions/runs/36625140587).
 
 The first submitted candidate, `feef24b5`, exposed hosted-runner gaps in
 [CI run 36618599556](https://github.com/techmore/TM-NmapUI/actions/runs/36618599556):
@@ -97,12 +96,13 @@ mutation, with regressions for writable and symlink-resolved directory ancestry.
 All four jobs then passed on `df93691c`, including the entire installed Ubuntu
 lifecycle. A prior Mac run had timed out waiting for health; the smoke harness
 now avoids undrained subprocess pipes and captures launch diagnostics to a file.
-Hosted checks on this harness/documentation follow-up must pass before merge.
+All four hosted jobs also passed on the harness/documentation follow-up
+`17fa8ad1`, confirming the final submitted runtime and test harness together.
 
 ## Gates still requiring external evidence or decisions
 
-- Require green hosted CI on the final PR head; all four jobs passed on the
-  service candidate `df93691c`, and the harness/documentation follow-up is pending.
+- Require fresh green checks after any subsequent code or release-version
+  change; the submitted runtime and harness passed all four jobs on `17fa8ad1`.
 - Provision the protected Mac scanner toolchain and validate the installed
   LaunchDaemon; this Mac currently has user-owned Homebrew Nmap and requires a
   sudo password.

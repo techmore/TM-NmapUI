@@ -173,14 +173,14 @@ the prior files, links, enabled/active state and readiness. It listens only on
 `127.0.0.1:9000`. This is strong lifecycle evidence, but all scan validation is
 loopback-only: physical interface discovery, real authorized subnet scans, and
 unattended soak remain open. The user approved submission on September 29.
-[Hosted CI run 36624110222](https://github.com/techmore/TM-NmapUI/actions/runs/36624110222)
-passed all four jobs on candidate `df93691c`: unit/contract and dependency audit,
+[Hosted CI run 36625140587](https://github.com/techmore/TM-NmapUI/actions/runs/36625140587)
+passed all four jobs on candidate `17fa8ad1`: unit/contract and dependency audit,
 browser/PDF, Ubuntu installed systemd lifecycle and privileged loopback scan,
 and packaged Mac smoke. The Linux jobs use Ubuntu 24.04 and Node-24-compatible
 checkout/setup-python actions. Runner protected-path provisioning, browser form
 provenance, font loading and repeated-signal shutdown fixes are included. A
 subsequent Mac smoke harness change uses file-backed launch diagnostics instead
-of undrained pipes; hosted checks for that follow-up revision must also pass.
+of undrained pipes and is included in this green candidate.
 PR #240 remains draft.
 Staged releases now expose a public release identifier in readiness; both
 installers require it to match the release they just started, so an unrelated

@@ -11,7 +11,7 @@ WebSocket access with `NMAPUI_TRUST_LOCAL_UI=false`, systemd SIGKILL
 restart/recovery, upgrade/rollback, uninstall and reboot passed in disposable
 Ubuntu 24.04 ARM64 VMs. The installer defaults trust loopback callers, so that
 auth test used strict-auth configuration rather than the default posture.
-Hosted CI passed all four jobs on candidate `df93691c`, including installed
+Hosted CI passed all four jobs on candidate `17fa8ad1`, including installed
 Ubuntu systemd lifecycle and Mac packaging. Physical-host interface discovery
 and unattended soak remain open, so do not claim Ubuntu production support yet. Native SwiftUI work is on
 the unmerged `swift-native` branch. Read

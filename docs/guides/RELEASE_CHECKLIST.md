@@ -14,8 +14,8 @@ tracked in [issue #241](https://github.com/techmore/TM-NmapUI/issues/241).
 - [x] Run `.venv/bin/python -m pytest -q` (**619 passed, 27 skipped** on Python 3.11).
 - [x] Audit pinned dependencies with `pip-audit -r requirements.txt` (no known vulnerabilities).
 - [x] Run all four hosted CI jobs on the submitted service candidate:
-  [run 36624110222](https://github.com/techmore/TM-NmapUI/actions/runs/36624110222)
-  passed on `df93691c`, including Ubuntu installed lifecycle and Mac packaging.
+  [run 36625140587](https://github.com/techmore/TM-NmapUI/actions/runs/36625140587)
+  passed on `17fa8ad1`, including Ubuntu installed lifecycle and Mac packaging.
   Any later revision still requires its own green checks before merge/release.
 - [x] Rebuild pinned, locally served browser assets with `npm ci --prefix scripts/ui-assets` and `npm run build --prefix scripts/ui-assets`; npm audit reports no known vulnerabilities and CI checks generated assets.
 - [x] Run `NMAPUI_RUN_BROWSER_REGRESSION=1 .venv/bin/python -m pytest -q tests/test_browser_regressions.py` (**20 passed**).
@@ -203,7 +203,9 @@ tracked in [issue #241](https://github.com/techmore/TM-NmapUI/issues/241).
 - [x] Force a failed upgrade and a failed rollback; confirm release links,
   launcher/unit, enabled/active state and readiness all return to the prior
   working release (fresh disposable Ubuntu 24.04 ARM64 VM).
-- [ ] Pass hosted Ubuntu CI on the exact release-candidate revision.
+- [x] Pass hosted Ubuntu CI on the submitted candidate `17fa8ad1`
+  ([run 36625140587](https://github.com/techmore/TM-NmapUI/actions/runs/36625140587)).
+  Recheck any subsequent code or release-version changes before launch.
 - [ ] Install that revision from the documented steps on a clean supported
   Ubuntu scanner host; record authorized SYN/OS/ARP discovery through the real
   host interface and verify the resulting scan/report data.
@@ -217,8 +219,9 @@ resource-security test, authenticated browser/Socket.IO check, crash recovery,
 upgrade/rollback/uninstall, and failure-injected upgrade and rollback recovery
 in a fresh disposable Ubuntu 24.04 ARM64 VM. Earlier validation also passed
 reinstall/reboot readiness checks. These results do not satisfy the remaining
-physical-host network-interface/authorized-subnet scan, unattended soak, or
-hosted CI gates above.
+physical-host network-interface/authorized-subnet scan or unattended soak
+gates above. Hosted CI separately passed on `17fa8ad1`; it does not replace
+physical-host acceptance.
 
 Do not treat the dry run or packaged smoke test as evidence that reboot,
 privileged scanning or prolonged unattended operation passed. `deploy.sh` and
