@@ -3,9 +3,28 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 
 INSTALLER = Path(__file__).resolve().parents[1] / "packaging" / "ubuntu" / "install-service.sh"
+
+
+def test_first_install_rejects_unsafe_destination_before_creating_files(tmp_path):
+    writable = tmp_path / "writable"
+    writable.mkdir(mode=0o777)
+    writable.chmod(0o777)
+    result = subprocess.run(
+        ["bash", "-c", 'source "$INSTALLER"\n'
+         'SOURCE_PYTHON_BIN="$TEST_PYTHON"\n'
+         'WRAPPER_PATH="$TEST_ROOT/bin/nmapui-run"\n'
+         'verify_service_destination_parents'],
+        env={**os.environ, "INSTALLER": str(INSTALLER),
+             "TEST_PYTHON": sys.executable, "TEST_ROOT": str(writable)},
+        text=True, capture_output=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert "service destination parent is not protected" in result.stderr
+    assert not (writable / "bin").exists()
 
 
 def _installer_call(script, env):

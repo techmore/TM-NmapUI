@@ -30,7 +30,7 @@ outside the code release. This is **not** a production-readiness declaration:
 Ubuntu's disposable-VM checks do not cover physical network interfaces or
 unattended soak behavior, and no installed LaunchDaemon validation has been
 done on macOS.
-Most recent local checks on Python 3.11: **616 passed / 27 skipped**; the
+Most recent local checks on Python 3.11: **619 passed / 27 skipped**; the
 CI-equivalent browser group passed **22 tests**, including report CSP, settings
 secret storage, scan/report cancellation, external-resource blocking and a
 representative report-to-PDF render. A four-page synthetic letter PDF was

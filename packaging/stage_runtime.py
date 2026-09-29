@@ -93,6 +93,17 @@ def verify_root_file(file_path: Path) -> Path:
     return resolved
 
 
+def verify_root_directory(directory: Path) -> Path:
+    """Verify a destination directory and both its lexical/resolved parents."""
+    directory = Path(os.path.abspath(directory))
+    resolved = directory.resolve(strict=True)
+    if not resolved.is_dir():
+        raise ValueError(f"Service destination is not a directory: {directory}")
+    _verify_root_owned_path(directory)
+    _verify_root_owned_path(resolved)
+    return resolved
+
+
 def _verify_root_owned_path(path: Path) -> None:
     for candidate in (path, *path.parents):
         details = candidate.lstat()
@@ -210,6 +221,7 @@ def main() -> None:
     parser.add_argument("--verify-root-interpreter", action="store_true")
     parser.add_argument("--verify-root-executable", action="append", type=Path, default=[])
     parser.add_argument("--verify-root-file", action="append", type=Path, default=[])
+    parser.add_argument("--verify-root-directory", action="append", type=Path, default=[])
     parser.add_argument("--verify-root-nmap-data-dir", action="append", type=Path, default=[])
     args = parser.parse_args()
     if args.verify_root_interpreter:
@@ -218,11 +230,14 @@ def main() -> None:
         verify_root_executable(executable)
     for file_path in args.verify_root_file:
         verify_root_file(file_path)
+    for directory in args.verify_root_directory:
+        verify_root_directory(directory)
     for directory in args.verify_root_nmap_data_dir:
         verify_root_nmap_data_dir(directory)
     if args.destination is not None:
         stage_runtime(args.source, args.destination)
-    elif not args.verify_root_interpreter and not args.verify_root_executable and not args.verify_root_file and not args.verify_root_nmap_data_dir:
+    elif not any((args.verify_root_interpreter, args.verify_root_executable,
+                  args.verify_root_file, args.verify_root_directory, args.verify_root_nmap_data_dir)):
         parser.error("--destination or a verification option is required")
 
 

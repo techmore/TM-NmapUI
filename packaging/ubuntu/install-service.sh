@@ -177,6 +177,20 @@ migrate_legacy_file() {
   fi
 }
 
+verify_service_destination_parents() {
+  local path directory
+  for path in "$WRAPPER_PATH" "$UNIT_PATH" "$INSTALL_ROOT"; do
+    directory="$(dirname "$path")"
+    # Validate before creating anything beneath a potentially writable parent.
+    while [[ ! -e "$directory" && ! -L "$directory" ]]; do
+      directory="$(dirname "$directory")"
+    done
+    "$SOURCE_PYTHON_BIN" "$STAGER_PATH" --source "$SOURCE_ROOT_DIR" \
+      --verify-root-directory "$directory" \
+      || die "service destination parent is not protected: $directory"
+  done
+}
+
 prepare_state() {
   for path in "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"; do
     [[ ! -L "$path" ]] || die "refusing symlinked state path: $path"
@@ -399,6 +413,7 @@ install_service() {
   [[ "${ID:-}" == "ubuntu" ]] || die "this installer supports Ubuntu only"
   check_source
   command -v systemctl >/dev/null || die "systemd is required"
+  verify_service_destination_parents
   prepare_state
 
   local old_release old_previous new_release

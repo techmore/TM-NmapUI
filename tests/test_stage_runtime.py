@@ -137,6 +137,32 @@ def test_root_service_accepts_protected_system_executable():
     assert verify_root_executable(Path("/usr/bin/true")).is_file()
 
 
+def test_root_service_rejects_writable_destination_parent(tmp_path, monkeypatch):
+    destination = tmp_path / "writable" / "bin"
+    destination.mkdir(parents=True)
+    destination.parent.chmod(0o777)
+    original_lstat = Path.lstat
+
+    def root_lstat(path):
+        details = original_lstat(path)
+        return SimpleNamespace(st_uid=0, st_mode=details.st_mode)
+
+    monkeypatch.setattr(Path, "lstat", root_lstat)
+    with pytest.raises(ValueError, match="not root-owned and read-only"):
+        STAGER.verify_root_directory(destination)
+
+
+def test_root_service_destination_verifies_lexical_and_resolved_parents(tmp_path, monkeypatch):
+    target = tmp_path / "protected"
+    target.mkdir()
+    link = tmp_path / "linked"
+    link.symlink_to(target, target_is_directory=True)
+    inspected = []
+    monkeypatch.setattr(STAGER, "_verify_root_owned_path", inspected.append)
+    assert STAGER.verify_root_directory(link) == target
+    assert inspected == [link, target]
+
+
 def test_macho_dependency_check_rejects_user_owned_library(tmp_path, monkeypatch):
     dependency = tmp_path / "libscanner.dylib"
     dependency.write_text("not a trusted library", encoding="utf-8")
