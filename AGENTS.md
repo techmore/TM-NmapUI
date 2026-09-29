@@ -1,6 +1,6 @@
 # PROJECT KNOWLEDGE BASE
 
-## Current navigation (updated 2026-09-27)
+## Current navigation (updated 2026-09-29)
 
 The generated map below is historical. The product is Flask (`app.py` wiring,
 `nmapui/` implementation), with `templates/index.html` and an optional Swift
@@ -11,9 +11,9 @@ WebSocket access with `NMAPUI_TRUST_LOCAL_UI=false`, systemd SIGKILL
 restart/recovery, upgrade/rollback, uninstall and reboot passed in disposable
 Ubuntu 24.04 ARM64 VMs. The installer defaults trust loopback callers, so that
 auth test used strict-auth configuration rather than the default posture.
-Physical-host interface
-discovery, unattended soak, and hosted CI for the current candidate remain
-open, so do not claim Ubuntu production support yet. Native SwiftUI work is on
+Hosted CI passed all four jobs on candidate `df93691c`, including installed
+Ubuntu systemd lifecycle and Mac packaging. Physical-host interface discovery
+and unattended soak remain open, so do not claim Ubuntu production support yet. Native SwiftUI work is on
 the unmerged `swift-native` branch. Read
 `docs/notes/PROJECT_STATUS.md` first.
 

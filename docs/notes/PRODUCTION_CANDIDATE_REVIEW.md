@@ -4,7 +4,9 @@ The current candidate is on `fix/unattended-operation`, based on committed
 revision `e939022ccc88e741c334d4a60e6fa76e861b9491`. This reviewed changeset is
 approved for submission to the existing [draft PR #240](https://github.com/techmore/TM-NmapUI/pull/240), which
 has successful September 25 checks for that base revision; those checks do not
-include this candidate. No release version has been selected.
+include this candidate. All four hosted jobs subsequently passed on `df93691c`
+in [run 36624110222](https://github.com/techmore/TM-NmapUI/actions/runs/36624110222).
+No release version has been selected.
 
 ## Changes ready for review
 
@@ -92,9 +94,15 @@ writable `/usr/local/bin`; CI now provisions protected `/usr/local` parents too.
 The Ubuntu installer also verifies destination parents before first-install
 mutation, with regressions for writable and symlink-resolved directory ancestry.
 
+All four jobs then passed on `df93691c`, including the entire installed Ubuntu
+lifecycle. A prior Mac run had timed out waiting for health; the smoke harness
+now avoids undrained subprocess pipes and captures launch diagnostics to a file.
+Hosted checks on this harness/documentation follow-up must pass before merge.
+
 ## Gates still requiring external evidence or decisions
 
-- Run hosted CI on the candidate revision, including the new Ubuntu job.
+- Require green hosted CI on the final PR head; all four jobs passed on the
+  service candidate `df93691c`, and the harness/documentation follow-up is pending.
 - Provision the protected Mac scanner toolchain and validate the installed
   LaunchDaemon; this Mac currently has user-owned Homebrew Nmap and requires a
   sudo password.

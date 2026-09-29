@@ -13,6 +13,10 @@ tracked in [issue #241](https://github.com/techmore/TM-NmapUI/issues/241).
 - [x] Run `source .venv/bin/activate` and `python -m py_compile app.py`.
 - [x] Run `.venv/bin/python -m pytest -q` (**619 passed, 27 skipped** on Python 3.11).
 - [x] Audit pinned dependencies with `pip-audit -r requirements.txt` (no known vulnerabilities).
+- [x] Run all four hosted CI jobs on the submitted service candidate:
+  [run 36624110222](https://github.com/techmore/TM-NmapUI/actions/runs/36624110222)
+  passed on `df93691c`, including Ubuntu installed lifecycle and Mac packaging.
+  Any later revision still requires its own green checks before merge/release.
 - [x] Rebuild pinned, locally served browser assets with `npm ci --prefix scripts/ui-assets` and `npm run build --prefix scripts/ui-assets`; npm audit reports no known vulnerabilities and CI checks generated assets.
 - [x] Run `NMAPUI_RUN_BROWSER_REGRESSION=1 .venv/bin/python -m pytest -q tests/test_browser_regressions.py` (**20 passed**).
 - [x] Verify the main UI CSP blocks inline scripts, with delegated audit-log and

@@ -41,8 +41,8 @@ replace the still-open generated production-scan PDF check. Authenticated
 staged Gunicorn/Chromium sign-in + Socket.IO after reload passed again on
 September 29 (**1 passed**). The packaged Mac smoke passed on September 29
 (**1 passed**, including Unicode credentials and WAL-safe DB migration); the full staged
-Gunicorn/WebSocket smoke passed **4 passed / 2 skipped locally** on September
-28. Generated Mac/Ubuntu artifact tests passed, and `pip-audit` found no
+Gunicorn/WebSocket smoke passed **4 passed / 2 skipped locally** again on September
+29. Generated Mac/Ubuntu artifact tests passed, and `pip-audit` found no
 known vulnerabilities in the pinned
 requirements. Pinned UI assets rebuild reproducibly from a clean npm install;
 their separate npm audit also found no known vulnerabilities. The current
@@ -172,13 +172,16 @@ script and confirmed a deliberately broken upgrade and rollback both restore
 the prior files, links, enabled/active state and readiness. It listens only on
 `127.0.0.1:9000`. This is strong lifecycle evidence, but all scan validation is
 loopback-only: physical interface discovery, real authorized subnet scans, and
-unattended soak remain open. The user approved submission of this reviewed
-candidate on September 29; hosted CI for these changes remains pending. The latest hosted
-run on PR #240 passed unit/contract, browser and packaged Mac jobs on pushed
-commit `e939022`; it does not include this candidate's changes. Following that
-run's runtime warnings, Linux jobs are now pinned to Ubuntu 24.04 and the
-workflow uses Node-24-compatible checkout/setup-python action majors. Those
-workflow updates also await hosted execution. PR #240 remains draft.
+unattended soak remain open. The user approved submission on September 29.
+[Hosted CI run 36624110222](https://github.com/techmore/TM-NmapUI/actions/runs/36624110222)
+passed all four jobs on candidate `df93691c`: unit/contract and dependency audit,
+browser/PDF, Ubuntu installed systemd lifecycle and privileged loopback scan,
+and packaged Mac smoke. The Linux jobs use Ubuntu 24.04 and Node-24-compatible
+checkout/setup-python actions. Runner protected-path provisioning, browser form
+provenance, font loading and repeated-signal shutdown fixes are included. A
+subsequent Mac smoke harness change uses file-backed launch diagnostics instead
+of undrained pipes; hosted checks for that follow-up revision must also pass.
+PR #240 remains draft.
 Staged releases now expose a public release identifier in readiness; both
 installers require it to match the release they just started, so an unrelated
 listener cannot satisfy the startup check. An earlier unmanaged development
@@ -322,8 +325,8 @@ including PDF resource security, generated-report CSP/CSV safety and
 remote-sync secret handling (567 passed / 24 skipped at that checkpoint).
 Staged runtime asset checks and staged Gunicorn/WebSocket checks passed.
 Dependency audits and Ubuntu lifecycle/reboot results are recorded above;
-physical-host discovery, unattended soak, and hosted CI on this exact candidate
-remain open.
+physical-host discovery and unattended soak remain open. Hosted candidate CI
+evidence is recorded above.
 Auto-scan configuration writes now use distinct, synced temporary files and
 propagate write failures. HTTP and Socket.IO updates no longer acknowledge or
 broadcast settings that could not be saved, and overlapping updates serialize
@@ -448,7 +451,7 @@ in draft pending the remaining platform checks and hosted candidate CI.
    install, a privileged loopback scan, upgrade/rollback and reboot. Failed
    upgrade and rollback recovery have also been injected against the installed
    service in a disposable VM. Physical scanner-host/interface scans and an
-   unattended soak remain open, as does hosted CI on the current candidate, in
+   unattended soak remain open; hosted candidate CI passed as recorded above, in
    [#241](https://github.com/techmore/TM-NmapUI/issues/241). Per the September 11
    user decision, container networking is unsuitable for the intended
    deployment; container packaging is retired from the active roadmap. Windows

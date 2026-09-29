@@ -102,12 +102,16 @@ def test_build_script_output_launches_and_serves_health(tmp_path):
     assert (bundled_resources / "static" / "vendor" / "fonts.css").is_file()
     assert (bundled_resources / "static" / "vendor" / "fonts" / "files").is_dir()
 
+    # Do not leave PIPE buffers undrained while polling health: verbose startup
+    # or request logs can fill them and stall an otherwise responsive server.
+    launch_log_path = tmp_path / "packaged-launch.log"
+    launch_log = launch_log_path.open("w", encoding="utf-8")
     process = subprocess.Popen(
         [str(RUN_SCRIPT)],
         cwd=RUN_SCRIPT.parent,
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=launch_log,
+        stderr=subprocess.STDOUT,
         text=True,
     )
 
@@ -144,6 +148,12 @@ def test_build_script_output_launches_and_serves_health(tmp_path):
         assert "spreadsheetSafeText" in report_runtime_body
         assert "csvValue(cell.textContent)" in report_runtime_body
         assert "csvValue(cell.textContent.trim())" not in report_runtime_body
+    except Exception as error:
+        launch_log.flush()
+        diagnostics = launch_log_path.read_text(encoding="utf-8", errors="replace")[-12_000:]
+        raise AssertionError(
+            f"Packaged smoke failed (process status {process.poll()}): {error}\n{diagnostics}"
+        ) from error
     finally:
         process.terminate()
         try:
@@ -151,3 +161,4 @@ def test_build_script_output_launches_and_serves_health(tmp_path):
         except subprocess.TimeoutExpired:  # pragma: no cover - exercised only in smoke mode
             process.kill()
             process.wait(timeout=5)
+        launch_log.close()
