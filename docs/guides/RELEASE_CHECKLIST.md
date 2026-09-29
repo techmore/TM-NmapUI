@@ -11,7 +11,7 @@ tracked in [issue #241](https://github.com/techmore/TM-NmapUI/issues/241).
   version (the latest repository tag is `v2026.4.26.4.00`), then push the
   release branch.
 - [x] Run `source .venv/bin/activate` and `python -m py_compile app.py`.
-- [x] Run `.venv/bin/python -m pytest -q` (**615 passed, 27 skipped** on Python 3.11).
+- [x] Run `.venv/bin/python -m pytest -q` (**616 passed, 27 skipped** on Python 3.11).
 - [x] Audit pinned dependencies with `pip-audit -r requirements.txt` (no known vulnerabilities).
 - [x] Rebuild pinned, locally served browser assets with `npm ci --prefix scripts/ui-assets` and `npm run build --prefix scripts/ui-assets`; npm audit reports no known vulnerabilities and CI checks generated assets.
 - [x] Run `NMAPUI_RUN_BROWSER_REGRESSION=1 .venv/bin/python -m pytest -q tests/test_browser_regressions.py` (**20 passed**).

@@ -34,7 +34,7 @@ include this candidate. No release version has been selected.
 
 | Verification | Result |
 | --- | --- |
-| Full Python 3.11 suite | 615 passed, 27 skipped |
+| Full Python 3.11 suite | 616 passed, 27 skipped |
 | Auth/session group | 90 passed |
 | Chromium browser regressions | 20 passed |
 | Browser-backed PDF checks | 2 passed |
@@ -75,6 +75,16 @@ checked readiness before explicitly requesting the face. CI now protects both
 runner directories, and the font regression requires successfully loaded real
 faces. The first run's macOS packaged job passed. These follow-up checks still
 require a green hosted run on the final candidate.
+
+Subsequent hosted evidence passed macOS packaging and the complete browser,
+unit and audit jobs. Installed Ubuntu login returned HTTP 403 on its own form;
+the application now uses `Referrer-Policy: same-origin` so local form provenance
+is preserved without disclosing referrers to foreign origins. Foreign/opaque
+origins remain rejected. Installed logs also exposed repeated-signal logging
+reentrancy and Gunicorn's optional control socket under protected `/root`;
+shutdown now guards repeat signals and avoids buffered logging, and service
+wrappers disable that unused socket. After these changes the full local suite
+passed 616/27, browser/PDF passed 22, and full staged server smoke passed 4/2.
 
 ## Gates still requiring external evidence or decisions
 

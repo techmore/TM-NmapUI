@@ -264,6 +264,34 @@ def test_process_reaper_skips_signal_handlers_under_pytest():
     assert install_process_reaper(job_registry=registry) is False
 
 
+def test_process_reaper_ignores_reentrant_signals_without_buffered_logging(monkeypatch):
+    from nmapui import recovery
+
+    handlers = {}
+    notices = []
+    calls = []
+    monkeypatch.setattr(recovery, "_signal_handlers_are_safe", lambda: True)
+    monkeypatch.setattr(recovery.atexit, "register", lambda callback: None)
+    monkeypatch.setattr(recovery.signal, "signal", lambda signum, handler: handlers.update({signum: handler}))
+    monkeypatch.setattr(recovery.os, "write", lambda fd, message: notices.append((fd, message)))
+
+    class Registry:
+        def terminate_all(self):
+            calls.append(True)
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+    class BufferedLogger:
+        def warning(self, *args):
+            raise AssertionError("Signal handler must not reenter buffered logging")
+
+    assert install_process_reaper(job_registry=Registry(), logger=BufferedLogger())
+    with pytest.raises(SystemExit) as stopped:
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+    assert stopped.value.code == 128 + signal.SIGTERM
+    assert calls == [True]
+    assert len(notices) == 1 and notices[0][0] == 2
+
+
 def test_process_reaper_requires_a_registry():
     assert install_process_reaper(job_registry=None) is False
 

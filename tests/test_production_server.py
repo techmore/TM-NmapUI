@@ -108,6 +108,7 @@ def _assert_authenticated_browser_flow(base_url, username, password):
                 page.get_by_role("button", name="Sign in").click()
             assert login_response.value.status == 302, (
                 f"Login returned HTTP {login_response.value.status}: "
+                f"Origin={login_response.value.request.headers.get('origin')!r}; "
                 f"{login_response.value.text()}"
             )
             page.wait_for_url(f"{base_url}/", wait_until="domcontentloaded", timeout=20_000)

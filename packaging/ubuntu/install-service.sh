@@ -104,7 +104,7 @@ fi
 cd "$app_root"
 exec "$app_root/.venv/bin/python" -m gunicorn \
   --bind "$bind_host:$port" \
-  --workers 1 --threads 100 --timeout 180 --graceful-timeout 30 \
+  --workers 1 --threads 100 --timeout 180 --graceful-timeout 30 --no-control-socket \
   nmapui.wsgi:application
 WRAPPER
   } > "$target"

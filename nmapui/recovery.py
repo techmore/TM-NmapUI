@@ -135,15 +135,25 @@ def install_process_reaper(*, job_registry, logger=logger) -> bool:
     if not _signal_handlers_are_safe():
         return False
 
+    shutting_down = False
+
     def _handle_shutdown(signum, _frame):
-        logger.warning(
-            "Received signal %s; terminating tracked scan processes before exit",
-            signum,
-        )
+        nonlocal shutting_down
+        if shutting_down:
+            return
+        shutting_down = True
+        # A signal can interrupt an active logging stream flush. Avoid both
+        # reentrant buffered writes and repeated shutdown signals here.
+        def write_notice(message):
+            try:
+                os.write(2, message.encode("utf-8"))
+            except OSError:
+                pass
+        write_notice(f"Received signal {signum}; terminating tracked scan processes before exit\n")
         try:
             job_registry.terminate_all()
         except Exception:
-            logger.exception("Failed to terminate scan processes during shutdown")
+            write_notice("Failed to terminate scan processes during shutdown\n")
         raise SystemExit(128 + signum)
 
     installed = False

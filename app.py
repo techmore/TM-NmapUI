@@ -190,7 +190,10 @@ def _set_security_headers(response):
         f"connect-src 'self' ws: wss: http://localhost:* http://127.0.0.1:*",
     ]))
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "no-referrer"
+    # Preserve a same-origin form's provenance: Chromium on Linux can send
+    # Origin: null for POST forms under no-referrer. Still disclose no referrer
+    # when navigating to another origin.
+    response.headers["Referrer-Policy"] = "same-origin"
     return response
 
 

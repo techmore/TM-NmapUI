@@ -417,6 +417,7 @@ def test_browser_security_policy_blocks_inline_scripts_and_delegates_actions(
         assert "frame-ancestors 'none'" in policy
         assert "fonts.googleapis.com" not in policy
         assert "fonts.gstatic.com" not in policy
+        assert response.headers["referrer-policy"] == "same-origin"
         assert page.evaluate(
             """() => Array.from(document.scripts).every((script) =>
                 new URL(script.src, window.location.href).origin === window.location.origin
