@@ -3,6 +3,8 @@ import Darwin
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var runtimePort = 9000
+    // The appliance daemon always uses this port; the wrapper attaches to it.
+    let fixedRuntimePort = 9000
     var statusItem: NSStatusItem!
     var pythonProcess: Process?
     var statusPollTimer: Timer?
@@ -46,10 +48,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     var isFlaskRunning: Bool {
-        if launchedWithPrivileges {
-            return isLocalPortInUse(runtimePort)
+        if let process = pythonProcess, process.isRunning {
+            return true
         }
-        return pythonProcess?.isRunning == true
+        // Either the launched child or the appliance daemon owns the port.
+        return isLocalPortInUse(runtimePort)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -133,7 +136,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func pickAvailableRuntimePort() -> Int? {
-        let fixedPort = 9000
+        let fixedPort = fixedRuntimePort
         if isLocalPortInUse(fixedPort) {
             return nil
         }
@@ -146,6 +149,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         guard let resourcesPath, let runScriptPath else { return }
 
+        // The appliance is normally owned by the NmapUI LaunchDaemon. If it
+        // already holds the runtime port, attach to it instead of starting a
+        // second server — and never request administrator privileges: the
+        // appliance must run for months without any authentication prompt.
+        if isLocalPortInUse(fixedRuntimePort) {
+            runtimePort = fixedRuntimePort
+            launchedWithPrivileges = false
+            pythonProcess = nil
+            startStatusPolling()
+            updateStatusIcon(state: .active(jobTypes: []), detail: "Managed by NmapUI daemon")
+            print("Attached to the NmapUI daemon already listening on port \(fixedRuntimePort)")
+            return
+        }
+
         guard FileManager.default.fileExists(atPath: runScriptPath) else {
             print("run.sh not found inside bundle — rebuild with build.sh")
             return
@@ -154,7 +171,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         removeRuntimeMarkers()
 
         guard let selectedPort = pickAvailableRuntimePort() else {
-            updateStatusIcon(state: .error, detail: "Port 9000 is already in use")
+            updateStatusIcon(state: .error, detail: "Port \(fixedRuntimePort) is already in use")
             return
         }
         runtimePort = selectedPort
@@ -162,13 +179,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let allowedOrigins = "http://127.0.0.1:\(runtimePort),http://localhost:\(runtimePort)"
         startStatusPolling()
         updateStatusIcon(state: .starting, detail: "Starting NmapUI")
-
-        if startFlaskWithPrivileges(runScriptPath: runScriptPath, allowedOrigins: allowedOrigins) {
-            launchedWithPrivileges = true
-            pythonProcess = nil
-            print("NmapUI started with elevated privileges")
-            return
-        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -196,17 +206,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func stopFlask(wait: Bool = true) {
         writeShutdownMarker()
         stopStatusPolling()
-        if launchedWithPrivileges {
-            stopFlaskWithPrivileges()
-            launchedWithPrivileges = false
-            pythonProcess = nil
-        } else if let process = pythonProcess, process.isRunning {
+        let ownedProcess = pythonProcess
+        if let process = ownedProcess, process.isRunning {
             process.terminate()
             if wait { process.waitUntilExit() }
-            pythonProcess = nil
         }
+        pythonProcess = nil
+        launchedWithPrivileges = false
 
-        stopTrackedRuntimeProcesses(wait: wait)
+        // Only stop processes this app started. A daemon-managed server is
+        // owned by launchd and must be left alone.
+        if ownedProcess != nil {
+            stopTrackedRuntimeProcesses(wait: wait)
+        }
         removeRuntimeMarkers()
 
         print("NmapUI stopped")
@@ -422,38 +434,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Privileged start/stop
-
-    func startFlaskWithPrivileges(runScriptPath: String, allowedOrigins: String) -> Bool {
-        let command = "rm -f \(shellEscaped(shutdownMarkerPath ?? "")) \(shellEscaped(runtimePIDFilePath ?? "")); NMAPUI_PORT=\(runtimePort) NMAPUI_ALLOWED_ORIGINS=\(allowedOrigins) \(shellEscaped(runScriptPath)) >/tmp/nmapui-privileged.log 2>&1 &"
-        let appleScript = "do shell script \(appleScriptEscaped(command)) with administrator privileges"
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", appleScript]
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
-        } catch {
-            print("Failed to start privileged NmapUI: \(error)")
-            return false
-        }
-    }
-
-    func stopFlaskWithPrivileges() {
-        let command = stopRuntimeShellCommand(wait: true)
-        let appleScript = "do shell script \(appleScriptEscaped(command)) with administrator privileges"
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", appleScript]
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            print("Failed to stop privileged NmapUI: \(error)")
-        }
-    }
+    //
+    // Privileged administration is owned by the NmapUI LaunchDaemon
+    // (packaging/macos/install-daemon.sh). The wrapper deliberately no longer
+    // starts the server with `administrator privileges`: that raised a GUI
+    // password prompt on every launch, which is incompatible with an appliance
+    // that must run unattended for months.
 
     func appleScriptEscaped(_ value: String) -> String {
         var escaped = value.replacingOccurrences(of: "\\", with: "\\\\")

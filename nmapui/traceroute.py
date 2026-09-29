@@ -2,6 +2,7 @@ import platform
 import re
 import subprocess
 
+from nmapui.runtime import env_flag
 from nmapui.runtime_log import append_runtime_log
 
 
@@ -29,6 +30,27 @@ def run_traceroute(target="1.1.1.1", *, sid=None, deps):
     state = get_client_state(sid=sid)
     active_network_key = dict(state["network_key"])
     active_customer = dict(state["current_customer"])
+
+    if not env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True):
+        active_network_key.update(
+            {
+                "target": target,
+                "hops": [],
+                "private_hops": [],
+                "public_hops": [],
+                "total_hops": 0,
+                "exit_ip": None,
+                "public_ip": None,
+                "error": "Network fingerprinting disabled by configuration",
+            }
+        )
+        set_network_key_state(value=active_network_key, sid=sid)
+        emit_customer_event(
+            "customer_identification_progress",
+            {"message": "Network fingerprinting is disabled by configuration."},
+        )
+        emit_customer_event("network_key", active_network_key)
+        return active_network_key
 
     try:
         emit_customer_event("customer_identification_start")
@@ -93,13 +115,16 @@ def run_traceroute(target="1.1.1.1", *, sid=None, deps):
         if active_network_key["hops"]:
             active_network_key["exit_ip"] = active_network_key["hops"][-1]["ip"]
 
-        try:
-            active_network_key["public_ip"] = requests.get(
-                "https://api.ipify.org", timeout=5
-            ).text
-            logger.info("Detected public IP: %s", active_network_key["public_ip"])
-        except Exception as exc:
-            logger.warning("Could not detect public IP: %s", exc)
+        if env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True):
+            try:
+                active_network_key["public_ip"] = requests.get(
+                    "https://api.ipify.org", timeout=5
+                ).text
+                logger.info("Detected public IP: %s", active_network_key["public_ip"])
+            except Exception as exc:
+                logger.warning("Could not detect public IP: %s", exc)
+                active_network_key["public_ip"] = None
+        else:
             active_network_key["public_ip"] = None
 
         set_network_key_state(value=active_network_key, sid=sid)

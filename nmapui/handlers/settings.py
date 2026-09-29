@@ -3,7 +3,11 @@ from html import escape
 
 from nmapui.auto_monitor import build_auto_monitor_rule_status
 from nmapui.auth import require_auth
-from nmapui.settings import normalize_settings_document
+from nmapui.settings import (
+    SETTINGS_STATE_LOCK,
+    normalize_settings_document,
+    preserve_auto_monitor_progress,
+)
 
 
 def register_settings_routes(app, deps):
@@ -23,12 +27,19 @@ def register_settings_routes(app, deps):
     @app.route("/api/settings")
     @require_auth
     def get_settings():
-        return jsonify(
-            normalize_settings_document(
+        with SETTINGS_STATE_LOCK:
+            remote_sync = (settings_state.get("sync") or {}).get("remote_sync") or {}
+            normalized = normalize_settings_document(
                 settings_state,
                 customer_name_lookup=get_customer_name,
+                # The encrypted key is intentionally absent from the settings
+                # document. Preserve its server-owned presence bit when
+                # normalizing this already-loaded in-memory state.
+                remote_sync_api_key_configured=bool(
+                    remote_sync.get("api_key_configured", False)
+                ),
             )
-        )
+        return jsonify(normalized)
 
     @app.route("/api/settings", methods=["POST"])
     @require_auth
@@ -37,18 +48,25 @@ def register_settings_routes(app, deps):
         if not isinstance(payload, dict):
             return jsonify({"success": False, "error": "Invalid settings payload"}), 400
 
-        normalized = save_settings(payload)
-        settings_state.clear()
-        settings_state.update(normalized)
+        try:
+            with SETTINGS_STATE_LOCK:
+                candidate = preserve_auto_monitor_progress(payload, settings_state)
+                normalized = save_settings(candidate)
+                settings_state.clear()
+                settings_state.update(normalized)
+        except Exception:
+            app.logger.exception("Failed to save settings")
+            return jsonify({"success": False, "error": "Could not save settings"}), 500
         return jsonify({"success": True, "settings": normalized})
 
     @app.route("/api/settings/auto-monitor")
     @require_auth
     def get_auto_monitor_settings():
-        normalized = normalize_settings_document(
-            settings_state,
-            customer_name_lookup=get_customer_name,
-        )
+        with SETTINGS_STATE_LOCK:
+            normalized = normalize_settings_document(
+                settings_state,
+                customer_name_lookup=get_customer_name,
+            )
         auto_monitor = normalized.get("auto_monitor", {})
         return jsonify(
             {
@@ -129,28 +147,29 @@ def register_settings_routes(app, deps):
                     400,
                 )
             folder_result = ensure_google_drive_reports_folder()
-            normalized = normalize_settings_document(settings_state)
-            google_drive_state = normalized.get("sync", {}).get("google_drive", {})
-            if folder_result.get("success"):
-                google_drive_state.update(
-                    {
-                        "enabled": True,
-                        "folder_id": folder_result.get("folder_id", ""),
-                        "status": "Connected",
-                    }
-                )
-            else:
-                failure_reason = folder_result.get("error", "Folder setup failed")
-                google_drive_state.update(
-                    {
-                        "enabled": False,
-                        "status": f"Connected (folder setup failed: {failure_reason})",
-                    }
-                )
-            normalized["sync"]["google_drive"] = google_drive_state
-            normalized = save_settings(normalized)
-            settings_state.clear()
-            settings_state.update(normalized)
+            with SETTINGS_STATE_LOCK:
+                normalized = normalize_settings_document(settings_state)
+                google_drive_state = normalized.get("sync", {}).get("google_drive", {})
+                if folder_result.get("success"):
+                    google_drive_state.update(
+                        {
+                            "enabled": True,
+                            "folder_id": folder_result.get("folder_id", ""),
+                            "status": "Connected",
+                        }
+                    )
+                else:
+                    failure_reason = folder_result.get("error", "Folder setup failed")
+                    google_drive_state.update(
+                        {
+                            "enabled": False,
+                            "status": f"Connected (folder setup failed: {failure_reason})",
+                        }
+                    )
+                normalized["sync"]["google_drive"] = google_drive_state
+                normalized = save_settings(normalized)
+                settings_state.clear()
+                settings_state.update(normalized)
             message = "Google Drive connected."
             backfill_result = None
             if folder_result.get("success") and upload_latest_report_to_google_drive is not None:

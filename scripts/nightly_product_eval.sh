@@ -80,8 +80,14 @@ run_pytest_slice() {
   eval "$PYTEST_BIN -q $tests" >"$output_file" 2>&1
 }
 
+probe_liveness() {
+  curl -fsS "http://127.0.0.1:9000/api/health/live"
+}
+
 probe_identity() {
-  curl -fsS "http://127.0.0.1:9000/api/app-identity"
+  # Flask exposes /api/health (with app_version); /api/app-identity only ever
+  # existed in the legacy Node runtime.
+  curl -fsS "http://127.0.0.1:9000/api/health"
 }
 
 probe_root() {
@@ -107,7 +113,7 @@ wait_for_port() {
 import socket
 import time
 
-deadline = time.time() + 20
+deadline = time.time() + 120
 while time.time() < deadline:
     with socket.socket() as sock:
         sock.settimeout(1)
@@ -119,7 +125,16 @@ PY
 }
 
 start_server() {
-  (cd "$ROOT_DIR" && npm start) >"$(server_log)" 2>&1 &
+  # Boot the authoritative Flask runtime with the project virtualenv.
+  # The legacy `npm start` path was never the product and does not exist on
+  # launchd's minimal PATH, which left this evaluation blocked for weeks.
+  (
+    cd "$ROOT_DIR" || exit 1
+    # exec so $! is the Flask process itself and teardown is reliable.
+    exec env NMAPUI_PORT=9000 \
+      NMAPUI_ALLOW_UNSAFE_WERKZEUG=true \
+      "$PYTHON_BIN" "$ROOT_DIR/app.py" --quick
+  ) >"$(server_log)" 2>&1 &
   echo $!
 }
 
@@ -143,11 +158,12 @@ Target: $SAFE_TARGET
 Log dir: $LOG_DIR
 
 Planned scenarios:
-1. Boot the app through npm start
-2. Probe /api/app-identity
-3. Probe /
-4. Probe /static/techmore.png
-5. Record the result
+1. Boot the Flask app with .venv/bin/python app.py --quick
+2. Probe /api/health/live
+3. Probe /api/health (app identity)
+4. Probe /
+5. Probe /static/techmore.png
+6. Record the result
 EOF2
 }
 
@@ -167,7 +183,8 @@ main() {
         write_json_report "$(json_log)" "run" '[
           {"name": "app_start", "status": "blocked", "reason": "port already in use"},
           {"name": "identity_probe", "status": "blocked", "reason": "port already in use"},
-          {"name": "root_probe", "status": "blocked", "reason": "port already in use"}
+          {"name": "root_probe", "status": "blocked", "reason": "port already in use"},
+          {"name": "static_asset_probe", "status": "blocked", "reason": "port already in use"}
         ]' "$(printf '%s' "[\"$runtime_log\", \"$(server_log)\"]")"
         printf '%s nightly-product-eval blocked: port 9000 already in use\n' "$(timestamp)"
         exit 1
@@ -179,19 +196,26 @@ main() {
         write_json_report "$(json_log)" "run" '[
           {"name": "app_start", "status": "blocked", "reason": "server did not start"},
           {"name": "identity_probe", "status": "blocked", "reason": "server did not start"},
-          {"name": "root_probe", "status": "blocked", "reason": "server did not start"}
+          {"name": "root_probe", "status": "blocked", "reason": "server did not start"},
+          {"name": "static_asset_probe", "status": "blocked", "reason": "server did not start"}
         ]' "$(printf '%s' "[\"$runtime_log\", \"$(server_log)\"]")"
         printf '%s nightly-product-eval blocked: server did not start on port 9000\n' "$(timestamp)"
+        stop_server "${server_pid:-}"
+        printf '%s\n' '--- server log (tail) ---'
+        tail -n 40 "$(server_log)" 2>/dev/null || true
         exit 1
       fi
 
+      liveness_json="$(probe_liveness)"
       identity_json="$(probe_identity)"
       root_html="$(probe_root)"
       probe_static_asset
+      printf '%s\n' "$liveness_json"
       printf '%s\n' "$identity_json"
       printf '%s\n' "$root_html" | sed -n '1,5p'
       {
         printf '%s\n' "$(timestamp)"
+        printf 'liveness=%s\n' "$liveness_json"
         printf 'identity=%s\n' "$identity_json"
         printf 'root=%s\n' "$(printf '%s' "$root_html" | tr '\n' ' ' | cut -c1-200)"
         printf 'static_asset=ok\n'

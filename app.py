@@ -72,6 +72,7 @@ from nmapui.paths import (
     VULNERS_SCRIPT,
     XSL_STYLESHEET,
     XSL_STYLESHEET_PDF,
+    migrate_legacy_runtime_files,
     resolve_scan_path,
 )
 from nmapui.google_drive import (
@@ -89,6 +90,7 @@ from nmapui.runtime import (
     get_app_version,
 )
 from nmapui.runtime_db import create_runtime_state_store
+from nmapui.recovery import install_process_reaper, reconcile_interrupted_jobs
 from nmapui.runtime_history import backfill_runtime_history_artifacts
 from nmapui.runtime_log import append_runtime_log
 from nmapui.runtime_services import create_runtime_services
@@ -132,6 +134,12 @@ from persistence import (
     sanitize_customer_dir_name,
 )
 
+if __name__ == "__main__":
+    # Direct and bundled launches migrate checkout-era files before the eager
+    # customer/Drive services below read their persistent paths. Host services
+    # stage these files before starting the WSGI worker.
+    migrate_legacy_runtime_files()
+
 configure_root_logging_runtime(base_dir=BASE_DIR)
 
 try:
@@ -150,8 +158,11 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-runtime_options = build_runtime_options(sys.argv)
-allowed_origins = get_allowed_origins(port=runtime_options["port"])
+# A WSGI server binds its socket before importing this module. Do not probe
+# that occupied port at import time; direct launches still select a port here
+# so their default CORS origins follow an auto-selected development port.
+runtime_options = build_runtime_options(sys.argv) if __name__ == "__main__" else None
+allowed_origins = get_allowed_origins(port=runtime_options["port"] if runtime_options else None)
 
 # Loopback-only token required in the Socket.IO handshake auth payload.
 # Clients fetch it from /api/socket-token (restricted to 127.0.0.1) first;
@@ -159,23 +170,30 @@ allowed_origins = get_allowed_origins(port=runtime_options["port"])
 import secrets as _secrets
 
 SOCKET_AUTH_TOKEN = _secrets.token_hex(32)
-socketio = SocketIO(app, cors_allowed_origins=allowed_origins)
+socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode="threading")
 CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
 
 
 @app.after_request
 def _set_security_headers(response):
-    """Basic hardening headers (#201). CDN hosts match those used in index.html."""
-    response.headers["Content-Security-Policy"] = "; ".join([
+    """Apply the shared application security policy (#201)."""
+    response.headers.setdefault("Content-Security-Policy", "; ".join([
         "default-src 'self'",
-        "script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.tailwindcss.com https://unpkg.com",
-        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://fonts.googleapis.com",
-        "font-src 'self' https://fonts.gstatic.com",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "base-uri 'self'",
+        "object-src 'none'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+        "font-src 'self'",
         "img-src 'self' data: blob:",
         f"connect-src 'self' ws: wss: http://localhost:* http://127.0.0.1:*",
-    ])
+    ]))
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "no-referrer"
+    # Preserve a same-origin form's provenance: Chromium on Linux can send
+    # Origin: null for POST forms under no-referrer. Still disclose no referrer
+    # when navigating to another origin.
+    response.headers["Referrer-Policy"] = "same-origin"
     return response
 
 
@@ -230,6 +248,15 @@ settings_state = load_settings_state(
     remote_sync_secret_path=REMOTE_SYNC_SECRET_FILE,
     remote_sync_secret_key_path=REMOTE_SYNC_SECRET_KEY_FILE,
 )
+
+# Unclean-shutdown recovery. Jobs persisted as "running" by a previous process
+# would otherwise be replayed to every new tab forever, permanently disabling
+# the report button; tracked child scan processes are reaped on shutdown so a
+# crash does not leave orphaned nmap/arp-scan behind.
+recovery_status = {}
+reconcile_interrupted_jobs(runtime_store=runtime_store, logger=logger, status=recovery_status)
+runtime_services["startup_state"]["recovery"] = recovery_status
+install_process_reaper(job_registry=job_registry, logger=logger)
 
 event_helpers = build_event_helpers(
     socketio=socketio,
@@ -317,6 +344,7 @@ runtime_bindings = build_runtime_bindings(
     set_current_customer_state=set_current_customer_state,
     set_last_scan_target_state=set_last_scan_target_state,
     generate_report_task_provider=lambda: generate_report_task,
+    runtime_store=runtime_store,
 )
 execute_auto_scan = runtime_bindings["execute_auto_scan"]
 load_current_assignment = runtime_bindings["load_current_assignment"]

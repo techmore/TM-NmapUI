@@ -1,13 +1,18 @@
 import base64
 import hashlib
 import json
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
 from cryptography.fernet import Fernet, InvalidToken
+
+from .private_storage import (
+    atomic_replace_private_bytes,
+    load_or_create_private_bytes,
+    load_private_bytes,
+)
 
 
 GOOGLE_DRIVE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -50,41 +55,20 @@ ENCRYPTED_TOKEN_SCHEMA_VERSION = 1
 
 
 def _load_json_file(path: Path, default):
-    if not path.exists():
-        return default
     try:
-        return json.loads(path.read_text())
-    except Exception:
+        return json.loads(load_private_bytes(path).decode("utf-8"))
+    except (OSError, ValueError):
         return default
 
 
 def _save_json_file(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2))
-    tmp_path.replace(path)
-
-
-def _set_owner_only_permissions(path: Path) -> None:
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    atomic_replace_private_bytes(path, json.dumps(payload, indent=2).encode("utf-8"))
 
 
 def _load_or_create_encryption_key(key_path: Path) -> bytes:
-    key_path.parent.mkdir(parents=True, exist_ok=True)
-    if key_path.exists():
-        key = key_path.read_bytes().strip()
-        _set_owner_only_permissions(key_path)
-        return key
-
-    key = Fernet.generate_key()
-    tmp_path = key_path.with_suffix(f"{key_path.suffix}.tmp")
-    tmp_path.write_bytes(key)
-    tmp_path.replace(key_path)
-    _set_owner_only_permissions(key_path)
-    return key
+    return load_or_create_private_bytes(
+        key_path, Fernet.generate_key, normalize=bytes.strip
+    )
 
 
 def _load_encrypted_token_payload(token_path: Path, key_path: Path):
@@ -98,7 +82,7 @@ def _load_encrypted_token_payload(token_path: Path, key_path: Path):
     if not ciphertext:
         return {}
 
-    key = _load_or_create_encryption_key(key_path)
+    key = load_private_bytes(key_path, normalize=bytes.strip)
     decrypted = Fernet(key).decrypt(str(ciphertext).encode("utf-8"))
     decoded = json.loads(decrypted.decode("utf-8"))
     return decoded if isinstance(decoded, dict) else {}
@@ -117,7 +101,6 @@ def save_google_drive_credentials(credentials_path: Path, payload: dict) -> dict
     if not isinstance(payload, dict):
         return {"success": False, "error": "Invalid credentials payload"}
     _save_json_file(credentials_path, payload)
-    _set_owner_only_permissions(credentials_path)
     return {"success": True, "status": "Google Drive credentials saved"}
 
 
@@ -125,7 +108,7 @@ def load_google_drive_token_state(token_path: Path, key_path: Path | None = None
     key_path = key_path or token_path.with_suffix(".key")
     try:
         encrypted_payload = _load_encrypted_token_payload(token_path, key_path)
-    except InvalidToken:
+    except (InvalidToken, ValueError, OSError):
         return {}
     if encrypted_payload is not None:
         return encrypted_payload
@@ -149,7 +132,6 @@ def save_google_drive_token_state(token_path: Path, payload: dict, key_path: Pat
             "ciphertext": encrypted_payload,
         },
     )
-    _set_owner_only_permissions(token_path)
     return payload
 
 

@@ -339,3 +339,28 @@ def test_get_network_statistics_prefers_runtime_store_history(monkeypatch):
     assert payload["unique_customers"] == 1
     assert payload["most_common_customer"]["id"] == "cust-1"
     assert payload["most_common_customer"]["name"] == "Acme"
+
+
+def test_resolve_report_path_confines_writes_to_the_scans_directory(tmp_path, monkeypatch):
+    """assign_report_to_customer writes metadata.json; the path must be contained."""
+    from nmapui import paths
+    from nmapui.handlers.customers import _resolve_report_path
+
+    monkeypatch.setattr(paths, "SCANS_DIR", tmp_path)
+
+    inside = tmp_path / "Acme" / "2026-03-14" / "scan_010000_target"
+    inside.mkdir(parents=True)
+    (inside / "metadata.json").write_text("{}")
+
+    outside = tmp_path.parent / "nmapui-outside-target"
+    outside.mkdir(exist_ok=True)
+    (outside / "metadata.json").write_text("{}")
+
+    # Absolute and scans-relative forms of an in-tree path both resolve.
+    assert _resolve_report_path(str(inside)) == inside.resolve()
+    assert _resolve_report_path("Acme/2026-03-14/scan_010000_target") == inside.resolve()
+
+    # Anything outside the scans directory is rejected.
+    assert _resolve_report_path(str(outside)) is None
+    assert _resolve_report_path("../nmapui-outside-target") is None
+    assert _resolve_report_path("") is None

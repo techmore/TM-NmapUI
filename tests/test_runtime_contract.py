@@ -47,10 +47,11 @@ def test_main_template_no_longer_duplicates_extracted_socket_runtime_handlers():
 
 def test_template_uses_shared_table_sorter_module():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     sorter_source = (ROOT / "static" / "js" / "table_sorter.js").read_text()
 
     assert '<script src="/static/js/table_sorter.js"></script>' in html
-    assert "window.tableSorter = new TableSorter('discovery-table');" in html
+    assert "window.tableSorter = new TableSorter('discovery-table');" in bootstrap
     assert "class TableSorter {" not in html
     assert "window.TableSorter = TableSorter;" in sorter_source
     assert 'data-column="status"' in html
@@ -68,10 +69,11 @@ def test_template_uses_shared_table_sorter_module():
 
 def test_template_uses_site_chrome_module():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     site_chrome_source = (ROOT / "static" / "js" / "site_chrome.js").read_text()
 
     assert '<script src="/static/js/site_chrome.js"></script>' in html
-    assert "initializeSiteChrome();" in html
+    assert "initializeSiteChrome();" in bootstrap
     assert "<!-- 2026 New Sites JavaScript Functionality -->" not in html
     assert "const mobileMenuBtn = document.getElementById('mobile-menu-btn');" not in html
     assert "const searchInput = document.getElementById('global-search');" not in html
@@ -80,11 +82,12 @@ def test_template_uses_site_chrome_module():
 
 def test_template_uses_shared_scan_display_modules():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     discovery_source = (ROOT / "static" / "js" / "discovery_ui.js").read_text()
     banner_source = (ROOT / "static" / "js" / "scan_banners.js").read_text()
 
     assert '<script src="/static/js/scan_banners.js"></script>' in html
-    assert "window.socket = socket;" in html
+    assert "window.socket = socket;" in bootstrap
     assert "function startPreciseClock()" not in html
     assert "function saveHostsToStorage()" not in html
     assert "function loadHostsFromStorage()" not in html
@@ -95,7 +98,7 @@ def test_template_uses_shared_scan_display_modules():
     assert "window.loadHostsFromStorage = loadHostsFromStorage;" in discovery_source
     assert "window.showHistoricalDataBanner = showHistoricalDataBanner;" in banner_source
     assert "window.showScanSummaryBanner = showScanSummaryBanner;" in banner_source
-    assert 'href="https://github.com/techmore/NmapUI"' in html
+    assert 'href="https://github.com/techmore/TM-NmapUI"' in html
     assert 'aria-label="Open NmapUI GitHub repository"' in html
     assert 'id="settings-nmap-version"' in html
     assert 'id="settings-vulners-version"' in html
@@ -110,9 +113,10 @@ def test_template_uses_shared_scan_display_modules():
 
 def test_template_uses_shared_customer_ui_module():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     customer_source = (ROOT / "static" / "js" / "customer_ui.js").read_text()
 
-    assert "initializeCustomerUI(socket);" in html
+    assert "initializeCustomerUI(socket);" in bootstrap
     assert "function showCustomerForm()" not in html
     assert "function addCustomer()" not in html
     assert "socket.on('customer_added'" not in html
@@ -232,10 +236,11 @@ def test_ci_workflow_covers_browser_and_packaged_smoke_jobs():
 
 def test_template_uses_shared_report_status_module():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     report_status_source = (ROOT / "static" / "js" / "report_status.js").read_text()
 
     assert '<script src="/static/js/report_status.js"></script>' in html
-    assert "showReportStatus: window.showReportStatus" in html
+    assert "showReportStatus: window.showReportStatus" in bootstrap
     assert "function removeReportProgressCard()" not in html
     assert "function showReportStatus(message, type)" not in html
     assert "window.showReportStatus = showReportStatus;" in report_status_source
@@ -244,10 +249,11 @@ def test_template_uses_shared_report_status_module():
 
 def test_template_uses_shared_auto_update_banner_module():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     auto_update_source = (ROOT / "static" / "js" / "auto_update_banner.js").read_text()
 
     assert '<script src="/static/js/auto_update_banner.js"></script>' in html
-    assert "initializeAutoUpdateBanner(socket);" in html
+    assert "initializeAutoUpdateBanner(socket);" in bootstrap
     assert "let countdownInterval = null;" not in html
     assert "function showAutoUpdateBanner(updateInfo)" not in html
     assert "function performAutoUpdate()" not in html
@@ -307,14 +313,15 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'echo "Database migration source: $MIGRATION_SOURCE_DB"' in build_script
     assert '  -target "$SWIFT_TARGET" \\' in build_script
     assert 'TEMP_MIGRATION_DB="$(mktemp "${TMPDIR:-/tmp}/nmapui-runtime-db.XXXXXX.sqlite3")"' in build_script
-    assert 'cp "$MIGRATION_SOURCE_DB" "$TEMP_MIGRATION_DB"' in build_script
+    assert '[[ "$MIGRATION_SOURCE_DB" -ef "$INSTALLED_RUNTIME_DB" ]]' in build_script
+    assert '"$ROOT_DIR/packaging/sqlite_backup.py"' in build_script
+    assert 'cp "$MIGRATION_SOURCE_DB" "$TEMP_MIGRATION_DB"' not in build_script
     assert 'mkdir -p "$APP_INSTALL_DIR"' in build_script
     assert 'ditto "$APP_NAME" "$INSTALLED_APP_NAME"' in build_script
-    assert 'cp "$TEMP_MIGRATION_DB" "$INSTALLED_RUNTIME_DB"' in build_script
+    assert 'cp "$TEMP_MIGRATION_DB" "$INSTALLED_RUNTIME_DB"' not in build_script
     assert 'if [[ "${NMAPUI_SKIP_OPEN:-}" == "1" ]]; then' in build_script
     assert 'echo "Skipping application auto-open because NMAPUI_SKIP_OPEN=1"' in build_script
     assert 'open "$INSTALLED_APP_NAME"' in build_script
-    assert 'pkill -f "NmapUI.app" 2>/dev/null || true' in build_script
     assert 'RUNTIME_PID_FILE_REL="Contents/Resources/nmapui-runtime.pid"' in build_script
     assert 'SHUTDOWN_MARKER_REL="Contents/Resources/nmapui-shutdown"' in build_script
     assert 'AUTO_SCAN_LOCK_REL="Contents/Resources/data/auto_scan_scheduler.lock"' in build_script
@@ -351,7 +358,10 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'mkdir -p "$NMAPUI_DATA_DIR" "$NMAPUI_LOG_DIR"' in build_script
     assert 'stage_google_drive_credentials' in build_script
     assert "export NMAPUI_ALLOW_UNSAFE_WERKZEUG=true" in build_script
-    assert "export NMAPUI_TRUST_LOCAL_UI=true" in build_script
+    # Local-trust bypass is gone; the bundle signs in like everything else.
+    assert "export NMAPUI_TRUST_LOCAL_UI=true" not in build_script
+    assert "export NMAPUI_TRUST_LOCAL_UI" not in build_script
+    assert 'CREDENTIALS_FILE="$NMAPUI_DATA_DIR/credentials.env"' in build_script
     assert 'BUNDLE_PLAYWRIGHT_BROWSERS="$APP_NAME/Contents/Resources/playwright-browsers"' in build_script
     assert 'PLAYWRIGHT_BROWSERS_PATH="$BUNDLE_PLAYWRIGHT_BROWSERS" python -m playwright install chromium' in build_script
     assert 'export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright-browsers"' in build_script
@@ -381,8 +391,14 @@ def test_wrapper_launcher_quit_path_tracks_and_stops_runtime_tree():
     assert "func stopRuntimeShellCommand(wait: Bool) -> String" in launcher_source
     assert 'process.arguments = ["-lc", stopRuntimeShellCommand(wait: wait)]' in launcher_source
     assert 'escaped = escaped.replacingOccurrences(of: "\\n", with: "; ")' in launcher_source
-    assert 'let command = stopRuntimeShellCommand(wait: true)' in launcher_source
-    assert 'let appleScript = "do shell script \\(appleScriptEscaped(command)) with administrator privileges"' in launcher_source
+    # The appliance must never prompt for administrator privileges: privileged
+    # administration belongs to the LaunchDaemon installer, not the wrapper.
+    assert "with administrator privileges" not in launcher_source
+    assert "startFlaskWithPrivileges" not in launcher_source
+    assert "stopFlaskWithPrivileges" not in launcher_source
+    # It attaches to a daemon-managed server instead of starting a second one.
+    assert "let fixedRuntimePort = 9000" in launcher_source
+    assert "isLocalPortInUse(fixedRuntimePort)" in launcher_source
     assert 'if isQuitting {' in launcher_source
     assert 'isQuitting = true' in launcher_source
     assert 'stopFlask(wait: true)' in launcher_source
@@ -400,11 +416,23 @@ def test_wrapper_docs_reference_current_local_port():
     for doc_name in ("README.md", "packaging/macos/README.md", "packaging/macos/SETUP.md"):
         source = (ROOT / doc_name).read_text()
         assert "127.0.0.1:9000" in source
-        assert "selected local runtime URL" in source or "local loopback URL" in source
         assert "localhost:9999" not in source
     readme = (ROOT / "README.md").read_text()
     assert "NMAPUI_SWIFT_TARGET" in readme
     assert "/Applications" in readme
+
+
+def test_readme_documents_the_current_runtime_and_build_vars():
+    """The README used to tell users to `sudo npm start` the legacy Node app."""
+    readme = (ROOT / "README.md").read_text()
+
+    assert "npm start" not in readme
+    assert "Express" in readme  # only ever mentioned as the legacy build
+    assert "legacy Node" in readme
+    assert "Python 3.11" in readme
+    assert "app.py" in readme
+    assert "install-daemon.sh" in readme
+    assert "NMAPUI_PASSWORD" in readme
     assert "~/Applications" in readme
     assert "NMAPUI_APPLICATIONS_DIR" in readme
     assert "/api/runtime/export" in readme
@@ -448,14 +476,19 @@ def test_runtime_uses_separate_web_and_pdf_stylesheets():
     app_runtime_source = (ROOT / "nmapui" / "app_runtime.py").read_text()
     fingerprinter_source = (ROOT / "customer_fingerprint.py").read_text()
 
-    assert 'XSL_STYLESHEET = BASE_DIR / "nmap-modern.xsl"' in paths_source
-    assert 'XSL_STYLESHEET_PDF = BASE_DIR / "nmap-pdf-olive-legacy.xsl"' in paths_source
+    # Web and PDF stylesheets stay distinct, and both prefer the root-owned
+    # asset copy so the privileged helper accepts the path.
+    assert 'XSL_STYLESHEET = _privileged_asset(' in paths_source
+    assert '"nmap-modern.xsl"' in paths_source
+    assert '"nmap-pdf-olive-legacy.xsl"' in paths_source
+    assert "def _privileged_asset(" in paths_source
+    assert 'NMAPUI_PRIVILEGED_ASSETS' in paths_source
     assert "def _resolve_data_dir() -> Path:" in paths_source
     assert 'override = str(os.environ.get("NMAPUI_DATA_DIR", "") or "").strip()' in paths_source
     assert "DATA_DIR = _resolve_data_dir()" in paths_source
     assert 'SCANS_DIR = DATA_DIR / "scans"' in paths_source
     assert 'RUNTIME_DB_FILE = DATA_DIR / "runtime.sqlite3"' in paths_source
-    assert 'GOOGLE_DRIVE_CREDENTIALS_FILE = BASE_DIR / "config" / "google_drive_credentials.json"' in paths_source
+    assert 'GOOGLE_DRIVE_CREDENTIALS_FILE = DATA_DIR / "google_drive_credentials.json"' in paths_source
     assert 'GOOGLE_DRIVE_TOKEN_FILE = DATA_DIR / "google_drive_tokens.json"' in paths_source
     assert 'GOOGLE_DRIVE_TOKEN_KEY_FILE = DATA_DIR / "google_drive_tokens.key"' in paths_source
     assert 'REMOTE_SYNC_SECRET_FILE = DATA_DIR / "remote_sync_secret.json"' in paths_source
@@ -579,7 +612,8 @@ def test_auto_scan_warning_contract_is_runtime_backed():
     assert "def build_auto_scan_status_payload(" in auto_scan_source
     assert 'payload["next_run"] = next_run.isoformat()' in auto_scan_source
     assert 'payload["warning_active"] = 0 < seconds_until_next_run <= warning_window_seconds' in auto_scan_source
-    assert "build_auto_scan_status_payload(auto_scan_config)" in auto_scan_handler_source
+    assert "build_auto_scan_status_payload(updated_config)" in auto_scan_handler_source
+    assert "build_auto_scan_status_payload(dict(auto_scan_config))" in auto_scan_handler_source
     assert "build_auto_scan_status_payload(auto_scan_config)" in connection_source
     assert "build_auto_scan_status_payload(auto_scan_config)" in startup_checks_source
     assert 'id="auto-scan-warning-banner"' in template
@@ -725,20 +759,29 @@ def test_failed_scan_persistence_accepts_runtime_store():
 def test_pdf_stylesheet_stays_print_first_while_web_stylesheet_stays_interactive():
     pdf_stylesheet = (ROOT / "nmap-pdf-olive-legacy.xsl").read_text()
     web_stylesheet = (ROOT / "nmap-modern.xsl").read_text()
+    report_runtime = (ROOT / "static" / "js" / "report_runtime.js").read_text()
     strategy = (ROOT / "docs" / "guides" / "REPORT_STYLESHEET_STRATEGY.md").read_text()
 
     assert "cdn.datatables.net" not in pdf_stylesheet
     assert "code.jquery.com" not in pdf_stylesheet
     assert "$('#table-services').DataTable" not in pdf_stylesheet
     assert "@media print" in pdf_stylesheet
-    assert "cdn.datatables.net" in web_stylesheet
-    assert "$('#table-services').DataTable" in web_stylesheet
+    assert "cdn.datatables.net" not in web_stylesheet
+    assert "code.jquery.com" not in web_stylesheet
+    assert "$('#table-services').DataTable" not in web_stylesheet
+    assert 'id="nmapui-report-runtime"' in web_stylesheet
+    assert "__NMAPUI_REPORT_RUNTIME__" in web_stylesheet
+    assert "data-report-action=\"highlight\"" in web_stylesheet
+    assert "report-table-controls" in report_runtime
+    assert "Download CSV" in report_runtime
+    assert "spreadsheetSafeText" in report_runtime
     assert "nmap-modern.xsl" in strategy
     assert "nmap-pdf-olive-legacy.xsl" in strategy
     assert "#scannedhosts" in strategy
     assert "#openservices" in strategy
     assert "#onlinehosts" in strategy
-    assert "DataTables CSS and JS" in strategy
+    assert "first-party, self-contained runtime" in strategy
+    assert "compiled Tailwind CSS" in strategy
     assert "Playwright PDF rendering under `print` media" in strategy
 
 
@@ -791,7 +834,7 @@ def test_frontend_layout_guide_and_page_shell_exist():
     assert "For modal close buttons, use `icon-button` instead of repeating text-color hover stacks." in guide
     assert "For modal/footer action buttons, use `action-button` with an intent variant" in guide
     assert "For smaller action rows such as history filters, add a shared size helper" in guide
-    assert "/Users/techmore/projects/NmapUI/templates/index.html" in guide
+    assert "[`templates/index.html`](../../templates/index.html)" in guide
 
 
 def test_auto_scan_config_has_tracked_example_only():
@@ -1005,9 +1048,9 @@ def test_app_startup_checks_quick_mode_executes_successfully():
 def test_app_runtime_uses_bootstrap_origin_and_server_policy():
     app_source = (ROOT / "app.py").read_text()
 
-    assert 'runtime_options = build_runtime_options(sys.argv)' in app_source
-    assert 'allowed_origins = get_allowed_origins(port=runtime_options["port"])' in app_source
-    assert 'SocketIO(app, cors_allowed_origins=allowed_origins)' in app_source
+    assert 'runtime_options = build_runtime_options(sys.argv) if __name__ == "__main__" else None' in app_source
+    assert 'allowed_origins = get_allowed_origins(port=runtime_options["port"] if runtime_options else None)' in app_source
+    assert 'SocketIO(app, cors_allowed_origins=allowed_origins, async_mode="threading")' in app_source
     assert 'CORS(app, resources={r"/api/*": {"origins": allowed_origins}})' in app_source
     assert "run_server_runtime(" in app_source
     assert 'cors_allowed_origins="*"' not in app_source
@@ -1415,15 +1458,13 @@ def test_app_delegates_root_logging_setup_to_shared_runtime_module():
 
 
 def test_template_unifies_scan_result_listeners_and_normalizes_feedback():
-    template = subprocess.check_output(
-        ["git", "show", ":templates/index.html"],
-        cwd=ROOT,
-        text=True,
-    )
+    template = (ROOT / "templates" / "index.html").read_text()
+    bootstrap_module = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     scan_runtime_module = (ROOT / "static" / "js" / "scan_runtime.js").read_text()
     discovery_module = (ROOT / "static" / "js" / "discovery_ui.js").read_text()
 
-    assert template.count("initializeDiscoveryUI(socket);") == 1
+    assert template.count('/static/js/template_bootstrap.js') == 1
+    assert bootstrap_module.count("initializeDiscoveryUI(socket);") == 1
     assert "socket.on('scan_results'" in discovery_module
     assert "socket.on('deep_scan_results'" in discovery_module
     assert "socket.on('arp_results'" in discovery_module
@@ -1581,14 +1622,15 @@ def test_report_runtime_replays_nmap_feedback_through_broadcaster():
 
 def test_template_does_not_keep_inline_report_generation_block():
     template = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
 
     assert "document.getElementById('generate-report-btn').addEventListener('click'" not in template
     assert "function startReportTimer()" not in template
     assert "function stopReportTimer()" not in template
     assert "const clientJobs =" not in template
     assert "let autoScanEnabled = false;" not in template
-    assert "getClientJobs: window.getClientJobs" in template
-    assert "getLastScanTarget: window.getLastScanTarget" in template
+    assert "getClientJobs: window.getClientJobs" in bootstrap
+    assert "getLastScanTarget: window.getLastScanTarget" in bootstrap
     assert "Complete + PDF" in template
     assert 'aria-label="Run a complete scan and generate a new PDF"' in template
     assert 'id="report-status-actions"' in template
@@ -1628,8 +1670,8 @@ def test_template_does_not_keep_inline_report_generation_block():
     assert 'id="settings-runtime-export-btn"' in template
     assert '<script src="/static/js/reports_tab.js"></script>' in template
     assert '<script src="/static/js/settings_tab.js"></script>' in template
-    assert "initializeAuditLog();" in template
-    assert "typeof initializeSettingsTab === 'function'" in template
+    assert "initializeAuditLog();" in bootstrap
+    assert "typeof initializeSettingsTab === 'function'" in bootstrap
     settings_source = (ROOT / "static" / "js" / "settings_tab.js").read_text()
     reports_source = (ROOT / "static" / "js" / "reports_tab.js").read_text()
     customer_ui_source = (ROOT / "static" / "js" / "customer_ui.js").read_text()

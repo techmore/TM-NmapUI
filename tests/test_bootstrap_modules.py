@@ -35,6 +35,7 @@ def test_get_allowed_origins_defaults_to_local_ui_hosts(monkeypatch):
     assert get_allowed_origins() == [
         f"http://127.0.0.1:{DEFAULT_RUNTIME_PORT}",
         f"http://localhost:{DEFAULT_RUNTIME_PORT}",
+        f"http://[::1]:{DEFAULT_RUNTIME_PORT}",
     ]
 
 
@@ -57,6 +58,7 @@ def test_get_allowed_origins_uses_selected_port_when_not_explicitly_configured(m
     assert get_allowed_origins(port=9101) == [
         "http://127.0.0.1:9101",
         "http://localhost:9101",
+        "http://[::1]:9101",
     ]
 
 

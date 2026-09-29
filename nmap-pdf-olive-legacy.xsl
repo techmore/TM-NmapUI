@@ -62,43 +62,27 @@ Updated: 2026
                   ancestor::port[1]/@portid
                )"/>           
 
+  <xsl:template name="last-command-argument">
+    <xsl:param name="arguments"/>
+    <xsl:variable name="normalized" select="normalize-space($arguments)"/>
+    <xsl:choose>
+      <xsl:when test="contains($normalized, ' ')">
+        <xsl:call-template name="last-command-argument">
+          <xsl:with-param name="arguments" select="substring-after($normalized, ' ')"/>
+        </xsl:call-template>
+      </xsl:when>
+      <xsl:otherwise><xsl:value-of select="$normalized"/></xsl:otherwise>
+    </xsl:choose>
+  </xsl:template>
+
   <xsl:template match="/">
     <html lang="en">
       <head>
         <meta name="referrer" content="no-referrer"/>
         <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link rel="preconnect" href="https://fonts.googleapis.com"/>
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin=""/>
-        <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Inter:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
-        
-        <script>
-          tailwind.config = {
-            theme: {
-              extend: {
-                colors: {
-                  olive: {
-                    50: '#f5f6f3',
-                    100: '#e9ebe0',
-                    200: '#d8dbc7',
-                    300: '#bcc2a9',
-                    400: '#979f83',
-                    500: '#777f65',
-                    600: '#636b54',
-                    700: '#525845',
-                    800: '#414637',
-                    900: '#32382a',
-                    950: '#25291f',
-                  }
-                },
-                fontFamily: {
-                  display: ['Instrument Serif', 'serif'],
-                  sans: ['Inter', 'system-ui', 'sans-serif'],
-                }
-              }
-            }
-          }
-        </script>
+        <meta name="nmapui-report-policy" content="v1"/>
+        <meta http-equiv="Content-Security-Policy" content="__NMAPUI_REPORT_CSP__"/>
+        __NMAPUI_TAILWIND_CSS__
         
         <style>
           body {
@@ -609,6 +593,57 @@ Updated: 2026
               page-break-inside: avoid;
             }
 
+            #webservices h2,
+            #onlinehosts h2,
+            #onlinehosts h4 {
+              page-break-after: avoid;
+              break-after: avoid;
+            }
+
+            #web-services {
+              width: 100% !important;
+              table-layout: fixed !important;
+            }
+
+            #web-services th,
+            #web-services td {
+              width: auto;
+              padding: 2pt !important;
+              font-size: 7pt !important;
+              vertical-align: top;
+              word-break: break-word;
+              overflow-wrap: anywhere;
+            }
+
+            #web-services th:nth-child(1),
+            #web-services td:nth-child(1) { width: 12%; }
+            #web-services th:nth-child(2),
+            #web-services td:nth-child(2) { width: 13%; }
+            #web-services th:nth-child(3),
+            #web-services td:nth-child(3) { width: 5%; }
+            #web-services th:nth-child(4),
+            #web-services td:nth-child(4) { width: 8%; }
+            #web-services th:nth-child(5),
+            #web-services td:nth-child(5) { width: 15%; }
+            #web-services th:nth-child(6),
+            #web-services td:nth-child(6) { width: 8%; }
+            #web-services th:nth-child(7),
+            #web-services td:nth-child(7) { width: 12%; }
+            #web-services th:nth-child(8),
+            #web-services td:nth-child(8) { width: 11%; }
+            #web-services th:nth-child(9),
+            #web-services td:nth-child(9) { width: 16%; }
+
+            #onlinehosts .card {
+              page-break-inside: avoid;
+              break-inside: avoid;
+            }
+
+            #onlinehosts .collapsible-header {
+              page-break-after: avoid;
+              break-after: avoid;
+            }
+
             /* Remove hover effects */
             .card:hover {
               border-color: #d8dbc7;
@@ -684,14 +719,12 @@ Updated: 2026
               </div>
             </div>
             
-            <div class="progress-bar mb-6">
+            <div class="progress-bar mb-6" aria-hidden="true">
               <div class="progress-segment progress-success">
                 <xsl:attribute name="style">width:<xsl:value-of select="/nmaprun/runstats/hosts/@up div /nmaprun/runstats/hosts/@total * 100"/>%;</xsl:attribute>
-                <xsl:value-of select="/nmaprun/runstats/hosts/@up"/> Up
               </div>
               <div class="progress-segment progress-danger">
                 <xsl:attribute name="style">width:<xsl:value-of select="/nmaprun/runstats/hosts/@down div /nmaprun/runstats/hosts/@total * 100"/>%;</xsl:attribute>
-                <xsl:value-of select="/nmaprun/runstats/hosts/@down"/> Down
               </div>
             </div>
             
@@ -703,17 +736,20 @@ Updated: 2026
                 <div class="space-y-1">
                   <div class="text-sm text-olive-700">
                     <span class="font-medium">Target:</span>
-                    <xsl:value-of select="substring-after(/nmaprun/@args, ' ')"/>
+                    <xsl:text>&#160;</xsl:text>
+                    <xsl:call-template name="last-command-argument">
+                      <xsl:with-param name="arguments" select="/nmaprun/@args"/>
+                    </xsl:call-template>
                   </div>
                   <div class="text-sm text-olive-700">
-                    <span class="font-medium">IPs:</span> <xsl:value-of select="/nmaprun/runstats/hosts/@total"/>
+                    <span class="font-medium">IPs:</span><xsl:text>&#160;</xsl:text><xsl:value-of select="/nmaprun/runstats/hosts/@total"/>
                   </div>
                   <div class="text-sm text-olive-700">
-                    <span class="font-medium">Started:</span> <xsl:value-of select="/nmaprun/@startstr"/>
+                    <span class="font-medium">Started:</span><xsl:text>&#160;</xsl:text><xsl:value-of select="/nmaprun/@startstr"/>
                   </div>
                   <div class="text-sm text-olive-700">
                     <span class="font-medium">Duration:</span>
-                    <xsl:value-of select="/nmaprun/runstats/finished/@elapsed"/>s
+                    <xsl:text>&#160;</xsl:text><xsl:value-of select="/nmaprun/runstats/finished/@elapsed"/>s
                   </div>
                 </div>
               </div>
@@ -721,29 +757,30 @@ Updated: 2026
               <!-- Vulnerability Severity -->
               <div class="card p-4">
                 <h3 class="text-lg font-semibold text-olive-900 mb-3">Vulnerability Levels</h3>
+                <p class="mb-3 text-xs text-olive-600">CVE matches depend on identified service versions and the external Vulners lookup. No findings do not prove a host is free of vulnerabilities.</p>
                 <div class="space-y-2">
                   <div class="flex justify-between items-center">
                     <span class="text-sm text-red-600 font-medium">Critical (CVSS ≥9.0)</span>
-                    <span class="text-sm font-bold text-red-600">
-                      <xsl:value-of select="count(/nmaprun/host/script[@id='vulners'][contains(@output, '9.') or contains(@output, '10.')])"/>
+                    <span id="vuln-critical-count" class="text-sm font-bold text-red-600">
+                      <xsl:value-of select="count(/nmaprun/host/ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 9])"/>
                     </span>
                   </div>
                   <div class="flex justify-between items-center">
                     <span class="text-sm text-orange-600 font-medium">High (CVSS ≥7.0)</span>
-                    <span class="text-sm font-bold text-orange-600">
-                      <xsl:value-of select="count(/nmaprun/host/script[@id='vulners'][contains(@output, '7.') or contains(@output, '8.')])"/>
+                    <span id="vuln-high-count" class="text-sm font-bold text-orange-600">
+                      <xsl:value-of select="count(/nmaprun/host/ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 7 and number(.) &lt; 9])"/>
                     </span>
                   </div>
                   <div class="flex justify-between items-center">
                     <span class="text-sm text-yellow-600 font-medium">Medium (CVSS ≥4.0)</span>
-                    <span class="text-sm font-bold text-yellow-600">
-                      <xsl:value-of select="count(/nmaprun/host/script[@id='vulners'][contains(@output, '4.') or contains(@output, '5.') or contains(@output, '6.')])"/>
+                    <span id="vuln-medium-count" class="text-sm font-bold text-yellow-600">
+                      <xsl:value-of select="count(/nmaprun/host/ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 4 and number(.) &lt; 7])"/>
                     </span>
                   </div>
                   <div class="flex justify-between items-center">
                     <span class="text-sm text-green-600 font-medium">Low (CVSS &lt;4.0)</span>
-                    <span class="text-sm font-bold text-green-600">
-                      <xsl:value-of select="count(/nmaprun/host/script[@id='vulners'][contains(@output, '0.') or contains(@output, '1.') or contains(@output, '2.') or contains(@output, '3.')])"/>
+                    <span id="vuln-low-count" class="text-sm font-bold text-green-600">
+                      <xsl:value-of select="count(/nmaprun/host/ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &lt; 4])"/>
                     </span>
                   </div>
                 </div>
@@ -784,9 +821,9 @@ Updated: 2026
               <label class="block text-sm font-medium text-olive-900 mb-2">Highlight Keywords in Services</label>
               <textarea id="keyword-input" rows="2" placeholder="sha1, password, md5, login..." 
                         class="w-full mb-3">sha1,login,password,md5</textarea>
-              <div class="flex space-x-3">
-                <button id="highlight-button" onclick="highlight()">Apply Highlighting</button>
-                <button onclick="document.location.reload(true);" class="bg-olive-400">Reset</button>
+              <div class="flex space-x-3 no-print">
+                <button id="highlight-button" type="button" data-report-action="highlight">Apply Highlighting</button>
+                <button type="button" data-report-action="reset" class="bg-olive-400">Reset</button>
               </div>
             </div>
           </div>
@@ -1234,7 +1271,11 @@ Updated: 2026
               <div class="card mb-6">
                 <div class="collapsible-header p-6 border-b border-olive-200">
                   <xsl:attribute name="id">onlinehosts-<xsl:value-of select="translate(address/@addr, '.', '-')"/></xsl:attribute>
-                  <xsl:attribute name="onclick">toggleCollapse('<xsl:value-of select="translate(address/@addr, '.', '-')"/>')</xsl:attribute>
+                  <xsl:attribute name="role">button</xsl:attribute>
+                  <xsl:attribute name="tabindex">0</xsl:attribute>
+                  <xsl:attribute name="aria-expanded">true</xsl:attribute>
+                  <xsl:attribute name="aria-controls">content-<xsl:value-of select="translate(address/@addr, '.', '-')"/></xsl:attribute>
+                  <xsl:attribute name="data-collapse-target">content-<xsl:value-of select="translate(address/@addr, '.', '-')"/></xsl:attribute>
                   <div class="flex items-center justify-between">
                     <div>
                       <h3 class="text-xl font-display font-bold text-olive-900">
@@ -1413,7 +1454,7 @@ Updated: 2026
           </div>
         </footer>
 
-        <!-- Scripts -->
+        <script id="nmapui-report-runtime">__NMAPUI_REPORT_RUNTIME__</script>
       </body>
     </html>
   </xsl:template>

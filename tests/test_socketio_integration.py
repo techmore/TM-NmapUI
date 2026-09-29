@@ -99,6 +99,24 @@ def test_cancel_job_is_scoped_to_requesting_client(monkeypatch):
     assert client_b.get_received() == []
 
 
+def test_legacy_stop_scan_event_cancels_the_requesting_clients_scan(monkeypatch):
+    configure_auth(monkeypatch)
+    registry = ClientJobRegistry()
+    app, socketio = build_history_app(registry)
+    client = socketio.test_client(app, headers=basic_auth_header())
+    sid = get_socket_sid(client)
+    assert registry.start(sid, "scan", {"target": "10.0.0.0/24"}) is True
+
+    client.emit("stop_scan")
+
+    assert registry.get(sid, "scan")["status"] == "cancelling"
+    assert any(
+        event["name"] == "job_cancelled"
+        and event["args"] == [{"job_type": "scan", "message": "Cancelling scan job..."}]
+        for event in client.get_received()
+    )
+
+
 def test_get_job_status_reports_only_the_current_client_jobs(monkeypatch):
     configure_auth(monkeypatch)
     registry = ClientJobRegistry()

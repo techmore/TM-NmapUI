@@ -5,29 +5,16 @@ import os
 import re
 import shutil
 import subprocess
-import sys
+
+from nmapui import privileged
+from nmapui.runtime import env_flag
 
 
 logger = logging.getLogger(__name__)
 
 
 def _is_permission_denied(result) -> bool:
-    combined_output = " ".join(
-        str(part or "")
-        for part in (
-            getattr(result, "stdout", ""),
-            getattr(result, "stderr", ""),
-        )
-    ).lower()
-    return any(
-        token in combined_output
-        for token in (
-            "permission denied",
-            "operation not permitted",
-            "not permitted",
-            "requires root",
-        )
-    )
+    return privileged.is_permission_denied(result)
 
 
 def get_nmap_scan_technique(force_unprivileged=False):
@@ -65,13 +52,20 @@ def check_arp_scan():
 
 
 def check_nmap():
-    """Ensure nmap is installed and return its version string."""
+    """Ensure nmap is installed and return its version string.
+
+    Returns ``None`` when nmap is unavailable instead of calling ``sys.exit``.
+    Exiting here used to kill the whole process before the HTTP server bound,
+    which made any missing-dependency restart an unrecoverable silent death for
+    an unattended deployment.  Callers record the failure in startup state so
+    ``/api/health/ready`` can report it.
+    """
     nmap_path = shutil.which("nmap")
     if not nmap_path:
         logger.error("nmap not found. Please install nmap:")
         logger.error("  macOS:  brew install nmap")
         logger.error("  Ubuntu: sudo apt install nmap")
-        sys.exit(1)
+        return None
 
     try:
         version = subprocess.check_output(["nmap", "--version"]).decode().split("\n")[0]
@@ -79,18 +73,22 @@ def check_nmap():
         return version
     except Exception as exc:
         logger.error("Could not get nmap version: %s", exc)
-        sys.exit(1)
+        return None
 
 
 def check_vulners(vulners_script):
-    """Verify the bundled vulners NSE script is present."""
+    """Verify the bundled vulners NSE script is present.
+
+    Returns ``True`` when usable.  A missing script degrades vulnerability
+    detection but must not terminate the server (see ``check_nmap``).
+    """
     if not vulners_script.exists():
         logger.error(
             "Vulners NSE script not found at %s. Run: git clone https://github.com/vulnersCom/nmap-vulners.git %s",
             vulners_script,
             vulners_script.parent,
         )
-        sys.exit(1)
+        return False
 
     vulners_dir = vulners_script.parent
     try:
@@ -191,7 +189,14 @@ def run_arp_scan(
         return {}
 
     try:
-        command_str = f"arp-scan {target} --interface {interface}"
+        command = [
+            *privileged.privileged_prefix(),
+            "arp-scan",
+            target,
+            "--interface",
+            interface,
+        ]
+        command_str = " ".join(command)
         if sid:
             emit_to_client(sid, "scan_feedback", f"Executing: {command_str}")
         else:
@@ -200,7 +205,7 @@ def run_arp_scan(
         socketio_sleep(0)
 
         result = run_cancellable_command(
-            ["arp-scan", target, "--interface", interface],
+            command,
             sid=sid,
             job_type="scan" if sid else None,
             timeout=30,
@@ -210,7 +215,8 @@ def run_arp_scan(
         else:
             if _is_permission_denied(result):
                 message = (
-                    "arp-scan requires elevated privileges; skipping MAC/vendor detection"
+                    "MAC/vendor detection was skipped because ARP privileges are "
+                    "unavailable; the Nmap scan completed normally"
                 )
                 logger.warning(message)
                 if sid:
@@ -268,10 +274,18 @@ def run_nmap_with_xml_output(
     timeout_seconds=None,
 ):
     """Run nmap with all formats output (-oA)."""
-    if force_privileged_scan:
+    # Precedence matters: an explicit unprivileged request must win over the
+    # default privileged attempt, otherwise "scan only" mode silently becomes
+    # a SYN scan (and contradicts the message shown to the operator).
+    if scan_only_mode:
+        scan_technique = "-sT"
+    elif force_privileged_scan:
         scan_technique = "-sS"
     else:
-        scan_technique = get_nmap_scan_technique(force_unprivileged=scan_only_mode)
+        scan_technique = get_nmap_scan_technique(
+            force_unprivileged=not (privileged.is_root() or privileged.sudo_available())
+        )
+    scan_prefix = privileged.privileged_prefix()
     excluded_targets = [
         str(item or "").strip() for item in (excluded_targets or []) if str(item or "").strip()
     ]
@@ -282,46 +296,34 @@ def run_nmap_with_xml_output(
             emit_to_client(sid, "scan_feedback", f"Starting quick scan on {target}...")
         else:
             socketio_emit("scan_feedback", f"Starting quick scan on {target}...")
-        cmd = [
-            "nmap",
-            scan_technique,
-            "-T3",
-            "--top-ports",
-            "100",
-            "-oA",
-            str(output_base),
-            target,
-        ]
+        options = ["-T3", "--top-ports", "100", "-oA", str(output_base)]
         timeout_seconds = int(timeout_seconds or 180)
     else:
         logger.info("Running comprehensive scan on %s...", target)
-        message = (
-            f"Starting comprehensive scan with vulnerability detection on {target} "
-            "(may take 10+ minutes)..."
+        vulners_enabled = env_flag("NMAPUI_ENABLE_VULNERS", default=True)
+        scan_enrichment = (
+            "with Vulners vulnerability enrichment"
+            if vulners_enabled
+            else "without external Vulners enrichment"
         )
+        message = f"Starting comprehensive scan {scan_enrichment} on {target} (may take 10+ minutes)..."
         if sid:
             emit_to_client(sid, "scan_feedback", message)
         else:
             socketio_emit("scan_feedback", message)
-        cmd = [
-            "nmap",
-            scan_technique,
-            "-Pn",
-            "-T4",
-            "-A",
-            "-sC",
-            "--script",
-            str(vulners_script),
-            "--stylesheet",
-            str(stylesheet_pdf),
-            "-oA",
-            str(output_base),
-            target,
-        ]
+        options = ["-Pn", "-T4", "-A", "-sC"]
+        if vulners_enabled:
+            options.extend(["--script", str(vulners_script)])
+        options.extend(
+            ["--stylesheet", str(stylesheet_pdf), "-oA", str(output_base)]
+        )
         timeout_seconds = int(timeout_seconds or 7200)
 
     if excluded_targets:
-        cmd[1:1] = ["--exclude", ",".join(excluded_targets)]
+        # Part of the shared option list, so the unprivileged fallback keeps it.
+        options = ["--exclude", ",".join(excluded_targets), *options]
+
+    cmd = privileged.nmap_argv(scan_technique, options, target, prefix=scan_prefix)
 
     cmd_str = " ".join(cmd)
     logger.info("Executing: %s", cmd_str)
@@ -347,7 +349,11 @@ def run_nmap_with_xml_output(
         result = run_cancellable_command(
             cmd, sid=sid, job_type="report" if sid else None, timeout=timeout_seconds
         )
-        if force_privileged_scan and result.returncode != 0 and _is_permission_denied(result):
+        if (
+            (force_privileged_scan or scan_prefix)
+            and result.returncode != 0
+            and _is_permission_denied(result)
+        ):
             logger.warning("Privileged scan denied; retrying with unprivileged connect scan")
             if sid:
                 emit_to_client(
@@ -361,8 +367,11 @@ def run_nmap_with_xml_output(
                     "Privileged scan denied; retrying with unprivileged connect scan",
                 )
             socketio_sleep(0)
-            fallback_cmd = cmd[:]
-            fallback_cmd[1] = "-sT"
+            # Rebuild from the shared option list with no privilege prefix so
+            # exclusions and every other flag survive the retry.
+            fallback_cmd = privileged.nmap_argv(
+                "-sT", options, target, prefix=[]
+            )
             result = run_cancellable_command(
                 fallback_cmd,
                 sid=sid,

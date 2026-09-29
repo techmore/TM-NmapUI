@@ -1,5 +1,10 @@
 # Implementation Summary: Scan Report Generation & Historical Viewer
 
+> Historical implementation snapshot. The file paths, API descriptions and
+> dependency notes below describe the legacy report implementation, not the
+> current Flask runtime. See [the current report guide](SCAN_REPORTS_GUIDE.md)
+> and `nmapui/reporting.py` for supported behavior.
+
 ## Overview
 This document summarizes the comprehensive scan report generation and historical viewing features added to NmapUI.
 

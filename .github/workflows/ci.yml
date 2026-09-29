@@ -11,24 +11,36 @@ on:
 jobs:
   unit-tests:
     name: Unit And Contract Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install system test dependencies
         run: sudo apt-get update && sudo apt-get install -y xsltproc
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Verify committed browser assets are reproducible
+        run: |
+          npm ci --prefix scripts/ui-assets
+          npm run build --prefix scripts/ui-assets
+          git diff --exit-code -- static/css/tailwind.css static/vendor
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Run unit and contract suite
         run: pytest -q
+      - name: Audit pinned Python dependencies
+        run: |
+          python -m pip install pip-audit==2.10.1
+          pip-audit -r requirements.txt
 
   browser-regressions:
     name: Browser Regressions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       NMAPUI_RUN_BROWSER_REGRESSION: "1"
       NMAPUI_SOCKET_AUTH_DISABLED: "1"
@@ -36,8 +48,10 @@ jobs:
       NMAPUI_ALLOW_UNSAFE_WERKZEUG: "true"
       NMAPUI_DEBUG: "false"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - name: Install report transformation dependency
+        run: sudo apt-get update && sudo apt-get install -y xsltproc
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install dependencies
@@ -47,7 +61,10 @@ jobs:
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium
       - name: Run browser regression suite
-        run: pytest -q tests/test_browser_regressions.py
+        run: >-
+          pytest -q tests/test_browser_regressions.py
+          tests/test_reporting_modules.py::test_pdf_renderer_blocks_external_scripts
+          tests/test_reporting_modules.py::test_representative_report_fixture_renders_shared_landmarks_for_web_and_pdf
       - name: Upload browser regression diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -59,6 +76,183 @@ jobs:
             .pytest_cache
           if-no-files-found: ignore
 
+  ubuntu-production-smoke:
+    name: Ubuntu Service And WebSocket Smoke
+    runs-on: ubuntu-24.04
+    env:
+      NMAPUI_RUN_PRODUCTION_SMOKE: "1"
+      NMAPUI_RUN_STAGED_SMOKE: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install scanner and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3-dev python3-venv nmap arp-scan xsltproc traceroute
+          # Hosted images make /usr/share writable for their tooling. A root
+          # scanner must not load scripts through a writable parent directory.
+          sudo chown root:root /usr/share /opt /usr/local /usr/local/bin
+          sudo chmod go-w /usr/share /opt /usr/local /usr/local/bin
+          /usr/bin/python3 -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+      - name: Validate service artifacts and staged server
+        run: |
+          packaging/ubuntu/install-service.sh --dry-run
+          unit_file="$(mktemp --suffix=.service)"
+          bash -c 'unit_file="$1"; set --; source packaging/ubuntu/install-service.sh; WRAPPER_PATH=/bin/true; CURRENT_LINK=/; CREDENTIALS_FILE=/etc/os-release; DATA_DIR=/tmp; LOG_DIR=/tmp; build_unit "$unit_file"' _ "$unit_file"
+          systemd-analyze verify "$unit_file"
+          rm -f "$unit_file"
+          .venv/bin/python -m pytest -q tests/test_ubuntu_installer.py tests/test_stage_runtime.py tests/test_runtime_file_migration.py tests/test_production_server.py
+          sudo env NMAPUI_RUN_PRIVILEGED_SCAN_SMOKE=1 .venv/bin/python -m pytest -q tests/test_production_server.py::test_root_nmap_syn_scan_is_available_on_loopback
+      - name: Install system dependencies for the supervised service
+        run: sudo .venv/bin/python -m playwright install-deps chromium
+      - name: Exercise the installed systemd lifecycle
+        run: |
+          set -euo pipefail
+          wait_ready() {
+            local release="$1"
+            for _ in $(seq 1 45); do
+              if sudo .venv/bin/python packaging/check_release_ready.py --release "$release" --port 9000; then
+                return 0
+              fi
+              sleep 1
+            done
+            sudo journalctl -u nmapui.service --no-pager -n 80
+            return 1
+          }
+
+          sudo packaging/ubuntu/install-service.sh
+          current_release="$(readlink -f /opt/nmapui/current)"
+          wait_ready "$current_release"
+          sudo systemctl is-active --quiet nmapui.service
+          sudo systemctl is-enabled --quiet nmapui.service
+          test "$(sudo stat -c '%a:%U:%G' /etc/nmapui/nmapui.env)" = "600:root:root"
+          test "$(sudo stat -c '%a:%U:%G' /var/lib/nmapui)" = "700:root:root"
+          test "$(sudo stat -c '%a:%U:%G' /var/log/nmapui)" = "700:root:root"
+          test "$(sudo stat -c '%a:%U:%G' "$current_release")" = "755:root:root"
+          test "$(sudo stat -c '%a:%U:%G' "$current_release/app.py")" = "644:root:root"
+          test "$(sudo stat -c '%a:%U:%G' "$current_release/privileged-assets")" = "755:root:root"
+          sudo ss -ltnH 'sport = :9000' | grep -Eq '127\.0\.0\.1:9000'
+
+          smoke_password="$(openssl rand -hex 24)"
+          sudo sed -i \
+            -e 's/^NMAPUI_USERNAME=.*/NMAPUI_USERNAME=ci-smoke/' \
+            -e "s/^NMAPUI_PASSWORD=.*/NMAPUI_PASSWORD=${smoke_password}/" \
+            /etc/nmapui/nmapui.env
+          sudo sh -c 'echo "NMAPUI_TRUST_LOCAL_UI=false" >> /etc/nmapui/nmapui.env'
+          sudo systemctl restart nmapui.service
+          wait_ready "$current_release"
+          sudo env \
+            PLAYWRIGHT_BROWSERS_PATH=/opt/nmapui/playwright-browsers \
+            NMAPUI_RUN_BROWSER_REGRESSION=1 \
+            .venv/bin/python -m pytest -q \
+            tests/test_reporting_modules.py::test_pdf_renderer_blocks_external_scripts
+          sudo env \
+            PLAYWRIGHT_BROWSERS_PATH=/opt/nmapui/playwright-browsers \
+            NMAPUI_TEST_INSTALLED_SERVICE_URL=http://127.0.0.1:9000 \
+            NMAPUI_TEST_INSTALLED_SERVICE_USERNAME=ci-smoke \
+            NMAPUI_TEST_INSTALLED_SERVICE_PASSWORD="$smoke_password" \
+            .venv/bin/python -m pytest -q \
+            tests/test_production_server.py::test_installed_service_requires_session_and_accepts_websocket
+
+          sudo systemctl stop nmapui.service
+          if sudo systemctl is-active --quiet nmapui.service; then
+            echo "NmapUI remained active after systemctl stop" >&2
+            exit 1
+          fi
+          sudo systemctl start nmapui.service
+          wait_ready "$current_release"
+
+          sudo .venv/bin/python -c 'from nmapui.runtime_db import create_runtime_state_store; create_runtime_state_store("/var/lib/nmapui/runtime.sqlite3").upsert_job(job_id="ci-interrupted-job", owner_sid="ci-smoke", job_type="scan", status="running", payload={"target":"127.0.0.1"})'
+          old_main="$(sudo systemctl show --property=MainPID --value nmapui.service)"
+          sudo systemctl kill --kill-whom=main --signal=SIGKILL nmapui.service
+          restarted=false
+          for _ in $(seq 1 45); do
+            new_main="$(sudo systemctl show --property=MainPID --value nmapui.service)"
+            if sudo systemctl is-active --quiet nmapui.service \
+              && [[ "$new_main" != 0 && "$new_main" != "$old_main" ]] \
+              && sudo .venv/bin/python packaging/check_release_ready.py --release "$current_release" --port 9000; then
+              restarted=true
+              break
+            fi
+            sleep 1
+          done
+          test "$restarted" = true
+          sudo .venv/bin/python -c 'from nmapui.runtime_db import create_runtime_state_store; job=create_runtime_state_store("/var/lib/nmapui/runtime.sqlite3").get_job("ci-interrupted-job"); assert job and job["status"] == "interrupted", job'
+
+          sudo packaging/ubuntu/install-service.sh
+          upgraded_release="$(readlink -f /opt/nmapui/current)"
+          test "$upgraded_release" != "$current_release"
+          test "$(readlink -f /opt/nmapui/previous)" = "$current_release"
+          sudo .venv/bin/python packaging/check_release_ready.py --release "$upgraded_release" --port 9000
+          sudo packaging/ubuntu/install-service.sh --rollback
+          test "$(readlink -f /opt/nmapui/current)" = "$current_release"
+          test "$(readlink -f /opt/nmapui/previous)" = "$upgraded_release"
+          sudo .venv/bin/python packaging/check_release_ready.py --release "$current_release" --port 9000
+
+          source_wsgi_backup="$(mktemp)"
+          cp nmapui/wsgi.py "$source_wsgi_backup"
+          restore_source_wsgi() {
+            cp "$source_wsgi_backup" nmapui/wsgi.py
+            rm -f "$source_wsgi_backup"
+          }
+          trap restore_source_wsgi EXIT
+          cp tests/ubuntu_failed_release_wsgi.py nmapui/wsgi.py
+          if sudo packaging/ubuntu/install-service.sh; then
+            echo "An intentionally broken upgrade unexpectedly became ready" >&2
+            exit 1
+          fi
+          restore_source_wsgi
+          trap - EXIT
+          test "$(readlink -f /opt/nmapui/current)" = "$current_release"
+          test "$(readlink -f /opt/nmapui/previous)" = "$upgraded_release"
+          sudo systemctl is-active --quiet nmapui.service
+          sudo systemctl is-enabled --quiet nmapui.service
+          sudo cmp -s /usr/local/bin/nmapui-run "$current_release/service-artifacts/nmapui-run"
+          sudo cmp -s /etc/systemd/system/nmapui.service "$current_release/service-artifacts/nmapui.service"
+          sudo .venv/bin/python packaging/check_release_ready.py --release "$current_release" --port 9000
+
+          failed_rollback_wsgi_backup="$(mktemp)"
+          sudo cp "$upgraded_release/nmapui/wsgi.py" "$failed_rollback_wsgi_backup"
+          restore_previous_wsgi() {
+            sudo install -m 0644 -o root -g root \
+              "$failed_rollback_wsgi_backup" "$upgraded_release/nmapui/wsgi.py"
+            rm -f "$failed_rollback_wsgi_backup"
+          }
+          trap restore_previous_wsgi EXIT
+          sudo install -m 0644 -o root -g root \
+            tests/ubuntu_failed_release_wsgi.py "$upgraded_release/nmapui/wsgi.py"
+          if sudo packaging/ubuntu/install-service.sh --rollback; then
+            echo "An intentionally broken rollback unexpectedly became ready" >&2
+            exit 1
+          fi
+          restore_previous_wsgi
+          trap - EXIT
+          test "$(readlink -f /opt/nmapui/current)" = "$current_release"
+          test "$(readlink -f /opt/nmapui/previous)" = "$upgraded_release"
+          sudo systemctl is-active --quiet nmapui.service
+          sudo systemctl is-enabled --quiet nmapui.service
+          sudo cmp -s /usr/local/bin/nmapui-run "$current_release/service-artifacts/nmapui-run"
+          sudo cmp -s /etc/systemd/system/nmapui.service "$current_release/service-artifacts/nmapui.service"
+          sudo .venv/bin/python packaging/check_release_ready.py --release "$current_release" --port 9000
+
+          sudo packaging/ubuntu/install-service.sh --uninstall
+          if sudo systemctl is-active --quiet nmapui.service || sudo systemctl is-enabled --quiet nmapui.service; then
+            echo "NmapUI remained active or enabled after uninstall" >&2
+            exit 1
+          fi
+          test ! -e /etc/systemd/system/nmapui.service
+          test ! -e /usr/local/bin/nmapui-run
+          test ! -e /opt/nmapui/current
+          sudo test -s /etc/nmapui/nmapui.env
+          sudo test -f /var/lib/nmapui/runtime.sqlite3
+          test -d /opt/nmapui/releases
+      - name: Collect installed service failure diagnostics
+        if: failure()
+        run: |
+          sudo systemctl status nmapui.service --no-pager || true
+          sudo journalctl -u nmapui.service --no-pager -n 120 || true
+          sudo tail -n 120 /var/log/nmapui/*.log || true
+
   packaged-smoke:
     name: Packaged App Smoke
     runs-on: macos-latest
@@ -66,8 +260,8 @@ jobs:
       NMAPUI_RUN_PACKAGED_SMOKE: "1"
       NMAPUI_SKIP_OPEN: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install dependencies

@@ -22,6 +22,7 @@ def get_allowed_origins(*, port=None):
     return [
         f"http://127.0.0.1:{selected_port}",
         f"http://localhost:{selected_port}",
+        f"http://[::1]:{selected_port}",
     ]
 
 

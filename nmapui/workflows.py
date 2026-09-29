@@ -5,6 +5,7 @@ import re
 import shutil
 
 from nmapui.runtime_log import append_runtime_log
+from nmapui.runtime import env_flag
 import ipaddress
 from nmapui.reporting import (
     build_report_diff_summary,
@@ -16,6 +17,27 @@ from nmapui.validation import DEFAULT_MAX_TARGETS, count_target_addresses
 
 
 logger = logging.getLogger(__name__)
+
+
+def cleanup_chunk_artifacts(xml_files, *, merged_xml_path):
+    """Remove intermediate Nmap chunk outputs after a successful merge."""
+    removed = 0
+    merged_xml_path = Path(merged_xml_path)
+    for xml_path in xml_files or []:
+        xml_path = Path(xml_path)
+        if xml_path == merged_xml_path:
+            continue
+        for candidate in (
+            xml_path,
+            xml_path.with_suffix(".nmap"),
+            xml_path.with_suffix(".gnmap"),
+        ):
+            try:
+                candidate.unlink(missing_ok=True)
+                removed += 1
+            except OSError as exc:
+                logger.warning("Unable to remove chunk artifact %s: %s", candidate, exc)
+    return removed
 
 
 def _plan_report_target_count(targets):
@@ -108,7 +130,16 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False):
         for target in targets:
             ensure_job_not_cancelled(sid, "scan")
             emit_to_client(sid, "deep_scan_host_start", {"ip": target})
-            cmd = ["nmap", "-T3", "-sV", "--script", str(vulners_script), target]
+            cmd = ["nmap", "-T3", "-sV"]
+            if env_flag("NMAPUI_ENABLE_VULNERS", default=True):
+                cmd.extend(["--script", str(vulners_script)])
+            else:
+                emit_to_client(
+                    sid,
+                    "scan_feedback",
+                    "Vulners enrichment is disabled; this scan will not query Vulners.com.",
+                )
+            cmd.append(target)
             emit_to_client(sid, "scan_feedback", f"Executing: {' '.join(cmd)}")
             logger.info("Executing: %s", " ".join(cmd))
             socketio_sleep(0)
@@ -166,12 +197,29 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False):
 
         emit_to_client(sid, "deep_scan_complete")
     except RuntimeError as exc:
-        if str(exc) == "scan cancelled":
-            emit_to_client(sid, "scan_error", "Scan cancelled")
-            return
-        emit_to_client(sid, "scan_error", str(exc))
-    except Exception as exc:
-        emit_to_client(sid, "scan_error", str(exc))
+        if str(exc) != "scan cancelled":
+            logger.exception("Deep scan failed")
+        raise
+    except Exception:
+        logger.exception("Deep scan failed")
+        raise
+
+
+def _finalize_scan_job_if_active(context, sid):
+    """Close running or cancelling scans even when cancellation races completion."""
+    job = context.job_registry.get(sid, "scan")
+    if not job or job.get("status") not in {"running", "cancelling"}:
+        return
+
+    status = (
+        "cancelled"
+        if job.get("status") == "cancelling" or job.get("cancel_requested")
+        else "completed"
+    )
+    context.job_registry.complete(sid, "scan", status=status)
+    context.emit_job_status(sid, "scan")
+    if status == "cancelled":
+        context.emit_to_client(sid, "scan_error", "Scan cancelled")
 
 
 def start_scan_task(context, sid, target):
@@ -361,10 +409,7 @@ def start_scan_task(context, sid, target):
         emit_job_status(sid, "scan")
         emit_to_client(sid, "scan_error", str(exc))
     finally:
-        current_job = job_registry.get(sid, "scan")
-        if current_job and current_job.get("status") == "running":
-            job_registry.complete(sid, "scan", status="completed")
-            emit_job_status(sid, "scan")
+        _finalize_scan_job_if_active(context, sid)
         job_registry.clear_if_disconnected(sid, "scan")
         idle_state_manager.end_operation(operation_id)
         # Tear down the broadcaster slot so new tabs no longer join this job
@@ -665,6 +710,7 @@ def generate_report_task(context, sid, data):
             socketio_sleep(0)
             xml_path = scan_dir / "scan.xml"
             merge_nmap_xml_files(xml_files, xml_path)
+            cleanup_chunk_artifacts(xml_files, merged_xml_path=xml_path)
         else:
             xml_path = output_base.with_suffix(".xml")
 

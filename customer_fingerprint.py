@@ -1,5 +1,4 @@
 import json
-import os
 import logging
 import hashlib
 from datetime import datetime
@@ -14,7 +13,7 @@ from customer_fingerprint_store import (
     ScanHistoryStore,
     backfill_runtime_customer_scan_history,
 )
-from nmapui.paths import BASE_DIR, CUSTOMER_TRACEROUTES_FILE
+from nmapui.paths import CUSTOMER_CONFIG_FILE, CUSTOMER_TRACEROUTES_FILE, DATA_DIR
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 class CustomerFingerprinter:
     def __init__(self, config_path: Optional[str] = None, runtime_store=None):
-        self.config_path = config_path or (BASE_DIR / "config" / "customers.yaml")
+        self.config_path = config_path or CUSTOMER_CONFIG_FILE
         self.config = None
         self.customers = []
         self.unknown_customer = None
@@ -48,13 +47,22 @@ class CustomerFingerprinter:
         self.runtime_store = runtime_store
 
     def backfill_runtime_scan_history(self) -> int:
-        indexing_config = (self.config or {}).get("indexing", {})
-        storage_path = indexing_config.get("storage_path", "data/scan_history.json")
         return backfill_runtime_customer_scan_history(
             runtime_store=self.runtime_store,
-            scan_history_path=storage_path,
+            scan_history_path=self._scan_history_path(),
             logger=logger,
         )
+
+    def _scan_history_path(self) -> Path:
+        configured = (self.config or {}).get("indexing", {}).get(
+            "storage_path", "data/scan_history.json"
+        )
+        path = Path(str(configured or "data/scan_history.json")).expanduser()
+        if path.is_absolute():
+            return path
+        if path.parts and path.parts[0] == "data":
+            path = Path(*path.parts[1:])
+        return DATA_DIR / path
 
     def load_config(self):
         try:
@@ -239,9 +247,7 @@ class CustomerFingerprinter:
             return
 
         indexing_config = self.config.get("indexing", {})
-        storage_path = indexing_config.get("storage_path", "data/scan_history.json")
-
-        os.makedirs(os.path.dirname(storage_path), exist_ok=True)
+        storage_path = self._scan_history_path()
 
         scan_result = {
             "timestamp": datetime.now().isoformat(),
@@ -258,6 +264,7 @@ class CustomerFingerprinter:
         }
 
         try:
+            storage_path.parent.mkdir(parents=True, exist_ok=True)
             if self.runtime_store is not None and hasattr(self.runtime_store, "append_customer_scan_history"):
                 self.runtime_store.append_customer_scan_history(
                     customer_id=scan_result.get("customer_id"),
@@ -328,10 +335,9 @@ class CustomerFingerprinter:
         if runtime_history:
             return runtime_history
 
-        indexing_config = (self.config or {}).get("indexing", {})
-        storage_path = indexing_config.get("storage_path", "data/scan_history.json")
+        storage_path = self._scan_history_path()
 
-        if not os.path.exists(storage_path):
+        if not storage_path.exists():
             return []
 
         return self.scan_history_store.get_entries(

@@ -2,6 +2,17 @@
 
 ## Date: 2026-01-08
 
+> Historical snapshot. The implementation and dependency notes below predate
+> the Flask runtime refactor and are not current operational instructions. See
+> [the scan reports guide](SCAN_REPORTS_GUIDE.md),
+> [the stylesheet strategy](REPORT_STYLESHEET_STRATEGY.md), and
+> `nmapui/reporting.py` for current converter behavior.
+>
+> The original production-readiness verdict at the end of this document is
+> superseded. It is not release approval for the current Flask service; use the
+> current [release checklist](RELEASE_CHECKLIST.md) and
+> [project status](../notes/PROJECT_STATUS.md).
+
 ## Issues Found and Fixed
 
 ### 1. **CRITICAL: Missing JavaScript for Report Generation**
@@ -405,7 +416,9 @@ sudo visudo
 - Modal styling consistent
 - Icons properly integrated
 
-**Ready for Production Use** with manual testing verification.
+**Historical disposition only.** The manual checks recorded here do not verify
+the current service installers, privilege model, report CSP, or scanner-host
+lifecycle and must not be used as production launch approval.
 
 ---
 

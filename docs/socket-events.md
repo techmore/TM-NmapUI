@@ -1,9 +1,8 @@
 # Socket.IO Event Reference
 
 This document reflects the current runtime contract implemented by the handler
-modules in [`/Users/techmore/projects/NmapUI/nmapui/handlers`](/Users/techmore/projects/NmapUI/nmapui/handlers).
-It is pinned by regression tests in
-[`/Users/techmore/projects/NmapUI/tests/test_runtime_contract.py`](/Users/techmore/projects/NmapUI/tests/test_runtime_contract.py).
+modules in [`nmapui/handlers`](../nmapui/handlers). It is pinned by regression tests
+in [`tests/test_runtime_contract.py`](../tests/test_runtime_contract.py).
 
 Direction key:
 - `C -> S` client emits to the server
@@ -135,7 +134,7 @@ Historical resume path:
 - `Customer` is the runtime customer document used by the app configuration and
   assignment flows.
 - `Host[]` in scan events is the normalized frontend host list used by
-  [`/Users/techmore/projects/NmapUI/static/js/discovery_ui.js`](/Users/techmore/projects/NmapUI/static/js/discovery_ui.js).
+  [`static/js/discovery_ui.js`](../static/js/discovery_ui.js).
 - `scan_results` is intentionally overloaded:
   - live quick/deep scan path emits host rows directly
   - resume path emits `{ hosts, total, is_historical, ... }`

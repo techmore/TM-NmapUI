@@ -1,4 +1,5 @@
 from flask import request
+from nmapui.auth import require_socket_auth, socket_authorized
 from nmapui.auto_scan import build_auto_scan_status_payload
 
 
@@ -96,6 +97,15 @@ def register_connection_handlers(socketio, deps):
                     request.remote_addr or "unknown",
                 )
                 return False
+        # The handshake token is CSRF protection, not a credential. Require a
+        # real session (cookie or Basic) unless local trust is explicitly on,
+        # otherwise any local process could fetch the token and read scan data.
+        if not socket_authorized():
+            logger.warning(
+                "Rejected unauthenticated Socket.IO connection from %s.",
+                request.remote_addr or "unknown",
+            )
+            return False
         new_sid = request.sid
         if hasattr(broadcaster, "register_client"):
             broadcaster.register_client(new_sid)
@@ -148,7 +158,8 @@ def register_connection_handlers(socketio, deps):
             "version": get_app_version_safe(),
             "hosts": [],
             "isScanning": is_scanning,
-            "phase": 1 if is_scanning else None,
+            "phase": (2 if active_job_type == "report" else 1) if is_scanning else None,
+            "scanKind": "complete" if active_job_type == "report" else "quick",
             "target": last_scan_target,
             "autoScan": auto_scan_payload,
             "hops": hops,
@@ -186,6 +197,7 @@ def register_connection_handlers(socketio, deps):
             emit_to_client(new_sid, event, data)
 
     @socketio.on("get_initial_data")
+    @require_socket_auth()
     def on_get_initial_data():
         """Legacy protocol bridge (#230): re-send the sync snapshot when the frontend
         asks for it after wiring its listeners."""
@@ -227,7 +239,8 @@ def register_connection_handlers(socketio, deps):
                 "version": get_app_version_safe(),
                 "hosts": [],
                 "isScanning": is_scanning,
-                "phase": 1 if is_scanning else None,
+                "phase": (2 if active_job_type == "report" else 1) if is_scanning else None,
+                "scanKind": "complete" if active_job_type == "report" else "quick",
                 "target": last_scan_target,
                 "autoScan": auto_scan_payload,
                 "hops": hops,

@@ -108,11 +108,16 @@ function setTabStatus(elementId, message, isError = false) {
 }
 
 function createScanActionLink(href, label, newTab = false) {
-    const link = document.createElement('a');
-    link.href = href;
+    const safeHref = window.safeHttpHref?.(String(href ?? ''));
+    const link = document.createElement(safeHref ? 'a' : 'span');
+    if (safeHref) {
+        link.href = safeHref;
+    } else {
+        link.setAttribute('aria-disabled', 'true');
+    }
     link.textContent = label;
     link.className = 'action-button action-button-primary action-button-compact';
-    if (newTab) {
+    if (safeHref && newTab) {
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
     }
@@ -436,7 +441,11 @@ function createHistoryCard(scan, options = {}) {
 
     const target = document.createElement('p');
     target.className = 'mt-2 text-sm text-olive-800';
-    target.innerHTML = `Target: <span class="font-mono">${scan.target || '--'}</span>`;
+    target.append('Target: ');
+    const targetValue = document.createElement('span');
+    targetValue.className = 'font-mono';
+    targetValue.textContent = scan.target || '--';
+    target.appendChild(targetValue);
     card.appendChild(target);
 
     if (options.timelineLabel) {

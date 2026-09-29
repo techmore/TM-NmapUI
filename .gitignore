@@ -25,3 +25,14 @@ work/
 .claude/settings.local.json
 .playwright-browsers/
 auto_scan_config.json
+
+# Runtime state: must never be committed (scan data, DB, logs, local config)
+data/
+*.sqlite3
+*.sqlite3-*
+logs/
+.hermes/
+config/customers.yaml
+docs/notes/eval-logs/
+NmapUI.app/
+NmapUIMenuBar.app/

@@ -7,6 +7,7 @@ from nmapui.auth import require_auth
 from nmapui.reporting import (
     _resolve_artifact_file_path,
     build_artifact_downloads,
+    report_content_security_policy,
     refresh_persisted_diff_summaries,
 )
 from nmapui.runtime_history import build_compare_result, build_history_rows
@@ -61,6 +62,7 @@ def delete_scan_artifacts(
             customer_id=metadata.get("customer_id"),
             target=metadata.get("target"),
             logger=logger,
+            full_rebuild=True,
         )
         return {"success": True}, 200
     except Exception as exc:
@@ -116,7 +118,9 @@ def register_scan_routes(app, deps):
             html_path = scan_dir / "scan.html"
         if not html_path.exists():
             return _mark_legacy_scan_route(("Report not found", 404))
-        return _mark_legacy_scan_route(send_file(html_path))
+        response = _mark_legacy_scan_route(send_file(html_path))
+        response.headers["Content-Security-Policy"] = report_content_security_policy()
+        return response
 
     @app.route("/api/scans/<path:path>/pdf")
     @require_auth
