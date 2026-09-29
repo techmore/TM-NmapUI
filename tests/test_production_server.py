@@ -101,8 +101,16 @@ def _assert_authenticated_browser_flow(base_url, username, password):
             assert page.get_by_role("heading", name="NmapUI").is_visible()
             page.locator("#username").fill(username)
             page.locator("#password").fill(password)
-            page.get_by_role("button", name="Sign in").click()
-            page.wait_for_url(f"{base_url}/", timeout=20_000)
+            with page.expect_response(
+                lambda response: response.url.split("?", 1)[0] == f"{base_url}/login"
+                and response.request.method == "POST"
+            ) as login_response:
+                page.get_by_role("button", name="Sign in").click()
+            assert login_response.value.status == 302, (
+                f"Login returned HTTP {login_response.value.status}: "
+                f"{login_response.value.text()}"
+            )
+            page.wait_for_url(f"{base_url}/", wait_until="domcontentloaded", timeout=20_000)
             wait_for_socket_connection(page)
             session_status = page.evaluate(
                 """async () => {
@@ -121,7 +129,7 @@ def _assert_authenticated_browser_flow(base_url, username, password):
             }
 
             page.reload(wait_until="domcontentloaded", timeout=30_000)
-            page.wait_for_url(f"{base_url}/", timeout=20_000)
+            page.wait_for_url(f"{base_url}/", wait_until="domcontentloaded", timeout=20_000)
             wait_for_socket_connection(page)
             reloaded_status = page.evaluate(
                 """async () => {

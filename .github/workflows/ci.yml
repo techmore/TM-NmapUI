@@ -246,6 +246,12 @@ jobs:
           sudo test -s /etc/nmapui/nmapui.env
           sudo test -f /var/lib/nmapui/runtime.sqlite3
           test -d /opt/nmapui/releases
+      - name: Collect installed service failure diagnostics
+        if: failure()
+        run: |
+          sudo systemctl status nmapui.service --no-pager || true
+          sudo journalctl -u nmapui.service --no-pager -n 120 || true
+          sudo tail -n 120 /var/log/nmapui/*.log || true
 
   packaged-smoke:
     name: Packaged App Smoke
