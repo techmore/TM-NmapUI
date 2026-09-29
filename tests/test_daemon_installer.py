@@ -109,7 +109,7 @@ def test_generated_plist_preserves_paths_and_supervision(generated_launcher):
     root, _, _, env = generated_launcher
     target = root / "daemon.plist"
     installer_call(
-        'ROOT_DIR="$TEST_ROOT"; PYTHON_BIN="$TEST_PYTHON"\n'
+        'ROOT_DIR="$TEST_ROOT"; PYTHON_BIN="$TEST_PYTHON"; SOURCE_PYTHON_BIN="$TEST_PYTHON"\n'
         'WRAPPER_PATH="$TEST_WRAPPER"; LOG_DIR="$TEST_ROOT/logs"\n'
         'RUN_USER="scanner"\n'
         'build_plist "$TEST_ROOT/daemon.plist"', env,

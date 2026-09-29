@@ -58,6 +58,16 @@ above, and keep the PR draft
 while completing the scanner-host acceptance gates. The user approved this
 branch update on September 29; hosted candidate checks remain pending.
 
+The first submitted candidate, `feef24b5`, exposed hosted-runner gaps in
+[CI run 36618599556](https://github.com/techmore/TM-NmapUI/actions/runs/36618599556):
+Linux installer contracts needed GNU no-follow `mv` semantics and an explicit
+test interpreter, a template contract still inspected the pre-extraction Git
+index, browser report tests lacked `xsltproc`, and the hosted image's writable
+`/usr/share` correctly failed root scanner provenance validation. Follow-up
+changes correct the contracts/dependencies and protect that runner directory;
+the production safety check remains unchanged. Hosted validation of the
+follow-up revision is required.
+
 ## Gates still requiring external evidence or decisions
 
 - Run hosted CI on the candidate revision, including the new Ubuntu job.

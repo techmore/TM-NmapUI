@@ -1458,15 +1458,13 @@ def test_app_delegates_root_logging_setup_to_shared_runtime_module():
 
 
 def test_template_unifies_scan_result_listeners_and_normalizes_feedback():
-    template = subprocess.check_output(
-        ["git", "show", ":templates/index.html"],
-        cwd=ROOT,
-        text=True,
-    )
+    template = (ROOT / "templates" / "index.html").read_text()
+    bootstrap_module = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     scan_runtime_module = (ROOT / "static" / "js" / "scan_runtime.js").read_text()
     discovery_module = (ROOT / "static" / "js" / "discovery_ui.js").read_text()
 
-    assert template.count("initializeDiscoveryUI(socket);") == 1
+    assert template.count('/static/js/template_bootstrap.js') == 1
+    assert bootstrap_module.count("initializeDiscoveryUI(socket);") == 1
     assert "socket.on('scan_results'" in discovery_module
     assert "socket.on('deep_scan_results'" in discovery_module
     assert "socket.on('arp_results'" in discovery_module

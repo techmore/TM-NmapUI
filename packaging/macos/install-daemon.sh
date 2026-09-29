@@ -344,7 +344,13 @@ switch_managed_link() {
   # BSD mv follows a destination symlink to a directory unless -h is given.
   # Without -h, the new link lands *inside* the old release instead of
   # atomically replacing current.
-  mv -fh "$next_link" "$link"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    mv -fh "$next_link" "$link"
+  else
+    # GNU mv uses -T for the same no-follow destination semantics, allowing
+    # isolated installer contract tests to exercise atomic replacement on Linux.
+    mv -fT "$next_link" "$link"
+  fi
 }
 
 switch_release() {
