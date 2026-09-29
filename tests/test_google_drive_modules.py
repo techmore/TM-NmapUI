@@ -2,6 +2,10 @@ from pathlib import Path
 import json
 import os
 
+import pytest
+
+from nmapui import private_storage
+
 from nmapui.google_drive import (
     build_google_drive_auth_status,
     build_google_drive_auth_url,
@@ -9,6 +13,7 @@ from nmapui.google_drive import (
     ensure_google_drive_access_token,
     exchange_google_drive_auth_code,
     load_google_drive_token_state,
+    save_google_drive_credentials,
     save_google_drive_token_state,
     upload_files_to_google_drive,
 )
@@ -45,6 +50,69 @@ def test_build_google_drive_auth_url_persists_pending_state(tmp_path):
     assert key_path.exists()
     assert oct(token_path.stat().st_mode & 0o777) == "0o600"
     assert oct(key_path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_google_drive_credentials_are_written_owner_only(tmp_path):
+    credentials_path = tmp_path / "credentials.json"
+
+    result = save_google_drive_credentials(
+        credentials_path,
+        {"installed": {"client_id": "client", "client_secret": "private-secret"}},
+    )
+
+    assert result["success"] is True
+    assert credentials_path.stat().st_mode & 0o777 == 0o600
+    assert not list(tmp_path.glob(".credentials.json.*.tmp"))
+
+
+def test_existing_google_drive_credentials_are_hardened_when_read(tmp_path):
+    credentials_path = tmp_path / "credentials.json"
+    write_credentials(credentials_path)
+    credentials_path.chmod(0o644)
+
+    status = build_google_drive_auth_status(
+        credentials_path=credentials_path,
+        token_path=tmp_path / "tokens.json",
+    )
+
+    assert status["configured"] is True
+    assert credentials_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_failed_google_drive_token_write_preserves_previous_token(tmp_path, monkeypatch):
+    token_path = tmp_path / "tokens.json"
+    key_path = tmp_path / "tokens.key"
+    save_google_drive_token_state(
+        token_path, {"access_token": "existing"}, key_path=key_path
+    )
+
+    def fail_sync(_file_descriptor):
+        raise OSError("sync failed")
+
+    monkeypatch.setattr(private_storage.os, "fsync", fail_sync)
+    with pytest.raises(OSError, match="sync failed"):
+        save_google_drive_token_state(
+            token_path, {"access_token": "replacement"}, key_path=key_path
+        )
+
+    assert load_google_drive_token_state(token_path, key_path=key_path) == {
+        "access_token": "existing"
+    }
+    assert not list(tmp_path.glob(".tokens.json.*.tmp"))
+
+
+def test_missing_google_drive_key_is_not_silently_recreated_on_read(tmp_path):
+    token_path = tmp_path / "tokens.json"
+    key_path = tmp_path / "tokens.key"
+    save_google_drive_token_state(
+        token_path, {"access_token": "existing"}, key_path=key_path
+    )
+    encrypted = token_path.read_bytes()
+    key_path.unlink()
+
+    assert load_google_drive_token_state(token_path, key_path=key_path) == {}
+    assert not key_path.exists()
+    assert token_path.read_bytes() == encrypted
 
 
 def test_exchange_google_drive_auth_code_saves_tokens(tmp_path):

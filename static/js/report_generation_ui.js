@@ -94,6 +94,12 @@ function setReportButtonsPulsing(active, chunked = false) {
 function syncReportJobVisualState(job) {
     const isRunning = job?.status === 'running' || job?.status === 'cancelling';
     const chunked = !!job?.details?.chunked;
+    const stopReportButton = document.getElementById('stop-report-btn');
+    if (stopReportButton) {
+        stopReportButton.classList.toggle('hidden', !isRunning);
+        stopReportButton.disabled = !isRunning || job.status === 'cancelling';
+        stopReportButton.textContent = job.status === 'cancelling' ? 'Stopping…' : 'Stop Report';
+    }
     if (!isRunning) {
         resetReportVisualState();
         return;
@@ -208,6 +214,10 @@ function initializeReportGenerationUI(socket, deps) {
 
     socket.on('report_error', function() {
         resetReportVisualState();
+    });
+
+    document.getElementById('stop-report-btn')?.addEventListener('click', function() {
+        reportSocket.emit('cancel_job', { job_type: 'report' });
     });
 
     document.getElementById('generate-report-btn').addEventListener('click', function() {

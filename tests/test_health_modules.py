@@ -1,7 +1,78 @@
 from flask import Flask
 
 from nmapui.handlers.routes import register_core_routes
+from nmapui import health
+from nmapui.health import build_readiness_payload
 from nmapui.settings import get_effective_scan_rules
+
+
+def test_readiness_does_not_require_public_traceroute_on_isolated_network():
+    payload, status_code = build_readiness_payload(
+        startup_state={
+            "startup_complete": True,
+            "dependency_checks_skipped": False,
+            "dependencies_ok": True,
+            "traceroute_initialized": False,
+            "errors": [],
+        },
+        app_version="v1",
+        default_interface="eth0",
+        auto_scan_thread_alive=True,
+        tool_versions={"nmap": "7.95"},
+    )
+
+    assert status_code == 200
+    assert payload["ready"] is True
+    assert payload["startup"]["traceroute_initialized"] is False
+
+
+def test_readiness_is_degraded_when_scheduler_thread_has_stopped():
+    payload, status_code = build_readiness_payload(
+        startup_state={"startup_complete": True, "dependencies_ok": True},
+        app_version="v1",
+        default_interface="eth0",
+        auto_scan_thread_alive=False,
+        tool_versions={"nmap": "7.95"},
+    )
+
+    assert status_code == 503
+    assert payload["ready"] is False
+    assert payload["auto_scan_thread_alive"] is False
+
+
+def test_readiness_is_degraded_when_stale_job_recovery_failed():
+    recovery = {"ok": False, "failed_jobs": 200, "listing_error": None}
+    payload, status_code = build_readiness_payload(
+        startup_state={
+            "startup_complete": True,
+            "dependencies_ok": True,
+            "recovery": recovery,
+        },
+        app_version="v1",
+        default_interface="eth0",
+        auto_scan_thread_alive=True,
+        tool_versions={"nmap": "7.95"},
+    )
+
+    assert status_code == 503
+    assert payload["ready"] is False
+    assert payload["startup"]["recovery"] == recovery
+
+
+def test_readiness_reports_staged_release_identity(tmp_path, monkeypatch):
+    (tmp_path / "release_id").write_text("b" * 32 + "\n", encoding="ascii")
+    monkeypatch.setattr(health, "BASE_DIR", tmp_path)
+
+    payload, status_code = build_readiness_payload(
+        startup_state={"startup_complete": True, "dependencies_ok": True},
+        app_version="v1",
+        default_interface="eth0",
+        auto_scan_thread_alive=True,
+        tool_versions={},
+    )
+
+    assert status_code == 200
+    assert payload["release_id"] == "b" * 32
 
 
 def test_runtime_status_route_reports_active_jobs():
@@ -110,6 +181,7 @@ def test_runtime_settings_summary_reports_settings_state(monkeypatch):
         },
         "maintenance_backfill": {},
         "maintenance_retention": {},
+        "automatic_retention": {},
         "persisted_counts": {
             "report_artifacts": 4,
             "customer_scan_history": 7,

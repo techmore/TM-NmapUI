@@ -588,6 +588,8 @@ def test_runtime_settings_summary_includes_retention_status(monkeypatch):
                     "deleted_customer_scan_history": 8,
                     "after_bytes": 4096,
                 }
+            if key == "automatic_retention_status":
+                return {"run_date": "2026-03-14", "deleted_jobs": 2}
             return None
 
         def count_report_artifacts(self):
@@ -621,6 +623,7 @@ def test_runtime_settings_summary_includes_retention_status(monkeypatch):
     assert payload["maintenance_retention"]["deleted_runtime_logs"] == 25
     assert payload["maintenance_retention"]["deleted_customer_scan_history"] == 8
     assert payload["maintenance_retention"]["after_bytes"] == 4096
+    assert payload["automatic_retention"]["deleted_jobs"] == 2
 
 
 def test_runtime_backfill_route_requires_auth(monkeypatch, tmp_path):
@@ -871,6 +874,51 @@ def test_startup_checks_append_runtime_log_entries():
         "Startup network initialization completed",
         "Startup checks completed",
     ]
+
+
+def test_startup_checks_respect_network_fingerprint_opt_out(monkeypatch):
+    monkeypatch.setenv("NMAPUI_STARTUP_TRACEROUTE", "true")
+    monkeypatch.setenv("NMAPUI_ENABLE_NETWORK_FINGERPRINT", "false")
+    startup_state = {}
+
+    def unexpected_probe(_target):
+        raise AssertionError("startup ignored the network-fingerprint opt-out")
+
+    run_startup_checks(
+        {
+            "begin_startup_state": lambda state, quick=False: state.update(
+                {"startup_complete": False}
+            ),
+            "check_arp_scan": lambda: False,
+            "check_nmap": lambda: "nmap 7.97",
+            "check_vulners": lambda _path: True,
+            "complete_startup_state": lambda state, traceroute_initialized=False: state.update(
+                {
+                    "startup_complete": True,
+                    "traceroute_initialized": traceroute_initialized,
+                }
+            ),
+            "get_app_version": lambda: "v1.0.0",
+            "get_default_interface_cached": lambda: "en0",
+            "get_versions": lambda: {"app": "v1.0.0"},
+            "load_auto_scan_config": lambda _config: None,
+            "load_current_assignment": lambda: None,
+            "logger": type("LoggerStub", (), {"info": lambda *_args, **_kwargs: None})(),
+            "run_traceroute": unexpected_probe,
+            "safe_emit": lambda *_args, **_kwargs: None,
+            "startup_state": startup_state,
+            "tool_versions": type(
+                "ToolVersionsStub", (), {"set_version": lambda *_args, **_kwargs: None}
+            )(),
+            "auto_scan_config": {"enabled": False},
+            "runtime_store": None,
+            "vulners_script": __import__("pathlib").Path("."),
+        },
+        quick=True,
+    )
+
+    assert startup_state["startup_complete"] is True
+    assert startup_state["traceroute_initialized"] is False
 
 
 def test_startup_checks_records_missing_dependencies_without_exiting():

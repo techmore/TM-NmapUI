@@ -28,52 +28,85 @@ logger = logging.getLogger(__name__)
 STALE_JOB_STATUSES = ("running", "cancelling")
 
 
-def reconcile_interrupted_jobs(*, runtime_store, logger=logger) -> list[str]:
+def reconcile_interrupted_jobs(*, runtime_store, logger=logger, status=None) -> list[str]:
     """Mark jobs left running by a previous process as interrupted.
 
     Returns the job ids that were reconciled.
     """
+    if status is not None:
+        status.update({"ok": True, "failed_jobs": 0, "listing_error": None})
     if runtime_store is None or not hasattr(runtime_store, "list_jobs"):
         return []
 
-    try:
-        stale_jobs = runtime_store.list_jobs(statuses=STALE_JOB_STATUSES, limit=200)
-    except Exception as exc:
-        logger.error("Could not list persisted jobs for startup recovery: %s", exc)
-        return []
-
     interrupted: list[str] = []
-    for job in stale_jobs or []:
-        job_id = job.get("job_id")
-        if not job_id:
-            continue
-        payload = dict(job.get("payload") or {})
-        finished_at = datetime.now(timezone.utc).isoformat()
-        payload.update(
-            {
-                "interrupted": True,
-                "recovery_note": "Process restarted while this job was running",
-                "finished_at": finished_at,
-                "interrupted_at": finished_at,
-            }
-        )
+    failed_jobs = 0
+    before: tuple[str, str] | None = None
+    while True:
         try:
-            runtime_store.upsert_job(
-                job_id=job_id,
-                owner_sid=job.get("owner_sid"),
-                job_type=job.get("job_type") or "report",
-                status="interrupted",
-                payload=payload,
+            stale_jobs = runtime_store.list_jobs(
+                statuses=STALE_JOB_STATUSES, limit=200, before=before
             )
-            interrupted.append(job_id)
         except Exception as exc:
-            logger.error("Failed to mark job %s as interrupted: %s", job_id, exc)
+            logger.error("Could not list persisted jobs for startup recovery: %s", exc)
+            if status is not None:
+                status["ok"] = False
+                status["listing_error"] = "Could not list persisted jobs"
+            break
+        if not stale_jobs:
+            break
+        last_job = stale_jobs[-1]
+        next_before = (last_job.get("updated_at"), last_job.get("job_id"))
+        if not all(next_before) or next_before == before:
+            logger.error("Could not advance startup recovery cursor past %s", before)
+            if status is not None:
+                status["ok"] = False
+                status["listing_error"] = "Recovery cursor could not advance"
+            break
+        for job in stale_jobs:
+            job_id = job.get("job_id")
+            if not job_id:
+                continue
+            payload = dict(job.get("payload") or {})
+            finished_at = datetime.now(timezone.utc).isoformat()
+            payload.update(
+                {
+                    "interrupted": True,
+                    "recovery_note": "Process restarted while this job was running",
+                    "finished_at": finished_at,
+                    "interrupted_at": finished_at,
+                }
+            )
+            try:
+                runtime_store.upsert_job(
+                    job_id=job_id,
+                    owner_sid=job.get("owner_sid"),
+                    job_type=job.get("job_type") or "report",
+                    status="interrupted",
+                    payload=payload,
+                )
+                interrupted.append(job_id)
+            except Exception as exc:
+                failed_jobs += 1
+                if failed_jobs <= 10:
+                    logger.error("Failed to mark job %s as interrupted: %s", job_id, exc)
+                if status is not None:
+                    status["ok"] = False
+                    status["failed_jobs"] = failed_jobs
+        before = next_before
 
+    if failed_jobs > 10:
+        logger.error(
+            "Startup recovery suppressed %d additional per-job write errors",
+            failed_jobs - 10,
+        )
     if interrupted:
+        sample = ", ".join(interrupted[:10])
+        remaining = len(interrupted) - 10
         logger.warning(
-            "Recovered %d job(s) left running by a previous process: %s",
+            "Recovered %d job(s) left running by a previous process: %s%s",
             len(interrupted),
-            ", ".join(interrupted),
+            sample,
+            f" (+{remaining} more)" if remaining > 0 else "",
         )
     return interrupted
 

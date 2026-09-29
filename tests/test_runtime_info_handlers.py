@@ -328,6 +328,58 @@ def test_get_local_ip_still_emits_cidr_when_public_ip_lookup_fails(monkeypatch):
     assert payload["public_ip"] == ""
 
 
+def test_disabled_network_fingerprint_skips_traceroute_and_public_ip_lookup(monkeypatch):
+    configure_auth(monkeypatch)
+    monkeypatch.setenv("NMAPUI_ENABLE_NETWORK_FINGERPRINT", "false")
+
+    class NetifacesStub:
+        AF_INET = object()
+
+        @staticmethod
+        def ifaddresses(_interface):
+            return {
+                NetifacesStub.AF_INET: [
+                    {"addr": "192.168.1.42", "netmask": "255.255.255.0"}
+                ]
+            }
+
+    def unexpected_external_call(*_args, **_kwargs):
+        raise AssertionError("disabled network fingerprint attempted an external lookup")
+
+    app, socketio = build_runtime_info_app(
+        {
+            "calculate_cidr": lambda _ip, _mask: "192.168.1.0/24",
+            "get_client_state": lambda *, sid=None: {
+                "network_key": {
+                    "target": "1.1.1.1",
+                    "total_hops": 0,
+                    "private_hops": [],
+                    "public_hops": [],
+                    "exit_ip": None,
+                }
+            },
+            "get_default_interface_cached": lambda: "en0",
+            "get_report_counts": lambda: {},
+            "logger": Flask(__name__).logger,
+            "netifaces": NetifacesStub,
+            "requests": type("RequestsStub", (), {"get": unexpected_external_call}),
+            "run_traceroute": unexpected_external_call,
+        }
+    )
+
+    client = socketio.test_client(app, headers=basic_auth_header())
+    client.emit("get_network_key")
+    client.emit("get_local_ip")
+    received = client.get_received()
+
+    network_event = next(event for event in received if event["name"] == "network_key")
+    local_ip_event = next(event for event in received if event["name"] == "local_ip")
+    assert network_event["args"][0]["total_hops"] == 0
+    assert local_ip_event["args"][0]["local_ip"] == "192.168.1.42"
+    assert local_ip_event["args"][0]["cidr"] == "192.168.1.0/24"
+    assert local_ip_event["args"][0]["public_ip"] == ""
+
+
 def test_generate_pdf_from_saved_rejects_invalid_payload(monkeypatch):
     configure_auth(monkeypatch)
     observed = {}

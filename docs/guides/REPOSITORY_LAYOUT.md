@@ -2,7 +2,9 @@
 
 The maintained product is a shared Flask application targeting macOS and Ubuntu
 scanner hosts, with a cross-platform browser UI and an optional macOS menu-bar
-launcher. Ubuntu service packaging is still in progress.
+launcher. Ubuntu has an in-repository installer and systemd-service candidate;
+physical scanner-host validation, unattended soak, hosted CI, and release are
+still outstanding.
 
 ## Current code
 
@@ -11,7 +13,8 @@ launcher. Ubuntu service packaging is still in progress.
 - `nmapui/handlers/` — HTTP and Socket.IO route registration
 - `templates/`, `static/` — the shared web interface
 - `packaging/macos/` — Swift launcher, LaunchDaemon installer and scanner helper
-- Ubuntu installer and systemd service — tracked in issue #241; not yet shipped
+- `packaging/ubuntu/` — installer and systemd-service candidate tracked in
+  issue #241; not yet released or production-supported
 - `tests/` — unit, contract, browser and packaged-app checks
 - `docs/guides/`, `docs/notes/`, `docs/audits/` — setup, product status and review
 

@@ -3,23 +3,23 @@ import logging
 from datetime import datetime, timedelta
 import re
 from pathlib import Path
+import threading
 
 from .paths import (
     AUTO_SCAN_CONFIG_EXAMPLE_FILE,
     AUTO_SCAN_CONFIG_FILE,
     LEGACY_AUTO_SCAN_CONFIG_FILE,
 )
+from .private_storage import atomic_replace_private_bytes
 
 
 def _atomic_write_json(path: Path, payload: dict) -> None:
     """Write JSON atomically to avoid partial-write corruption on crash."""
-    import json as _json
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(_json.dumps(payload, indent=2))
-    tmp_path.replace(path)
+    atomic_replace_private_bytes(path, json.dumps(payload, indent=2).encode("utf-8"))
 
 
 logger = logging.getLogger(__name__)
+AUTO_SCAN_CONFIG_LOCK = threading.RLock()
 
 DEFAULT_AUTO_SCAN_CONFIG = {
     "enabled": False,
@@ -34,7 +34,10 @@ AUTO_SCAN_ALLOWED_KEYS = {"enabled", "start_time", "end_time", "last_run"}
 def _parse_time_of_day(value: str) -> tuple[int, int]:
     try:
         hour_text, minute_text = str(value or "00:00").split(":", 1)
-        return int(hour_text), int(minute_text)
+        hour, minute = int(hour_text), int(minute_text)
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError("time of day is out of range")
+        return hour, minute
     except (ValueError, AttributeError):
         logger.warning("Invalid time-of-day value %r, defaulting to 00:00", value)
         return 0, 0
@@ -132,12 +135,9 @@ def load_auto_scan_config(target_config: dict) -> None:
 
 
 def save_auto_scan_config(source_config: dict) -> None:
-    """Persist auto scan configuration using an atomic write."""
-    try:
-        AUTO_SCAN_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write_json(AUTO_SCAN_CONFIG_FILE, source_config)
-    except Exception as exc:
-        logger.error("Failed to save auto scan config: %s", exc)
+    """Persist auto scan configuration; callers must handle write failures."""
+    AUTO_SCAN_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(AUTO_SCAN_CONFIG_FILE, source_config)
 
 
 def validate_auto_scan_config_update(config) -> tuple[bool, str | None]:
@@ -162,6 +162,9 @@ def validate_auto_scan_config_update(config) -> tuple[bool, str | None]:
         value = config[field]
         if not isinstance(value, str) or not time_pattern.match(value):
             return False, f"'{field}' must use HH:MM format"
+        hour, minute = map(int, value.split(":"))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return False, f"'{field}' must be a valid time of day"
 
     if "last_run" in config and config["last_run"] is not None:
         if not isinstance(config["last_run"], str):

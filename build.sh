@@ -24,6 +24,14 @@ RUNTIME_SUPPORT_DIR="${NMAPUI_SUPPORT_DIR:-$HOME/Library/Application Support/Nma
 RUNTIME_DATA_DIR="${NMAPUI_DATA_DIR:-$RUNTIME_SUPPORT_DIR/data}"
 RUNTIME_LOG_DIR="${NMAPUI_LOG_DIR:-$RUNTIME_SUPPORT_DIR/logs}"
 TEMP_MIGRATION_DB=""
+MIGRATION_REQUIRED=0
+
+cleanup_temp_migration_db() {
+    if [[ -n "$TEMP_MIGRATION_DB" ]]; then
+        rm -f "$TEMP_MIGRATION_DB" "$TEMP_MIGRATION_DB-wal" "$TEMP_MIGRATION_DB-shm"
+    fi
+}
+trap cleanup_temp_migration_db EXIT
 SDK=$(xcrun --show-sdk-path --sdk macosx)
 HOST_ARCH="$(uname -m)"
 APP_VERSION="$(tr -d '\r\n' < "$ROOT_DIR/VERSION")"
@@ -173,6 +181,11 @@ remove_bundle_path() {
 stage_google_drive_credentials() {
     mkdir -p "$(dirname "$GOOGLE_DRIVE_CREDENTIALS_BUNDLE")"
 
+    if [[ "${NMAPUI_SKIP_EMBEDDED_DRIVE_CREDENTIALS:-0}" == "1" ]]; then
+        rm -f "$GOOGLE_DRIVE_CREDENTIALS_BUNDLE"
+        return
+    fi
+
     if [[ -f "$GOOGLE_DRIVE_CREDENTIALS_SOURCE" ]]; then
         cp "$GOOGLE_DRIVE_CREDENTIALS_SOURCE" "$GOOGLE_DRIVE_CREDENTIALS_BUNDLE"
         chmod 600 "$GOOGLE_DRIVE_CREDENTIALS_BUNDLE" 2>/dev/null || true
@@ -201,6 +214,39 @@ stage_google_drive_credentials() {
     echo "WARNING: Google Drive OAuth credentials are missing from this build."
     echo "WARNING: Google Drive sync will require importing credentials.json from Settings after install."
 }
+
+migrate_bundle_runtime_file() {
+    local destination="$1"
+    shift
+    [[ ! -L "$destination" ]] || { echo "ERROR: Refusing symlinked runtime file: $destination" >&2; exit 1; }
+    [[ -e "$destination" ]] && return
+    local source
+    for source in "$@"; do
+        if [[ -f "$source" ]]; then
+            mkdir -p "$(dirname "$destination")"
+            cp "$source" "$destination"
+            chmod 600 "$destination"
+            echo "Preserved runtime state at $destination"
+            return
+        fi
+    done
+}
+
+# Older bundles stored mutable customer state and Drive credentials under
+# Contents/Resources. Preserve it before replacing the bundle; the config tree
+# copy below excludes customer state. The explicit OAuth-credential staging step
+# later remains available for builds that deliberately embed client credentials.
+if [[ "${NMAPUI_SKIP_LEGACY_MIGRATION:-0}" != "1" ]]; then
+    migrate_bundle_runtime_file "$RUNTIME_DATA_DIR/customers.yaml" \
+        "$INSTALLED_APP_NAME/Contents/Resources/config/customers.yaml" \
+        "$ROOT_DIR/config/customers.yaml"
+    migrate_bundle_runtime_file "$RUNTIME_DATA_DIR/scan_history.json" \
+        "$INSTALLED_APP_NAME/Contents/Resources/data/scan_history.json" \
+        "$ROOT_DIR/data/scan_history.json"
+    migrate_bundle_runtime_file "$RUNTIME_DATA_DIR/google_drive_credentials.json" \
+        "$INSTALLED_APP_NAME/Contents/Resources/config/google_drive_credentials.json" \
+        "$ROOT_DIR/config/google_drive_credentials.json"
+fi
 
 # Ensure build output doesn't collide with the nmapui package on case-insensitive filesystems.
 echo "Purging stale runtime state and build artifacts..."
@@ -294,7 +340,8 @@ tar -cf - \
   templates \
   static \
   scripts \
-  config \
+  config/auto_scan_config.example.json \
+  config/customers_example.yaml \
   requirements.txt \
   VERSION \
   AGENTS.md \
@@ -364,10 +411,9 @@ export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright-browsers"
 # packaged desktop entrypoint.
 export NMAPUI_ALLOW_UNSAFE_WERKZEUG=true
 
-# The UI requires sign-in. Reuse the appliance credentials when the
-# LaunchDaemon installer created them, otherwise generate a per-install
-# password stored 0600 in the data dir. The old NMAPUI_TRUST_LOCAL_UI bypass
-# is deliberately not set: it made every loopback process fully trusted.
+# Loopback access is trusted by default. Reuse credentials from the LaunchDaemon
+# installer for optional remote access; without credentials, remote requests
+# are rejected. Set NMAPUI_TRUST_LOCAL_UI=false to require local sign-in too.
 CREDENTIALS_FILE="$NMAPUI_DATA_DIR/credentials.env"
 if [[ -f "$CREDENTIALS_FILE" ]]; then
     NMAPUI_USERNAME="${NMAPUI_USERNAME:-$(awk -F= '/^NMAPUI_USERNAME=/{print $2; exit}' "$CREDENTIALS_FILE")}"
@@ -448,9 +494,18 @@ if [[ "${NMAPUI_MIGRATE_DB:-0}" == "1" ]]; then
         echo "ERROR: Database migration source not found: $MIGRATION_SOURCE_DB" >&2
         exit 1
     fi
-    TEMP_MIGRATION_DB="$(mktemp "${TMPDIR:-/tmp}/nmapui-runtime-db.XXXXXX.sqlite3")"
-    cp "$MIGRATION_SOURCE_DB" "$TEMP_MIGRATION_DB"
-    echo "Captured runtime database for migration: $TEMP_MIGRATION_DB"
+    if [[ "$MIGRATION_SOURCE_DB" -ef "$INSTALLED_RUNTIME_DB" ]]; then
+        echo "Runtime database is already in the persistent data directory; no migration copy needed"
+    else
+        TEMP_MIGRATION_DB="$(mktemp "${TMPDIR:-/tmp}/nmapui-runtime-db.XXXXXX.sqlite3")"
+        if ! "$BUNDLE_VENV/bin/python" "$ROOT_DIR/packaging/sqlite_backup.py" \
+            --source "$MIGRATION_SOURCE_DB" --destination "$TEMP_MIGRATION_DB"; then
+            echo "ERROR: Could not capture a consistent SQLite migration snapshot" >&2
+            exit 1
+        fi
+        MIGRATION_REQUIRED=1
+        echo "Captured consistent runtime database for migration: $TEMP_MIGRATION_DB"
+    fi
 fi
 
 echo "Installing application bundle..."
@@ -458,10 +513,13 @@ mkdir -p "$APP_INSTALL_DIR"
 remove_bundle_path "$INSTALLED_APP_NAME"
 ditto "$APP_NAME" "$INSTALLED_APP_NAME"
 
-if [[ "${NMAPUI_MIGRATE_DB:-0}" == "1" ]]; then
+if [[ "$MIGRATION_REQUIRED" == "1" ]]; then
     mkdir -p "$(dirname "$INSTALLED_RUNTIME_DB")"
-    cp "$TEMP_MIGRATION_DB" "$INSTALLED_RUNTIME_DB"
-    rm -f "$TEMP_MIGRATION_DB"
+    if ! "$BUNDLE_VENV/bin/python" "$ROOT_DIR/packaging/sqlite_backup.py" \
+        --source "$TEMP_MIGRATION_DB" --destination "$INSTALLED_RUNTIME_DB"; then
+        echo "ERROR: Could not install the consistent SQLite migration snapshot" >&2
+        exit 1
+    fi
     echo "Migrated runtime database into installed app: $INSTALLED_RUNTIME_DB"
 fi
 

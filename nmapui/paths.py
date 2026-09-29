@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Optional
 
 
@@ -52,12 +54,45 @@ AUTO_SCAN_SCHEDULER_LOCK_FILE = DATA_DIR / "auto_scan_scheduler.lock"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 SESSION_SECRET_FILE = DATA_DIR / "session.key"
 RUNTIME_DB_FILE = DATA_DIR / "runtime.sqlite3"
-GOOGLE_DRIVE_CREDENTIALS_FILE = BASE_DIR / "config" / "google_drive_credentials.json"
+CUSTOMER_CONFIG_FILE = DATA_DIR / "customers.yaml"
+SCAN_HISTORY_FILE = DATA_DIR / "scan_history.json"
+GOOGLE_DRIVE_CREDENTIALS_FILE = DATA_DIR / "google_drive_credentials.json"
 GOOGLE_DRIVE_TOKEN_FILE = DATA_DIR / "google_drive_tokens.json"
 GOOGLE_DRIVE_TOKEN_KEY_FILE = DATA_DIR / "google_drive_tokens.key"
 REMOTE_SYNC_SECRET_FILE = DATA_DIR / "remote_sync_secret.json"
 REMOTE_SYNC_SECRET_KEY_FILE = DATA_DIR / "remote_sync_secret.key"
 CUSTOMER_TRACEROUTES_FILE = DATA_DIR / "customer_traceroutes.json"
+
+
+def migrate_legacy_runtime_files() -> None:
+    """Copy legacy checkout/bundle state into the persistent data directory once."""
+    if os.environ.get("NMAPUI_SKIP_LEGACY_MIGRATION") == "1":
+        return
+    legacy_files = (
+        (BASE_DIR / "config" / "customers.yaml", CUSTOMER_CONFIG_FILE),
+        (BASE_DIR / "config" / "google_drive_credentials.json", GOOGLE_DRIVE_CREDENTIALS_FILE),
+        (BASE_DIR / "data" / "scan_history.json", SCAN_HISTORY_FILE),
+    )
+    for source, destination in legacy_files:
+        if not source.is_file() or destination.exists() or destination.is_symlink():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with source.open("rb") as source_file, tempfile.NamedTemporaryFile(
+                prefix=f".{destination.name}.", dir=destination.parent, delete=False
+            ) as temporary_file:
+                temporary = Path(temporary_file.name)
+                shutil.copyfileobj(source_file, temporary_file)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            temporary.chmod(0o600)
+            os.link(temporary, destination)
+        except FileExistsError:
+            continue
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
 
 def resolve_scan_path(path: str) -> Optional[Path]:

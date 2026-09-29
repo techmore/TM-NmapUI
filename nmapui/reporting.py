@@ -1,12 +1,16 @@
 from datetime import datetime, timedelta
+import base64
+import hashlib
 from html import escape
-import io
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 import xml.etree.ElementTree as ET
+from urllib.parse import unquote, urlsplit
 
 from nmapui.runtime_log import append_runtime_log
 from persistence import (
@@ -23,6 +27,114 @@ from persistence import (
 
 
 logger = logging.getLogger(__name__)
+
+REPORT_TRANSFORM_TIMEOUT_SECONDS = 120
+REPORT_PDF_TIMEOUT_SECONDS = 180
+REPORT_RUNTIME_MARKER = "__NMAPUI_REPORT_RUNTIME__"
+REPORT_TAILWIND_MARKER = "__NMAPUI_TAILWIND_CSS__"
+REPORT_CSP_MARKER = "__NMAPUI_REPORT_CSP__"
+
+
+def _report_static_path(*parts):
+    return Path(__file__).resolve().parents[1].joinpath("static", *parts)
+
+
+def report_content_security_policy(*, for_meta=False):
+    """Return the isolated policy for self-contained, generated report HTML."""
+    runtime_bytes = _report_static_path("js", "report_runtime.js").read_bytes()
+    script_hash = base64.b64encode(hashlib.sha256(runtime_bytes).digest()).decode("ascii")
+    directives = [
+        "default-src 'none'",
+        f"script-src 'sha256-{script_hash}'",
+        "style-src 'unsafe-inline'",
+        "font-src 'none'",
+        "img-src data: blob:",
+        "connect-src 'none'",
+        "base-uri 'none'",
+        "object-src 'none'",
+        "form-action 'none'",
+    ]
+    if not for_meta:
+        directives.append("frame-ancestors 'none'")
+        directives.append(
+            "sandbox allow-scripts allow-downloads allow-popups allow-popups-to-escape-sandbox"
+        )
+    return "; ".join(directives)
+
+
+def _embed_report_assets(html_path):
+    """Make generated reports offline-styled and allow only the pinned local runtime."""
+    css_path = _report_static_path("css", "tailwind.css")
+    runtime_path = _report_static_path("js", "report_runtime.js")
+    css = css_path.read_text(encoding="utf-8")
+    runtime = runtime_path.read_text(encoding="utf-8")
+    if "</style" in css.lower() or "</script" in runtime.lower():
+        raise ValueError("Report runtime assets contain an unsafe closing element")
+
+    html_text = html_path.read_text(encoding="utf-8")
+    replacements = (
+        (REPORT_TAILWIND_MARKER, f'<style id="nmapui-tailwind-css">{css}</style>'),
+        (REPORT_CSP_MARKER, escape(report_content_security_policy(for_meta=True), quote=True)),
+        (REPORT_RUNTIME_MARKER, runtime),
+    )
+    for marker, replacement in replacements:
+        if html_text.count(marker) != 1:
+            raise ValueError(f"Expected one {marker} placeholder in transformed report")
+        html_text = html_text.replace(marker, replacement, 1)
+
+    html_path.write_text(html_text, encoding="utf-8")
+
+
+def _is_report_local_url(url, report_root):
+    parsed = urlsplit(url)
+    if parsed.scheme == "data":
+        return True
+    if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
+        return False
+    resource_path = Path(unquote(parsed.path)).resolve()
+    try:
+        resource_path.relative_to(Path(report_root).resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _allow_report_pdf_resource(url, resource_type, report_root):
+    """Allow only report-local files and known static CSS/font resources."""
+    if resource_type == "script":
+        return False
+
+    parsed = urlsplit(url)
+    if parsed.scheme == "about":
+        return url == "about:blank" and resource_type == "document"
+    if parsed.scheme in {"data", "file"} and _is_report_local_url(url, report_root):
+        return resource_type in {"document", "font", "image", "other", "stylesheet"}
+    return False
+
+
+def _weasyprint_local_url_fetcher(report_root):
+    try:
+        from weasyprint.urls import URLFetcher
+    except ImportError:
+        from weasyprint import default_url_fetcher
+
+        def fetch_local_url(url, *args, **kwargs):
+            if not _is_report_local_url(url, report_root):
+                raise ValueError("External resources are disabled for report PDFs")
+            return default_url_fetcher(url, *args, **kwargs)
+
+        return fetch_local_url
+
+    class LocalOnlyURLFetcher(URLFetcher):
+        def fetch(self, url, headers=None):
+            if not _is_report_local_url(url, report_root):
+                raise ValueError("External resources are disabled for report PDFs")
+            return super().fetch(url, headers=headers)
+
+    return LocalOnlyURLFetcher(
+        allowed_protocols={"data", "file"},
+        allow_redirects=False,
+    )
 
 
 def _get_scans_dir_for_scan(scan_dir):
@@ -237,6 +349,7 @@ def refresh_persisted_diff_summaries(
     customer_id,
     target,
     logger=logger,
+    full_rebuild=False,
 ):
     if not customer_id or not target:
         return
@@ -261,13 +374,20 @@ def refresh_persisted_diff_summaries(
         key=lambda item: str(item.get("metadata", {}).get("timestamp", "") or "")
     )
 
+    entries_to_refresh = relevant_entries
     previous_entry = None
+    if not full_rebuild and relevant_entries:
+        entries_to_refresh = relevant_entries[-1:]
+        if len(relevant_entries) > 1:
+            previous_entry = relevant_entries[-2]
+
     updated_by_path = {}
-    for entry in relevant_entries:
+    for entry in entries_to_refresh:
         metadata = normalize_scan_metadata_document(entry.get("metadata", {}))
         current_path = str(entry.get("path", "") or "")
         current_xml_path = scans_dir / current_path / "scan.xml"
         diff_summary = None
+        diff_computed = previous_entry is None
 
         if (
             previous_entry is not None
@@ -280,6 +400,7 @@ def refresh_persisted_diff_summaries(
                     parse_scan_xml_for_assets(current_xml_path),
                     parse_scan_xml_for_assets(previous_xml_path),
                 )
+                diff_computed = True
                 if summary.get("has_changes"):
                     diff_summary = {
                         **summary,
@@ -297,6 +418,7 @@ def refresh_persisted_diff_summaries(
             metadata["diff_summary"] = diff_summary
         else:
             metadata["diff_summary"] = None
+        metadata["diff_summary_computed"] = diff_computed
 
         metadata_path = scans_dir / current_path / "metadata.json"
         if metadata_path.exists():
@@ -413,9 +535,16 @@ def merge_nmap_xml_files(xml_files, output_path):
     total_down = 0
     total_ips = 0
 
-    for xml_file in xml_files:
-        tree = ET.parse(xml_file)
+    all_targets = []
+    for index, xml_file in enumerate(xml_files):
+        tree = base_tree if index == 0 else ET.parse(xml_file)
         root = tree.getroot()
+
+        args = root.get("args")
+        if args:
+            parts = args.split()
+            if parts and parts[-1] not in all_targets:
+                all_targets.append(parts[-1])
 
         for host in root.findall("host"):
             all_hosts.append(host)
@@ -475,21 +604,8 @@ def merge_nmap_xml_files(xml_files, output_path):
             hosts.set("total", str(total_ips))
 
     scaninfo = base_root.find("scaninfo")
-    if scaninfo is not None:
-        all_targets = []
-        for xml_file in xml_files:
-            tree = ET.parse(xml_file)
-            root = tree.getroot()
-            args = root.get("args")
-            if args:
-                parts = args.split()
-                if parts:
-                    target = parts[-1]
-                    if target not in all_targets:
-                        all_targets.append(target)
-
-        if all_targets:
-            scaninfo.set("numservices", "1000")
+    if scaninfo is not None and all_targets:
+        scaninfo.set("numservices", "1000")
 
     first_content = xml_files[0].read_text(encoding="utf-8")
     header_end = first_content.find("<nmaprun")
@@ -502,11 +618,26 @@ def merge_nmap_xml_files(xml_files, output_path):
     footer_start = first_content.find("</nmaprun>") + len("</nmaprun>")
     footer = first_content[footer_start:] if footer_start > 0 else ""
 
-    xml_string = io.StringIO()
-    base_tree.write(xml_string, encoding="unicode", xml_declaration=False)
-    merged_content = xml_string.getvalue()
-
-    output_path.write_text(headers + merged_content + footer, encoding="utf-8")
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            dir=output_path.parent,
+            delete=False,
+        ) as output_file:
+            temporary_path = Path(output_file.name)
+            output_file.write(headers)
+            base_tree.write(output_file, encoding="unicode", xml_declaration=False)
+            output_file.write(footer)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+        os.replace(temporary_path, output_path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def convert_xml_to_html(
@@ -539,15 +670,26 @@ def convert_xml_to_html(
     logger.info("Executing: %s", command_str)
 
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(
+            cmd,
+            check=True,
+            timeout=REPORT_TRANSFORM_TIMEOUT_SECONDS,
+        )
+        _embed_report_assets(html_path)
         return True
+    except subprocess.TimeoutExpired:
+        logger.error(
+            "XML to HTML conversion timed out after %ss",
+            REPORT_TRANSFORM_TIMEOUT_SECONDS,
+        )
+        return False
     except Exception as exc:
         logger.error("XML to HTML conversion failed: %s", exc)
         return False
 
 
 def convert_html_to_pdf(html_path, pdf_path, *, feedback=None):
-    """Convert HTML to PDF using playwright, wkhtmltopdf, weasyprint, or textutil."""
+    """Convert HTML to PDF using Playwright, wkhtmltopdf, or WeasyPrint."""
     if feedback:
         feedback("Trying browser-quality PDF rendering with Playwright")
     try:
@@ -556,32 +698,51 @@ def convert_html_to_pdf(html_path, pdf_path, *, feedback=None):
 
         async def generate_pdf():
             async with async_playwright() as playwright:
+                launch_args = ["--no-sandbox"] if getattr(os, "geteuid", lambda: 1)() == 0 else []
                 browser = await playwright.chromium.launch(
-                    headless=True, args=["--no-sandbox"]
+                    headless=True, args=launch_args
                 )
-                page = await browser.new_page(
-                    viewport={"width": 1440, "height": 2160}
+                context = await browser.new_context(
+                    viewport={"width": 1440, "height": 2160},
+                    java_script_enabled=False,
+                    service_workers="block",
                 )
-                await page.emulate_media(media="print")
-                await page.goto(
-                    f"file://{html_path.resolve()}",
-                    wait_until="networkidle",
-                )
-                # Give hosted fonts and CSS a brief moment to settle before capture.
-                await page.wait_for_timeout(1200)
-                await page.pdf(
-                    path=str(pdf_path),
-                    format="Letter",
-                    print_background=True,
-                    prefer_css_page_size=True,
-                    margin={
-                        "top": "8mm",
-                        "right": "8mm",
-                        "bottom": "10mm",
-                        "left": "8mm",
-                    },
-                )
-                await browser.close()
+                report_root = html_path.resolve().parent
+
+                async def route_report_resource(route):
+                    request = route.request
+                    if _allow_report_pdf_resource(
+                        request.url, request.resource_type, report_root
+                    ):
+                        await route.continue_()
+                    else:
+                        await route.abort()
+
+                try:
+                    await context.route("**/*", route_report_resource)
+                    page = await context.new_page()
+                    page.set_default_timeout(REPORT_PDF_TIMEOUT_SECONDS * 1000)
+                    page.set_default_navigation_timeout(REPORT_PDF_TIMEOUT_SECONDS * 1000)
+                    await page.emulate_media(media="print")
+                    await page.goto(
+                        html_path.resolve().as_uri(),
+                        wait_until="networkidle",
+                    )
+                    await page.pdf(
+                        path=str(pdf_path),
+                        format="Letter",
+                        print_background=True,
+                        prefer_css_page_size=True,
+                        margin={
+                            "top": "8mm",
+                            "right": "8mm",
+                            "bottom": "10mm",
+                            "left": "8mm",
+                        },
+                    )
+                finally:
+                    await context.close()
+                    await browser.close()
 
         asyncio.run(generate_pdf())
         return True
@@ -592,7 +753,8 @@ def convert_html_to_pdf(html_path, pdf_path, *, feedback=None):
     if wkhtml:
         cmd = [
             wkhtml,
-            "--enable-local-file-access",
+            "--disable-javascript",
+            "--disable-local-file-access",
             "--encoding",
             "utf-8",
             "--background",
@@ -621,7 +783,7 @@ def convert_html_to_pdf(html_path, pdf_path, *, feedback=None):
         if feedback:
             feedback(f"Falling back to wkhtmltopdf: {command_str}")
         try:
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, timeout=REPORT_PDF_TIMEOUT_SECONDS)
             return True
         except Exception as exc:
             logger.error("wkhtmltopdf failed: %s", exc)
@@ -631,24 +793,16 @@ def convert_html_to_pdf(html_path, pdf_path, *, feedback=None):
     try:
         from weasyprint import HTML
 
-        HTML(str(html_path)).write_pdf(
+        HTML(
+            str(html_path),
+            url_fetcher=_weasyprint_local_url_fetcher(html_path.resolve().parent),
+        ).write_pdf(
             str(pdf_path),
             stylesheets=None,
         )
         return True
     except Exception as exc:
         logger.error("weasyprint failed: %s", exc)
-
-    if feedback:
-        feedback("Falling back to textutil for PDF generation")
-    try:
-        cmd = ["textutil", "-convert", "pdf", "-output", str(pdf_path), str(html_path)]
-        if feedback:
-            feedback("Executing: textutil HTML to PDF")
-        subprocess.run(cmd, check=True, capture_output=True)
-        return True
-    except Exception as exc:
-        logger.error("textutil failed: %s", exc)
 
     return False
 

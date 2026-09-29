@@ -1,12 +1,20 @@
 # PROJECT KNOWLEDGE BASE
 
-## Current navigation (updated 2026-09-25)
+## Current navigation (updated 2026-09-27)
 
 The generated map below is historical. The product is Flask (`app.py` wiring,
 `nmapui/` implementation), with `templates/index.html` and an optional Swift
 launcher in `packaging/macos/NmapUIMenuBarLauncher.swift`. macOS and Ubuntu are
-the scanner-host targets; Ubuntu installer and systemd support are unfinished.
-Native SwiftUI work is on the unmerged `swift-native` branch. Read
+the scanner-host targets. Ubuntu now has a root-mode installer and systemd
+service candidate; install, privileged loopback scan, authenticated browser and
+WebSocket access with `NMAPUI_TRUST_LOCAL_UI=false`, systemd SIGKILL
+restart/recovery, upgrade/rollback, uninstall and reboot passed in disposable
+Ubuntu 24.04 ARM64 VMs. The installer defaults trust loopback callers, so that
+auth test used strict-auth configuration rather than the default posture.
+Physical-host interface
+discovery, unattended soak, and hosted CI for the current candidate remain
+open, so do not claim Ubuntu production support yet. Native SwiftUI work is on
+the unmerged `swift-native` branch. Read
 `docs/notes/PROJECT_STATUS.md` first.
 
 - Scanning: `nmapui/scanning.py`, `nmapui/workflows.py`, `nmapui/privileged.py`.
@@ -18,13 +26,17 @@ Native SwiftUI work is on the unmerged `swift-native` branch. Read
 - Build: root `build.sh`; boot supervision: `packaging/macos/install-daemon.sh`.
 - Verification: `.venv/bin/python -m pytest -q`. Browser and packaged tests need
   `NMAPUI_RUN_BROWSER_REGRESSION=1` / `NMAPUI_RUN_PACKAGED_SMOKE=1` respectively.
+  Ubuntu installer/staged-server checks are in `tests/test_ubuntu_installer.py`
+  and `tests/test_production_server.py`; the root SYN smoke test is opt-in with
+  `NMAPUI_RUN_PRIVILEGED_SCAN_SMOKE=1` on Ubuntu.
 - CI tests Python 3.11. Lint is not currently enforced by CI; `.flake8` uses a
   160-column limit. Do not assume the historical lint commands are configured.
 - Container packaging is retired from the active plan. Keep direct host
   networking for the scanner and share the Flask backend across frontends.
-- The current service installer is macOS-only; do not describe Ubuntu as
-  unattended or production-ready until its installer, privilege model and
-  systemd supervision are implemented and verified.
+- Service installers are `packaging/macos/install-daemon.sh` and
+  `packaging/ubuntu/install-service.sh`. Ubuntu's systemd/privilege candidate
+  has disposable-VM lifecycle validation but still requires physical scanner-
+  host discovery and unattended-soak checks before it is production-ready.
 - Preserve the known-good alpha branch/tag. Do not delete legacy runtime/static
   assets without checking active Flask and report dependencies.
 

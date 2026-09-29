@@ -27,6 +27,7 @@ def start_auto_scan_thread(
     startup_grace_seconds,
     execute_auto_scan,
     execute_auto_monitor_rule,
+    maintenance_task=None,
     logger,
 ):
     thread_ref = {"thread": auto_scan_thread}
@@ -40,6 +41,7 @@ def start_auto_scan_thread(
         startup_grace_seconds=startup_grace_seconds,
         execute_auto_scan=execute_auto_scan,
         execute_auto_monitor_rule=execute_auto_monitor_rule,
+        maintenance_task=maintenance_task,
         logger=logger,
     )
     return thread_ref["thread"]

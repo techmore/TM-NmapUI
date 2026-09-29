@@ -5,7 +5,9 @@ privilege boundary. These tests exercise validation directly, without root.
 """
 
 import importlib.util
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,6 +33,56 @@ def load_helper():
     return module
 
 
+def test_helper_never_takes_its_trusted_asset_root_from_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("NMAPUI_PRIVILEGED_ASSETS", str(tmp_path))
+    module = load_helper()
+    assert module.ASSET_DIR in (module.RELEASE_ASSET_DIR, module.LEGACY_ASSET_DIR)
+    assert module.ASSET_DIR != str(tmp_path)
+
+
+def test_helper_prefers_assets_from_the_active_release(monkeypatch):
+    expected = "/usr/local/lib/nmapui/current/privileged-assets"
+    original_isdir = os.path.isdir
+    monkeypatch.setattr(os.path, "isdir", lambda path: path == expected or original_isdir(path))
+
+    module = load_helper()
+
+    assert module.ASSET_DIR == expected
+
+
+def test_helper_ignores_caller_data_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("NMAPUI_DATA_DIR", str(tmp_path))
+
+    module = load_helper()
+
+    assert module.DATA_DIR == "/Library/Application Support/NmapUI/data"
+
+
+def test_helper_rejects_user_owned_scanner_binary(tmp_path):
+    module = load_helper()
+    binary = tmp_path / "nmap"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    module.TRUSTED_BIN_DIRS = (str(tmp_path),)
+
+    with pytest.raises(module.Rejected, match="untrusted scanner binaries"):
+        module._resolve_program("nmap")
+
+
+def test_helper_requires_trusted_nmap_data_tree(helper, tmp_path):
+    program = tmp_path / "bin" / "nmap"
+    data = tmp_path / "share" / "nmap"
+    (data / "scripts").mkdir(parents=True)
+    (data / "nselib").mkdir()
+    (data / "nmap-services").write_text("services")
+    (data / "nmap-os-db").write_text("os")
+    assert helper._verified_nmap_data_dir(str(program)) == str(data)
+
+    (data / "scripts" / "unsafe.nse").symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(helper.Rejected, match="symlink"):
+        helper._verified_nmap_data_dir(str(program))
+
+
 @pytest.fixture()
 def helper(tmp_path):
     module = load_helper()
@@ -50,6 +102,7 @@ def helper(tmp_path):
     module.ASSET_DIR = str(assets)
     module.DATA_DIR = str(data)
     module.TRUSTED_BIN_DIRS = (str(bindir),)
+    module._verify_root_owned_command = lambda command: None
     return module
 
 
@@ -127,6 +180,44 @@ def test_rejects_a_script_outside_the_root_owned_asset_dir(helper, tmp_path):
 def test_rejects_output_outside_the_data_dir(helper, tmp_path):
     with pytest.raises(helper.Rejected):
         helper.build_argv(["nmap", "-sS", "-oA", "/etc/nmapui_scan", "10.0.0.5"])
+
+
+def test_rejects_output_base_at_data_root_and_symlinked_suffix(helper, tmp_path):
+    data = Path(helper.DATA_DIR)
+    with pytest.raises(helper.Rejected, match="must be inside"):
+        helper.build_argv(["nmap", "-sS", "-oA", str(data), "10.0.0.5"])
+
+    outside = tmp_path / "outside.xml"
+    outside.write_text("untouched")
+    (data / "scan.xml").symlink_to(outside)
+    with pytest.raises(helper.Rejected, match="escape"):
+        helper.build_argv(["nmap", "-sS", "-oA", str(data / "scan"), "10.0.0.5"])
+
+
+def test_privileged_nmap_spools_output_then_publishes_without_following_symlink(helper, monkeypatch, tmp_path):
+    data = Path(helper.DATA_DIR)
+    outside = tmp_path / "outside.xml"
+    outside.write_text("untouched")
+    argv = helper.build_argv(["nmap", "-sS", "-oA", str(data / "scan"), "10.0.0.5"])
+    monkeypatch.setattr(helper, "_verified_spool_parent", lambda: str(tmp_path))
+    monkeypatch.setattr(helper, "_drop_to_service_user", lambda uid, gid: None)
+
+    def fake_scan(command, *, check):
+        assert check is False
+        spool_base = Path(command[command.index("-oA") + 1])
+        assert spool_base.parent != data
+        for suffix in (".nmap", ".xml", ".gnmap"):
+            Path(str(spool_base) + suffix).write_text(suffix)
+        # Simulate the service user planting a symlink after validation.
+        (data / "scan.xml").symlink_to(outside)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(helper.subprocess, "run", fake_scan)
+
+    assert helper._run_nmap_with_safe_outputs(argv) == 0
+    assert outside.read_text() == "untouched"
+    assert not (data / "scan.xml").is_symlink()
+    assert (data / "scan.xml").read_text() == ".xml"
 
 
 def test_rejects_a_target_that_looks_like_an_option(helper):

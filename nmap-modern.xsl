@@ -73,57 +73,27 @@ Updated: 2026
                   ancestor::port[1]/@portid
                )"/>           
 
+  <xsl:template name="last-command-argument">
+    <xsl:param name="arguments"/>
+    <xsl:variable name="normalized" select="normalize-space($arguments)"/>
+    <xsl:choose>
+      <xsl:when test="contains($normalized, ' ')">
+        <xsl:call-template name="last-command-argument">
+          <xsl:with-param name="arguments" select="substring-after($normalized, ' ')"/>
+        </xsl:call-template>
+      </xsl:when>
+      <xsl:otherwise><xsl:value-of select="$normalized"/></xsl:otherwise>
+    </xsl:choose>
+  </xsl:template>
+
   <xsl:template match="/">
     <html lang="en">
       <head>
         <meta name="referrer" content="no-referrer"/>
         <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link rel="preconnect" href="https://fonts.googleapis.com"/>
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin=""/>
-        <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Inter:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
-        
-        <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css"/>
-        <link rel="stylesheet" href="https://cdn.datatables.net/buttons/2.4.2/css/buttons.dataTables.min.css"/>
-        
-        <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha384-1H217gwSVyLSIfaLxHbE7dRb3v4mYCKbpQvzx0cegeju1MVsGrX5xXxAvs/HgeFs" crossorigin="anonymous"></script>
-        <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js"></script>
-        <script src="https://cdn.datatables.net/buttons/2.4.2/js/dataTables.buttons.min.js"></script>
-        <script src="https://cdn.datatables.net/buttons/2.4.2/js/buttons.html5.min.js"></script>
-        <script src="https://cdn.datatables.net/buttons/2.4.2/js/buttons.colVis.min.js"></script>
-        <script src="https://cdn.datatables.net/plug-ins/1.13.7/sorting/ip-address.js"></script>
-        
-        <script>
-          tailwind.config = {
-            theme: {
-              extend: {
-                colors: {
-                  olive: {
-                    50: '#f5f6f3',
-                    100: '#e9ebe0',
-                    200: '#d8dbc7',
-                    300: '#bcc2a9',
-                    400: '#979f83',
-                    500: '#777f65',
-                    600: '#636b54',
-                    700: '#525845',
-                    800: '#414637',
-                    900: '#32382a',
-                    950: '#25291f',
-                  }
-                },
-                fontFamily: {
-                  display: ['Instrument Serif', 'serif'],
-                  sans: ['Inter', 'system-ui', 'sans-serif'],
-                }
-              }
-            }
-          }
-        </script>
-        
+        <meta name="nmapui-report-policy" content="v1"/>
+        <meta http-equiv="Content-Security-Policy" content="__NMAPUI_REPORT_CSP__"/>
+        __NMAPUI_TAILWIND_CSS__
         <style>
 	          body {
 	            font-family: 'Inter', system-ui, sans-serif;
@@ -1105,8 +1075,8 @@ Updated: 2026
                     </div>
                   </div>
                   <div class="ml-3">
-                    <div class="text-2xl font-bold text-red-600">
-                      <xsl:value-of select="count(/nmaprun/host/script[@id='vulners'][contains(@output, '9.') or contains(@output, '10.')])"/>
+                    <div id="vuln-critical-total" class="text-2xl font-bold text-red-600">
+                      <xsl:value-of select="count(/nmaprun/host/ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 9])"/>
                     </div>
                     <div class="text-sm text-olive-600">Critical Vulns (CVSS ≥9.0)</div>
                   </div>
@@ -1171,19 +1141,22 @@ Updated: 2026
               <div class="card p-4">
                 <h3 class="text-lg font-semibold text-olive-900 mb-3">Network Scanned</h3>
                 <div class="space-y-1">
-                  <div class="text-sm text-olive-700">
+      <div class="text-sm text-olive-700">
                     <span class="font-medium">Target:</span>
-                    <xsl:value-of select="substring-after(/nmaprun/@args, ' ')"/>
+                    <xsl:text>&#160;</xsl:text>
+                    <xsl:call-template name="last-command-argument">
+                      <xsl:with-param name="arguments" select="/nmaprun/@args"/>
+                    </xsl:call-template>
                   </div>
                   <div class="text-sm text-olive-700">
-                    <span class="font-medium">IPs:</span> <xsl:value-of select="/nmaprun/runstats/hosts/@total"/>
+                    <span class="font-medium">IPs:</span><xsl:text>&#160;</xsl:text><xsl:value-of select="/nmaprun/runstats/hosts/@total"/>
                   </div>
                   <div class="text-sm text-olive-700">
-                    <span class="font-medium">Started:</span> <xsl:value-of select="/nmaprun/@startstr"/>
+                    <span class="font-medium">Started:</span><xsl:text>&#160;</xsl:text><xsl:value-of select="/nmaprun/@startstr"/>
                   </div>
                   <div class="text-sm text-olive-700">
                     <span class="font-medium">Duration:</span>
-                    <xsl:value-of select="/nmaprun/runstats/finished/@elapsed"/>s
+                    <xsl:text>&#160;</xsl:text><xsl:value-of select="/nmaprun/runstats/finished/@elapsed"/>s
                   </div>
                 </div>
               </div>
@@ -1191,29 +1164,30 @@ Updated: 2026
               <!-- Vulnerability Severity -->
               <div class="card p-4">
                 <h3 class="text-lg font-semibold text-olive-900 mb-3">Vulnerability Levels</h3>
+                <p class="mb-3 text-xs text-olive-600">CVE matches depend on identified service versions and the external Vulners lookup. No findings do not prove a host is free of vulnerabilities.</p>
                 <div class="space-y-2">
                   <div class="flex justify-between items-center">
                     <span class="text-sm text-red-600 font-medium">Critical (CVSS ≥9.0)</span>
-                    <span class="text-sm font-bold text-red-600">
-                      <xsl:value-of select="count(/nmaprun/host/script[@id='vulners'][contains(@output, '9.') or contains(@output, '10.')])"/>
+                    <span id="vuln-critical-count" class="text-sm font-bold text-red-600">
+                      <xsl:value-of select="count(/nmaprun/host/ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 9])"/>
                     </span>
                   </div>
                   <div class="flex justify-between items-center">
                     <span class="text-sm text-orange-600 font-medium">High (CVSS ≥7.0)</span>
-                    <span class="text-sm font-bold text-orange-600">
-                      <xsl:value-of select="count(/nmaprun/host/script[@id='vulners'][contains(@output, '7.') or contains(@output, '8.')])"/>
+                    <span id="vuln-high-count" class="text-sm font-bold text-orange-600">
+                      <xsl:value-of select="count(/nmaprun/host/ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 7 and number(.) &lt; 9])"/>
                     </span>
                   </div>
                   <div class="flex justify-between items-center">
                     <span class="text-sm text-yellow-600 font-medium">Medium (CVSS ≥4.0)</span>
-                    <span class="text-sm font-bold text-yellow-600">
-                      <xsl:value-of select="count(/nmaprun/host/script[@id='vulners'][contains(@output, '4.') or contains(@output, '5.') or contains(@output, '6.')])"/>
+                    <span id="vuln-medium-count" class="text-sm font-bold text-yellow-600">
+                      <xsl:value-of select="count(/nmaprun/host/ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 4 and number(.) &lt; 7])"/>
                     </span>
                   </div>
                   <div class="flex justify-between items-center">
                     <span class="text-sm text-green-600 font-medium">Low (CVSS &lt;4.0)</span>
-                    <span class="text-sm font-bold text-green-600">
-                      <xsl:value-of select="count(/nmaprun/host/script[@id='vulners'][contains(@output, '0.') or contains(@output, '1.') or contains(@output, '2.') or contains(@output, '3.')])"/>
+                    <span id="vuln-low-count" class="text-sm font-bold text-green-600">
+                      <xsl:value-of select="count(/nmaprun/host/ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &lt; 4])"/>
                     </span>
                   </div>
                 </div>
@@ -1330,19 +1304,20 @@ Updated: 2026
               <div class="card p-4">
                 <h3 class="text-lg font-semibold text-olive-900 mb-3">Hosts with Vulnerabilities</h3>
                 <div class="space-y-2 max-h-64 overflow-y-auto">
-                  <xsl:for-each select="/nmaprun/host[script[@id='vulners']]">
+                  <xsl:for-each select="/nmaprun/host[ports/port/script[@id='vulners']]">
                     <xsl:if test="position() &lt;= 10">
                       <div class="flex justify-between items-center py-1">
                         <span class="text-sm font-mono text-olive-700">
                           <xsl:value-of select="address/@addr"/>
                         </span>
                         <span class="text-sm font-medium text-red-600 bg-red-50 px-2 py-1 rounded">
-                          <xsl:if test="contains(script[@id='vulners']/@output, '9.') or contains(script[@id='vulners']/@output, '10.')">
-                            Critical
-                          </xsl:if>
-                          <xsl:if test="contains(script[@id='vulners']/@output, '7.') or contains(script[@id='vulners']/@output, '8.')">
-                            High
-                          </xsl:if>
+                          <xsl:choose>
+                            <xsl:when test="ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 9]">Critical</xsl:when>
+                            <xsl:when test="ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 7]">High</xsl:when>
+                            <xsl:when test="ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 4]">Medium</xsl:when>
+                            <xsl:when test="ports/port/script[@id='vulners']//elem[@key='cvss' and number(.) &gt;= 0]">Low</xsl:when>
+                            <xsl:otherwise>Unrated</xsl:otherwise>
+                          </xsl:choose>
                         </span>
                       </div>
                     </xsl:if>
@@ -1444,9 +1419,9 @@ Updated: 2026
                     </span>
                   </div>
                   <div class="flex justify-between items-center">
-                    <span class="text-sm text-olive-700">Vulnerability Scans</span>
-                    <span class="text-sm font-medium text-olive-900">
-                      <xsl:value-of select="count(/nmaprun/host[script[@id='vulners']])"/>
+                    <span class="text-sm text-olive-700">Hosts with Vulners Output</span>
+                    <span id="vuln-host-output-count" class="text-sm font-medium text-olive-900">
+                      <xsl:value-of select="count(/nmaprun/host[ports/port/script[@id='vulners']])"/>
                     </span>
                   </div>
                 </div>
@@ -1495,14 +1470,12 @@ Updated: 2026
               </div>
             </div>
             
-            <div class="progress-bar mb-6">
+            <div class="progress-bar mb-6" aria-hidden="true">
               <div class="progress-segment progress-success">
                 <xsl:attribute name="style">width:<xsl:value-of select="/nmaprun/runstats/hosts/@up div /nmaprun/runstats/hosts/@total * 100"/>%;</xsl:attribute>
-                <xsl:value-of select="/nmaprun/runstats/hosts/@up"/> Up
               </div>
               <div class="progress-segment progress-danger">
                 <xsl:attribute name="style">width:<xsl:value-of select="/nmaprun/runstats/hosts/@down div /nmaprun/runstats/hosts/@total * 100"/>%;</xsl:attribute>
-                <xsl:value-of select="/nmaprun/runstats/hosts/@down"/> Down
               </div>
             </div>
             
@@ -1512,8 +1485,8 @@ Updated: 2026
               <textarea id="keyword-input" rows="2" placeholder="sha1, password, md5, login..." 
                         class="w-full mb-3">sha1,login,password,md5</textarea>
               <div class="flex space-x-3">
-                <button id="highlight-button" onclick="highlight()">Apply Highlighting</button>
-                <button onclick="document.location.reload(true);" class="bg-olive-400">Reset</button>
+                <button id="highlight-button" type="button" data-report-action="highlight">Apply Highlighting</button>
+                <button type="button" data-report-action="reset" class="bg-olive-400">Reset</button>
               </div>
             </div>
           </div>
@@ -1971,7 +1944,11 @@ Updated: 2026
               <div class="card mb-6">
                 <div class="collapsible-header p-6 border-b border-olive-200">
                   <xsl:attribute name="id">onlinehosts-<xsl:value-of select="translate(address/@addr, '.', '-')"/></xsl:attribute>
-                  <xsl:attribute name="onclick">toggleCollapse('<xsl:value-of select="translate(address/@addr, '.', '-')"/>')</xsl:attribute>
+                  <xsl:attribute name="role">button</xsl:attribute>
+                  <xsl:attribute name="tabindex">0</xsl:attribute>
+                  <xsl:attribute name="aria-expanded">true</xsl:attribute>
+                  <xsl:attribute name="aria-controls">content-<xsl:value-of select="translate(address/@addr, '.', '-')"/></xsl:attribute>
+                  <xsl:attribute name="data-collapse-target">content-<xsl:value-of select="translate(address/@addr, '.', '-')"/></xsl:attribute>
                   <div class="flex items-center justify-between">
                     <div>
                       <h3 class="text-xl font-display font-bold text-olive-900">
@@ -2150,101 +2127,7 @@ Updated: 2026
           End Of Report
         </section>
 
-        <!-- Scripts -->
-        <script>
-          function highlight() {
-            $("#table-services").dataTable().fnDestroy();
-            let keywords = document.getElementById('keyword-input').value.split(',');
-            let content = document.getElementById('table-services').innerHTML;
-            document.getElementById('table-services').innerHTML = transformContent(content, keywords);
-            initServicesTable();
-          }
-
-          function transformContent(content, keywords) {
-            let temp = content;
-            keywords.forEach(keyword => {
-              temp = temp.replace(new RegExp(keyword.trim(), 'ig'), 
-                (match) => `<span class="highlight-keyword">${match}</span>`);
-            });
-            return temp;
-          }
-
-          function toggleCollapse(id) {
-            const content = document.getElementById('content-' + id);
-            const header = document.getElementById('onlinehosts-' + id);
-            const chevron = header.querySelector('.chevron');
-            
-            if (content.style.display === 'none') {
-              content.style.display = 'block';
-              chevron.classList.remove('collapsed');
-            } else {
-              content.style.display = 'none';
-              chevron.classList.add('collapsed');
-            }
-          }
-
-          function initServicesTable() {
-            $('#table-services').DataTable({
-              lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
-              order: [[0, 'asc']],
-              columnDefs: [
-                { targets: [1], type: 'ip-address' }
-              ],
-              dom: 'lBfrtip',
-              stateSave: true,
-              buttons: ['copy', 'csv', 'excel', 'pdf']
-            });
-          }
-
-          $(document).ready(function() {
-            // Initialize all tables
-            $('#table-overview').DataTable({
-              lengthMenu: [[10, 25, 50, -1], [10, 25, 50, "All"]],
-              columnDefs: [{ targets: [1], type: 'ip-address' }]
-            });
-
-            initServicesTable();
-
-            $('#web-services').DataTable({
-              lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
-              order: [[0, 'asc']],
-              columnDefs: [{ targets: [1], type: 'ip-address' }],
-              dom: 'lBfrtip',
-              stateSave: true,
-              buttons: ['copy', 'csv', 'excel', 'pdf']
-            });
-
-            $('#table-product-versions').DataTable({
-              lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
-              order: [[0, 'asc'], [1, 'asc']],
-              dom: 'lBfrtip',
-              stateSave: true,
-              buttons: ['copy', 'csv', 'excel', 'pdf']
-            });
-
-            if ($('#table-ssh-auth').length) {
-              $('#table-ssh-auth').DataTable({
-                lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
-                order: [[0, 'asc'], [2, 'asc']],
-                columnDefs: [{ targets: 1, type: 'ip-address' }],
-                dom: 'lBfrtip',
-                stateSave: true,
-                buttons: ['copy', 'csv', 'excel', 'pdf']
-              });
-            }
-
-            // Smooth scrolling for anchor links
-            $("a[href^='#']").click(function(e) {
-              e.preventDefault();
-              const target = $(this.hash);
-              if (target.length) {
-                $('html, body').animate({
-                  scrollTop: target.offset().top - 80
-                }, 500);
-              }
-            });
-          });
-        </script>
+        <script id="nmapui-report-runtime">__NMAPUI_REPORT_RUNTIME__</script>
       </body>
     </html>
   </xsl:template>

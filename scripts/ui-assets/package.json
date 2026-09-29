@@ -1,0 +1,17 @@
+{
+  "name": "nmapui-ui-assets",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "tailwindcss --config tailwind.config.cjs --input ../../static/css/tailwind.input.css --output ../../static/css/tailwind.css --minify && node build-assets.cjs"
+  },
+  "devDependencies": {
+    "lucide": "1.47.0",
+    "socket.io-client": "4.8.3",
+    "tailwindcss": "3.4.17"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource/instrument-serif": "5.3.0"
+  }
+}

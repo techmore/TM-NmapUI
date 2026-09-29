@@ -1,6 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from nmapui.auto_monitor import normalize_auto_monitor_settings
+from nmapui.auto_scan import AUTO_SCAN_CONFIG_LOCK
+from nmapui.settings import SETTINGS_STATE_LOCK
 
 AUTO_SCAN_SID = "__auto_scan__"
 
@@ -13,8 +15,8 @@ def execute_auto_scan(*, deps):
     so that call always raised ``RuntimeError`` and was swallowed by
     ``safe_emit``; nothing in the codebase listened for the event either.  The
     outcome was a scheduled "scan" that recorded ``last_run`` and logged success
-    while never running nmap.  This now mirrors ``execute_auto_monitor_rule`` and
-    enqueues a real report job through ``generate_report_task``.
+    while never running nmap. This now mirrors ``execute_auto_monitor_rule`` and
+    executes a real report job through ``generate_report_task``.
     """
     auto_scan_config = deps["auto_scan_config"]
     current_customer = deps["current_customer"]
@@ -103,11 +105,20 @@ def execute_auto_scan(*, deps):
         safe_emit("auto_scan_error", {"error": str(exc)})
         return
 
-    # Only record the run once the job is actually enqueued, so a failure above
-    # is retried on the next scheduler tick instead of silently skipped.
-    auto_scan_config["last_run"] = datetime.now().isoformat()
-    save_auto_scan_config(auto_scan_config)
-    logger.info("Auto scan scheduled for target: %s", target)
+    job = job_registry.get(AUTO_SCAN_SID, "report")
+    if not job or job.get("status") != "completed":
+        logger.warning("Auto scan did not complete successfully for target %s", target)
+        return False
+
+    try:
+        with AUTO_SCAN_CONFIG_LOCK:
+            auto_scan_config["last_run"] = datetime.now().isoformat()
+            save_auto_scan_config(auto_scan_config)
+    except Exception:
+        logger.exception("Auto scan completed but its last-run timestamp could not be saved")
+        return False
+    logger.info("Auto scan completed for target: %s", target)
+    return True
 
 
 def execute_auto_monitor_rule(*, deps):
@@ -177,25 +188,42 @@ def execute_auto_monitor_rule(*, deps):
     )
     set_last_scan_target_state(target, sid=AUTO_SCAN_SID)
     emit_job_status(AUTO_SCAN_SID, "report")
-    generate_report_task(
-        AUTO_SCAN_SID,
-        {
-            "target": target,
-            "customer_name": rule.get("customer_name", "Unknown"),
-            "chunked": False,
-            "auto_scan": True,
-            "auto_monitor": True,
-            "auto_monitor_rule_id": rule.get("id"),
-        },
-    )
+    try:
+        generate_report_task(
+            AUTO_SCAN_SID,
+            {
+                "target": target,
+                "customer_name": rule.get("customer_name", "Unknown"),
+                "chunked": False,
+                "auto_scan": True,
+                "auto_monitor": True,
+                "auto_monitor_rule_id": rule.get("id"),
+            },
+        )
+    except Exception:
+        logger.exception("Auto-monitor rule %s failed", rule.get("id"))
+        job_registry.complete(AUTO_SCAN_SID, "report", status="failed")
+        emit_job_status(AUTO_SCAN_SID, "report")
+        return False
 
-    auto_monitor = normalize_auto_monitor_settings(
-        (settings_state or {}).get("auto_monitor", {})
-    )
-    for entry in auto_monitor.get("rules", []):
-        if entry.get("id") == rule.get("id"):
-            entry["last_run"] = datetime.now().isoformat()
-            entry["updated_at"] = entry["last_run"]
-            break
-    settings_state["auto_monitor"] = auto_monitor
-    save_settings(settings_state)
+    job = job_registry.get(AUTO_SCAN_SID, "report")
+    if not job or job.get("status") != "completed":
+        logger.warning("Auto-monitor rule %s did not complete successfully", rule.get("id"))
+        return False
+
+    with SETTINGS_STATE_LOCK:
+        auto_monitor = normalize_auto_monitor_settings(
+            (settings_state or {}).get("auto_monitor", {})
+        )
+        for entry in auto_monitor.get("rules", []):
+            if entry.get("id") == rule.get("id"):
+                entry["last_run"] = datetime.now(timezone.utc).isoformat()
+                entry["updated_at"] = entry["last_run"]
+                break
+        settings_state["auto_monitor"] = auto_monitor
+        try:
+            save_settings(settings_state)
+        except Exception:
+            logger.exception("Auto-monitor rule %s completed but its last-run timestamp could not be saved", rule.get("id"))
+            return False
+    return True

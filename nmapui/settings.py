@@ -1,7 +1,8 @@
 from copy import deepcopy
+from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
+import threading
 from typing import Any
 import uuid
 from urllib.parse import urlparse
@@ -9,8 +10,14 @@ from urllib.parse import urlparse
 from cryptography.fernet import Fernet, InvalidToken
 
 from .auto_monitor import normalize_auto_monitor_settings
+from .private_storage import (
+    atomic_replace_private_bytes,
+    load_or_create_private_bytes,
+    load_private_bytes,
+)
 
 SETTINGS_SCHEMA_VERSION = 1
+SETTINGS_STATE_LOCK = threading.RLock()
 ENCRYPTED_REMOTE_SYNC_SCHEMA_VERSION = 1
 DEFAULT_APP_SETTINGS = {
     "schema_version": SETTINGS_SCHEMA_VERSION,
@@ -43,40 +50,55 @@ DEFAULT_APP_SETTINGS = {
             "day_of_week": "sunday",
             "time": "01:00",
             "scan_mode": "complete_pdf",
+            "timezone": "",
         },
         "rules": [],
     },
 }
 
 
-def _set_owner_only_permissions(path: Path) -> None:
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+def preserve_auto_monitor_progress(incoming: dict, current: dict, *, now=None) -> dict:
+    """Keep server-owned run/creation markers across whole-document UI saves."""
+    document = deepcopy(incoming)
+    auto_monitor = document.get("auto_monitor")
+    if not isinstance(auto_monitor, dict) or not isinstance(auto_monitor.get("rules"), list):
+        return document
+
+    current_auto_monitor = (current or {}).get("auto_monitor") or {}
+    current_rules = current_auto_monitor.get("rules") or []
+    by_id = {
+        str(rule.get("id")): rule
+        for rule in current_rules
+        if isinstance(rule, dict) and rule.get("id")
+    }
+    created_now = (now or datetime.now(timezone.utc)).isoformat()
+    for rule in auto_monitor["rules"]:
+        if not isinstance(rule, dict):
+            continue
+        previous = by_id.get(str(rule.get("id") or ""))
+        if previous is None:
+            rule["last_run"] = None
+            rule["created_at"] = created_now
+        else:
+            rule["last_run"] = previous.get("last_run")
+            created_at = previous.get("created_at") or previous.get("anchor_date")
+            if created_at:
+                rule["created_at"] = created_at
+    return document
 
 
 def _load_or_create_encryption_key(key_path: Path) -> bytes:
-    key_path.parent.mkdir(parents=True, exist_ok=True)
-    if key_path.exists():
-        key = key_path.read_bytes().strip()
-        _set_owner_only_permissions(key_path)
-        return key
-
-    key = Fernet.generate_key()
-    tmp_path = key_path.with_suffix(f"{key_path.suffix}.tmp")
-    tmp_path.write_bytes(key)
-    tmp_path.replace(key_path)
-    _set_owner_only_permissions(key_path)
-    return key
+    return load_or_create_private_bytes(
+        key_path, Fernet.generate_key, normalize=bytes.strip
+    )
 
 
 def load_remote_sync_secret(*, secret_path: Path, key_path: Path) -> str:
-    if not secret_path.exists():
+    if secret_path.is_symlink() or not secret_path.exists():
         return ""
 
     try:
-        payload = json.loads(secret_path.read_text())
+        payload = json.loads(load_private_bytes(secret_path).decode("utf-8"))
     except Exception:
         return ""
 
@@ -85,7 +107,7 @@ def load_remote_sync_secret(*, secret_path: Path, key_path: Path) -> str:
         return ""
 
     try:
-        key = _load_or_create_encryption_key(key_path)
+        key = load_private_bytes(key_path, normalize=bytes.strip)
         decrypted = Fernet(key).decrypt(ciphertext.encode("utf-8"))
     except (InvalidToken, ValueError, OSError):
         return ""
@@ -101,19 +123,14 @@ def save_remote_sync_secret(*, secret_path: Path, key_path: Path, api_key: str) 
 
     key = _load_or_create_encryption_key(key_path)
     encrypted_payload = Fernet(key).encrypt(api_key.encode("utf-8")).decode("utf-8")
-    secret_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = secret_path.with_suffix(f"{secret_path.suffix}.tmp")
-    tmp_path.write_text(
-        json.dumps(
-            {
-                "schema_version": ENCRYPTED_REMOTE_SYNC_SCHEMA_VERSION,
-                "ciphertext": encrypted_payload,
-            },
-            indent=2,
-        )
-    )
-    tmp_path.replace(secret_path)
-    _set_owner_only_permissions(secret_path)
+    contents = json.dumps(
+        {
+            "schema_version": ENCRYPTED_REMOTE_SYNC_SCHEMA_VERSION,
+            "ciphertext": encrypted_payload,
+        },
+        indent=2,
+    ).encode("utf-8")
+    atomic_replace_private_bytes(secret_path, contents)
 
 
 def clear_remote_sync_secret(*, secret_path: Path, key_path: Path) -> None:

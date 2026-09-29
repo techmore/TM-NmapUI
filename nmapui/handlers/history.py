@@ -153,10 +153,7 @@ def register_history_handlers(socketio, deps):
         emit_preferred_job_status(request.sid, "scan")
         emit_preferred_job_status(request.sid, "report")
 
-    @socketio.on("cancel_job")
-    @require_socket_auth()
-    def cancel_job_event(data):
-        job_type = data.get("job_type") if isinstance(data, dict) else None
+    def request_job_cancellation(job_type):
         if job_type not in {"scan", "report"}:
             emit("scan_error", "Invalid job type")
             return
@@ -176,6 +173,18 @@ def register_history_handlers(socketio, deps):
             "job_cancelled",
             {"job_type": job_type, "message": f"Cancelling {job_type} job..."},
         )
+
+    @socketio.on("cancel_job")
+    @require_socket_auth()
+    def cancel_job_event(data):
+        job_type = data.get("job_type") if isinstance(data, dict) else None
+        request_job_cancellation(job_type)
+
+    @socketio.on("stop_scan")
+    @require_socket_auth()
+    def stop_scan_event():
+        # Preserve the original UI event for cached clients during upgrades.
+        request_job_cancellation("scan")
 
     @socketio.on("disconnect")
     def disconnect_event():

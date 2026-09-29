@@ -1,10 +1,42 @@
 from datetime import datetime, timedelta
 import logging
+import os
+import signal
 import subprocess
 import threading
+import time
 
 
 logger = logging.getLogger(__name__)
+
+
+def _signal_scan_process(process: subprocess.Popen, sig: int) -> None:
+    """Signal a scan's whole process group, including sudo/helper children."""
+    if getattr(process, "_nmapui_process_group", False) and os.name == "posix":
+        try:
+            os.killpg(process.pid, sig)
+            return
+        except ProcessLookupError:
+            pass
+        except OSError:
+            logger.exception("Failed to signal scan process group %s", process.pid)
+    if process.poll() is None:
+        if sig == signal.SIGKILL:
+            process.kill()
+        else:
+            process.terminate()
+
+
+def _scan_process_group_alive(process: subprocess.Popen) -> bool:
+    if getattr(process, "_nmapui_process_group", False) and os.name == "posix":
+        try:
+            os.killpg(process.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+    return process.poll() is None
 
 
 class RateLimiter:
@@ -164,11 +196,16 @@ class PerClientRateLimiter:
 class ClientJobRegistry:
     """Track active scan/report jobs per connected client."""
 
-    def __init__(self, runtime_store=None):
+    def __init__(self, runtime_store=None, max_active_jobs=None):
         self._jobs = {}
         self._lock = threading.Lock()
         self._processes = {}
+        self._shutting_down = False
         self._runtime_store = runtime_store
+        self._max_active_jobs = (
+            max(1, int(max_active_jobs)) if max_active_jobs is not None else None
+        )
+        self._start_rejections = {}
 
     def _job_id(self, sid: str, job_type: str) -> str:
         return f"{sid}:{job_type}"
@@ -197,9 +234,24 @@ class ClientJobRegistry:
     def start(self, sid: str, job_type: str, details=None) -> bool:
         with self._lock:
             key = (sid, job_type)
-            job = self._jobs.get(key)
-            if job and job.get("status") == "running":
+            if self._shutting_down:
+                self._start_rejections[key] = "Scanner is shutting down"
                 return False
+            job = self._jobs.get(key)
+            if job and job.get("status") in {"running", "cancelling"}:
+                self._start_rejections[key] = "A job of this type is already running for this client"
+                return False
+            active_count = sum(
+                1
+                for active_job in self._jobs.values()
+                if active_job.get("status") in {"running", "cancelling"}
+            )
+            if self._max_active_jobs is not None and active_count >= self._max_active_jobs:
+                self._start_rejections[key] = (
+                    "Scanner capacity is currently in use; try again when an active job finishes"
+                )
+                return False
+            self._start_rejections.pop(key, None)
             self._jobs[key] = {
                 "status": "running",
                 "started_at": datetime.now().isoformat(),
@@ -208,6 +260,10 @@ class ClientJobRegistry:
             }
             self._persist_job(sid, job_type)
             return True
+
+    def get_start_rejection_reason(self, sid: str, job_type: str) -> str | None:
+        with self._lock:
+            return self._start_rejections.get((sid, job_type))
 
     def complete(self, sid: str, job_type: str, status="completed", details=None):
         with self._lock:
@@ -247,9 +303,9 @@ class ClientJobRegistry:
             self._jobs[key] = current
 
             process = self._processes.get(key)
-            if process and process.poll() is None:
+            if process:
                 try:
-                    process.terminate()
+                    _signal_scan_process(process, signal.SIGTERM)
                 except Exception:
                     logger.exception("Failed to terminate subprocess for %s", key)
             self._persist_job(sid, job_type)
@@ -262,31 +318,46 @@ class ClientJobRegistry:
 
     def attach_process(self, sid: str, job_type: str, process: subprocess.Popen):
         with self._lock:
+            if self._shutting_down:
+                raise RuntimeError("Scanner is shutting down")
             self._processes[(sid, job_type)] = process
 
     def clear_process(self, sid: str, job_type: str):
         with self._lock:
             self._processes.pop((sid, job_type), None)
 
-    def terminate_all(self) -> int:
+    def terminate_all(self, *, grace_seconds: float = 2.0) -> int:
         """Terminate every tracked child process. Returns the count signalled.
 
         Called by the shutdown reaper so a crash or SIGTERM does not leave
         orphaned nmap/arp-scan processes behind.
         """
         with self._lock:
+            self._shutting_down = True
             processes = list(self._processes.items())
             self._processes.clear()
 
-        signalled = 0
+        signalled = []
         for key, process in processes:
             try:
-                if process.poll() is None:
-                    process.terminate()
-                    signalled += 1
+                if _scan_process_group_alive(process):
+                    _signal_scan_process(process, signal.SIGTERM)
+                    signalled.append(process)
             except Exception:
                 logger.exception("Failed to terminate subprocess for %s", key)
-        return signalled
+
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        while signalled and time.monotonic() < deadline:
+            if not any(_scan_process_group_alive(process) for process in signalled):
+                break
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        for process in signalled:
+            try:
+                if _scan_process_group_alive(process):
+                    _signal_scan_process(process, signal.SIGKILL)
+            except Exception:
+                logger.exception("Failed to kill stubborn scan process group %s", process.pid)
+        return len(signalled)
 
     def get(self, sid: str, job_type: str):
         with self._lock:
@@ -321,6 +392,9 @@ class ClientJobRegistry:
 
     def mark_disconnected(self, sid: str):
         with self._lock:
+            for key in list(self._start_rejections):
+                if key[0] == sid:
+                    self._start_rejections.pop(key, None)
             for key, job in list(self._jobs.items()):
                 if key[0] != sid:
                     continue
@@ -360,32 +434,55 @@ def run_cancellable_command(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=os.name == "posix",
     )
-    if sid and job_type:
-        job_registry.attach_process(sid, job_type, process)
-
+    process._nmapui_process_group = os.name == "posix"
     try:
+        if sid and job_type:
+            job_registry.attach_process(sid, job_type, process)
         while True:
             try:
                 stdout, stderr = process.communicate(timeout=0.2)
+                if sid and job_type and job_registry.is_cancelled(sid, job_type):
+                    raise RuntimeError(f"{job_type} cancelled")
                 break
             except subprocess.TimeoutExpired:
                 if timeout is not None and (datetime.now() - start).total_seconds() > timeout:
-                    process.kill()
-                    stdout, stderr = process.communicate()
-                    raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
-                if sid and job_type and job_registry.is_cancelled(sid, job_type):
-                    process.terminate()
+                    _signal_scan_process(process, signal.SIGTERM)
                     try:
                         stdout, stderr = process.communicate(timeout=2)
                     except subprocess.TimeoutExpired:
-                        process.kill()
-                        stdout, stderr = process.communicate()
+                        _signal_scan_process(process, signal.SIGKILL)
+                        try:
+                            stdout, stderr = process.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            stdout = stderr = None
+                    raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
+                if sid and job_type and job_registry.is_cancelled(sid, job_type):
+                    _signal_scan_process(process, signal.SIGTERM)
+                    try:
+                        stdout, stderr = process.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        _signal_scan_process(process, signal.SIGKILL)
+                        try:
+                            stdout, stderr = process.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            stdout = stderr = None
                     raise RuntimeError(f"{job_type} cancelled")
 
         return subprocess.CompletedProcess(
             args=cmd, returncode=process.returncode, stdout=stdout, stderr=stderr
         )
     finally:
+        try:
+            if _scan_process_group_alive(process):
+                _signal_scan_process(process, signal.SIGTERM)
+                deadline = time.monotonic() + 2
+                while _scan_process_group_alive(process) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                if _scan_process_group_alive(process):
+                    _signal_scan_process(process, signal.SIGKILL)
+        except Exception:
+            logger.exception("Failed to clean up scan subprocess group")
         if sid and job_type:
             job_registry.clear_process(sid, job_type)

@@ -124,3 +124,20 @@ def test_scan_only_mode_wins_over_forced_privileged_scan(monkeypatch):
 
     assert "-sT" in captured[0]
     assert "-sS" not in captured[0]
+
+
+def test_comprehensive_scan_can_disable_vulners_egress(monkeypatch):
+    monkeypatch.setenv("NMAPUI_ENABLE_VULNERS", "false")
+    monkeypatch.setattr(privileged, "privileged_prefix", lambda: [])
+    captured = []
+
+    scanning.run_nmap_with_xml_output(
+        "127.0.0.1",
+        "/tmp/out",
+        scan_type="comprehensive",
+        **_base_kwargs(_run(captured, [_ok(["scan"])])),
+    )
+
+    assert len(captured) == 1
+    assert "--script" not in captured[0]
+    assert captured[0][-1] == "127.0.0.1"

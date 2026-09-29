@@ -186,7 +186,12 @@ async function deleteScan(path) {
 function initializeLayoutRuntime() {
     startPreciseClock();
 
-    document.getElementById('view-history-btn').addEventListener('click', function() {
+    const historyButton = document.getElementById('view-history-btn');
+    if (!historyButton || historyButton.dataset.historyWired === 'true') {
+        return;
+    }
+    historyButton.dataset.historyWired = 'true';
+    historyButton.addEventListener('click', function() {
         if (typeof window.showHistoryModal === 'function') {
             window.showHistoryModal();
         }

@@ -153,7 +153,7 @@ def build_history_rows(
     history.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
 
     for scan in history:
-        if scan.get("diff_summary") is not None:
+        if scan.get("diff_summary") is not None or scan.get("diff_summary_computed"):
             continue
 
         previous = find_previous_scan_metadata(scan, history)

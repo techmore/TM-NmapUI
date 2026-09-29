@@ -40,7 +40,12 @@ def register_scan_job_handlers(socketio, deps):
             return
 
         if not job_registry.start(request.sid, "scan", {"target": target}):
-            emit("scan_error", "A scan is already running for this client")
+            reason = (
+                job_registry.get_start_rejection_reason(request.sid, "scan")
+                if hasattr(job_registry, "get_start_rejection_reason")
+                else None
+            )
+            emit("scan_error", reason or "A scan is already running for this client")
             emit_job_status(request.sid, "scan")
             return
 
@@ -91,7 +96,15 @@ def register_scan_job_handlers(socketio, deps):
                 "chunked": bool(data.get("chunked", True)),
             },
         ):
-            emit("report_error", {"error": "A report job is already running for this client"})
+            reason = (
+                job_registry.get_start_rejection_reason(request.sid, "report")
+                if hasattr(job_registry, "get_start_rejection_reason")
+                else None
+            )
+            emit(
+                "report_error",
+                {"error": reason or "A report job is already running for this client"},
+            )
             emit_job_status(request.sid, "report")
             return
 

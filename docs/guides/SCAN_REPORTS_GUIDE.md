@@ -23,6 +23,28 @@ This guide covers the new comprehensive scan report generation and historical vi
 
 ### 3. Enhanced Nmap Scanning
 - **Vulners Integration**: Automatic CVE detection with vulners NSE script
+
+Complete scans can send detected software/CPE and version information to the
+Vulners API over HTTPS for matching. This reveals part of the scanned network's
+software inventory to that third party; the bundled script's query does not
+include the scanned IP address or hostname, although Vulners can observe the
+scanner's outbound public IP. Managed service installs disable this by default.
+After approving the disclosure, an operator can set
+`NMAPUI_ENABLE_VULNERS=true` in the protected service credentials file and
+restart the service. Local development retains the previous enabled behavior.
+Quick discovery does not invoke the Vulners script.
+
+Separately, the UI's network-topology fingerprint can probe `1.1.1.1` and ask
+`api.ipify.org` for the scanner's public IP when a browser connects. Managed
+service installs disable these external lookups by default; opt in with
+`NMAPUI_ENABLE_NETWORK_FINGERPRINT=true`. Local IP, subnet mask and CIDR
+discovery do not need the external lookup. The dashboard's optional GitHub
+latest-release check is also disabled by default for managed services; opt in
+with `NMAPUI_ENABLE_UPDATE_CHECK=true`. When enabled, it sends no scan targets
+or results and caches successful results for six hours (one minute after a
+failed check). App and generated-report fonts are self-hosted and do not contact
+Google Fonts. These egress paths are independent and should be approved
+individually for the deployment environment.
 - **Multiple Output Formats**: XML, nmap text, and gnmap formats
 - **Comprehensive Options**: -sS -T4 -A -sC for thorough scanning
 
@@ -68,13 +90,16 @@ data/scans/
 ### Report Generation Process
 The system will:
 1. Create organized folder structure based on customer and date
-2. Run comprehensive nmap scan with:
-   ```bash
-   sudo nmap -sS -T4 -A -sC --script vulners.nse -oA output <target>
-   ```
+2. Run the Nmap scan using the installed service's configured privilege model
+   (a validating helper or root service on appliance installs; development mode
+   may fall back to an unprivileged connect scan).
 3. Convert XML to HTML using XSL stylesheet
-4. Convert HTML to PDF using wkhtmltopdf
+4. Convert HTML to PDF with Playwright Chromium; optional fallbacks are
+   `wkhtmltopdf` and WeasyPrint.
 5. Save metadata with customer and network information
+
+PDF rendering disables JavaScript and blocks external resources in Playwright.
+It should render from local report assets without contacting external CDNs.
 
 ## Using the Historical Viewer
 
@@ -178,18 +203,11 @@ SCANS_DIR = BASE_DIR / "your" / "custom" / "path"
 ## Troubleshooting
 
 ### PDF Generation Fails
-**Error**: "wkhtmltopdf not found"
-**Solution**: Install wkhtmltopdf:
-```bash
-# macOS
-brew install wkhtmltopdf
-
-# Ubuntu/Debian
-sudo apt install wkhtmltopdf
-
-# Or use Python alternative
-pip install weasyprint
-```
+Check the application log for the failed renderer. Production installs use
+Playwright Chromium; verify that the managed browser cache exists and that the
+service can launch it. `wkhtmltopdf` and WeasyPrint are optional fallbacks, not
+required dependencies; installing them is not a substitute for fixing the
+managed browser setup.
 
 ### HTML Conversion Fails
 **Error**: "XSL stylesheet not found"
@@ -213,17 +231,20 @@ pip install weasyprint
 
 ## Security Considerations
 
-### Sudo Requirements
-Report generation uses `nmap -sS` which requires root privileges:
-- The script checks if running as root
-- If not root, it prepends `sudo` to the command
-- Ensure passwordless sudo is configured or run the app with sudo
+### Scanner Privileges
+Privileged scanning is controlled by the installed service's scanner helper or
+root-mode service. Do not run the web application with ad hoc `sudo` or grant
+passwordless access to `nmap` directly. Development mode may fall back to a
+visible unprivileged connect scan when elevated scanning is unavailable.
 
 ### File Permissions
 Scan reports may contain sensitive information:
 - Restrict access to `data/scans/` directory
 - Consider encrypting stored reports
-- Implement user authentication for the web interface
+- Local loopback access is trusted by default. Any local process can use the
+  control surface; use a dedicated trusted scanner host or set
+  `NMAPUI_TRUST_LOCAL_UI=false` and configure credentials. Remote access also
+  requires explicit origin configuration and a trusted VPN or HTTPS proxy.
 
 ### Network Scanning
 - Only scan networks you have permission to scan

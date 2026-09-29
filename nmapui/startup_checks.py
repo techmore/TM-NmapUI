@@ -1,6 +1,7 @@
 import subprocess
 
 from nmapui.auto_scan import build_auto_scan_status_payload
+from nmapui.runtime import env_flag
 from nmapui.runtime_log import append_runtime_log
 
 
@@ -115,18 +116,30 @@ def run_startup_checks(deps, quick=False):
     logger.info("\nLoading previous customer assignment...")
     load_current_assignment()
 
-    logger.info("\nInitializing network key...")
-    network_key = run_traceroute("1.1.1.1")
+    initialize_topology = (
+        env_flag("NMAPUI_STARTUP_TRACEROUTE", default=True)
+        and env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True)
+    )
+    if initialize_topology:
+        logger.info("\nInitializing network key...")
+        network_key = run_traceroute("1.1.1.1")
+    else:
+        logger.info("Skipping public traceroute during service startup")
+        network_key = {"target": "1.1.1.1", "error": "Startup traceroute disabled"}
     complete_startup_state(
         startup_state,
         traceroute_initialized=not bool(network_key.get("error")),
     )
-    logger.info(f"Network key initialized with {network_key.get('total_hops', 0)} hops")
+    if initialize_topology:
+        logger.info("Network key initialized with %s hops", network_key.get("total_hops", 0))
     append_runtime_log(
         runtime_store=runtime_store,
         category="startup",
-        level="INFO" if not network_key.get("error") else "ERROR",
-        message="Startup network initialization completed",
+        level="INFO" if not initialize_topology or not network_key.get("error") else "ERROR",
+        message=(
+            "Startup network initialization completed"
+            if initialize_topology else "Startup network initialization skipped"
+        ),
         payload={
             "target": network_key.get("target"),
             "total_hops": network_key.get("total_hops", 0),

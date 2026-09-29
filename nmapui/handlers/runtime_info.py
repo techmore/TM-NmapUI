@@ -1,6 +1,7 @@
 from flask import request
 from flask_socketio import emit
 from nmapui.auth import require_socket_auth
+from nmapui.runtime import env_flag
 
 
 def register_runtime_info_handlers(socketio, deps):
@@ -22,9 +23,14 @@ def register_runtime_info_handlers(socketio, deps):
     @require_socket_auth()
     def get_network_key_event():
         client_network_key = get_client_state(sid=request.sid)["network_key"]
-        if client_network_key.get("total_hops", 0) == 0:
+        if (
+            client_network_key.get("total_hops", 0) == 0
+            and env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True)
+        ):
             logger.info("Network key empty for %s, running traceroute...", request.sid)
             client_network_key = run_traceroute("1.1.1.1", sid=request.sid)
+        elif not env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True):
+            logger.info("External network fingerprinting is disabled by configuration")
 
         logger.info(
             "Sending network_key to client: %s hops",
@@ -41,10 +47,11 @@ def register_runtime_info_handlers(socketio, deps):
             subnet_mask = netifaces.ifaddresses(interface)[netifaces.AF_INET][0]["netmask"]
             cidr = calculate_cidr(local_ip, subnet_mask)
             public_ip = ""
-            try:
-                public_ip = requests.get("https://api.ipify.org", timeout=3).text
-            except Exception as exc:
-                logger.warning("Failed to resolve public IP: %s", exc)
+            if env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True):
+                try:
+                    public_ip = requests.get("https://api.ipify.org", timeout=3).text
+                except Exception as exc:
+                    logger.warning("Failed to resolve public IP: %s", exc)
             emit(
                 "local_ip",
                 {

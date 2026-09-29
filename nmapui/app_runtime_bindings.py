@@ -10,6 +10,7 @@ from nmapui.app_runtime import (
 )
 from nmapui.auto_scan_runtime import execute_auto_monitor_rule as execute_auto_monitor_rule_runtime
 from nmapui.app_events_runtime import safe_emit as safe_emit_runtime
+from nmapui.maintenance import run_daily_runtime_maintenance
 from nmapui.traceroute_runtime import (
     build_traceroute_deps,
     run_traceroute as run_traceroute_runtime,
@@ -143,6 +144,7 @@ def build_runtime_bindings(
     set_current_customer_state,
     set_last_scan_target_state,
     generate_report_task_provider,
+    runtime_store=None,
 ):
     def safe_emit(event, data=None):
         return safe_emit_runtime(event, data)
@@ -198,6 +200,10 @@ def build_runtime_bindings(
             startup_grace_seconds=startup_grace_seconds,
             execute_auto_scan=execute_auto_scan,
             execute_auto_monitor_rule=execute_auto_monitor_rule,
+            maintenance_task=lambda: run_daily_runtime_maintenance(
+                runtime_store=runtime_store,
+                logger=logger,
+            ),
             logger=logger,
         )
         return thread_ref["thread"]

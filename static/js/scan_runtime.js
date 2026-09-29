@@ -57,6 +57,13 @@ function stopPhaseTimer(phase, duration) {
     setText(phase === 1 ? 'quick-time' : 'deep-time', formatDurationSeconds(duration));
 }
 
+function showLastScanDuration(duration) {
+    const seconds = Number(duration);
+    if (!Number.isFinite(seconds)) return;
+    setText('last-scan-time-val', `${Math.max(0, seconds).toFixed(1)}s`);
+    document.getElementById('last-scan-duration')?.classList.remove('hidden');
+}
+
 function getHighCVEList(data) {
     if (Array.isArray(data.highCVEs)) return data.highCVEs.filter(Boolean);
     if (typeof data.highCVEs !== 'string' || !data.highCVEs.trim()) return [];
@@ -86,9 +93,10 @@ function renderScreenshotCell(data) {
         dashboardUrl: data.screenshotUrl,
         url: data.screenshotTarget || data.screenshotUrl
     } : null);
-    if (!shot?.dashboardUrl) return '<span>--</span>';
+    const safeDashboardUrl = window.safeHttpHref?.(String(shot?.dashboardUrl ?? ''));
+    if (!safeDashboardUrl) return '<span>--</span>';
     const title = shot.url || 'Open gowitness screenshot';
-    const dashUrl = escapeHTML(shot.dashboardUrl);
+    const dashUrl = escapeHTML(safeDashboardUrl);
     return `
         <a href="${dashUrl}" target="_blank" rel="noopener noreferrer" title="${escapeHTML(title)}" data-screenshot-url="${dashUrl}" data-screenshot-title="${escapeHTML(title)}">
             <img src="${dashUrl}" alt="${escapeHTML(title)}">
@@ -96,6 +104,9 @@ function renderScreenshotCell(data) {
 }
 
 function openScreenshotPreview(imageUrl, title) {
+    const safeImageUrl = window.safeHttpHref?.(String(imageUrl ?? ''));
+    if (!safeImageUrl) return;
+
     let overlay = document.getElementById('screenshot-preview-overlay');
     if (!overlay) {
         overlay = document.createElement('div');
@@ -122,19 +133,20 @@ function openScreenshotPreview(imageUrl, title) {
             }
         });
     }
-    overlay.querySelector('img').src = imageUrl;
+    overlay.querySelector('img').src = safeImageUrl;
     overlay.querySelector('img').alt = title || 'gowitness screenshot';
-    overlay.querySelector('.screenshot-preview-title').textContent = title || imageUrl;
-    overlay.querySelector('.screenshot-preview-open').href = imageUrl;
+    overlay.querySelector('.screenshot-preview-title').textContent = title || safeImageUrl;
+    overlay.querySelector('.screenshot-preview-open').href = safeImageUrl;
     overlay.classList.remove('hidden');
     overlay.classList.add('flex');
 }
 
 function reportActionLink({ href, title, icon, download = false, disabled = false }) {
-    if (disabled || !href) {
+    const safeHref = window.safeHttpHref?.(String(href ?? ''));
+    if (disabled || !safeHref) {
         return `<span title="${escapeHTML(title)}" class="inline-flex size-8 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-50 text-zinc-400"><i data-lucide="${icon}" class="size-4"></i></span>`;
     }
-    return `<a href="${escapeHTML(href)}" ${download ? 'download' : 'target="_blank" rel="noopener noreferrer"'} title="${escapeHTML(title)}" aria-label="${escapeHTML(title)}" class="inline-flex size-8 items-center justify-center rounded-lg border border-olive-200 bg-white text-olive-700 transition-colors hover:border-olive-300 hover:bg-olive-50 hover:text-olive-950"><i data-lucide="${icon}" class="size-4"></i></a>`;
+    return `<a href="${escapeHTML(safeHref)}" ${download ? 'download' : 'target="_blank" rel="noopener noreferrer"'} title="${escapeHTML(title)}" aria-label="${escapeHTML(title)}" class="inline-flex size-8 items-center justify-center rounded-lg border border-olive-200 bg-white text-olive-700 transition-colors hover:border-olive-300 hover:bg-olive-50 hover:text-olive-950"><i data-lucide="${icon}" class="size-4"></i></a>`;
 }
 
 function refreshLucideIcons() {
@@ -316,8 +328,14 @@ function initializeScanRuntime(socket) {
             setScanUIActive(1, 'quick');
             if (activeScanPhase !== 1) startPhaseTimer(1, job.started_at);
         } else if (activeScanKind === 'quick') {
-            const elapsed = activePhaseStartedAt ? (Date.now() - activePhaseStartedAt) / 1000 : 0;
-            stopPhaseTimer(1, elapsed);
+            let duration = activePhaseStartedAt ? (Date.now() - activePhaseStartedAt) / 1000 : 0;
+            const startedAt = Date.parse(job.started_at || '');
+            const finishedAt = Date.parse(job.finished_at || '');
+            if (Number.isFinite(startedAt) && Number.isFinite(finishedAt)) {
+                duration = Math.max(0, finishedAt - startedAt) / 1000;
+            }
+            stopPhaseTimer(1, duration);
+            if (job.status === 'completed') showLastScanDuration(duration);
             resetScanUI();
         }
     });
@@ -437,8 +455,7 @@ function initializeScanRuntime(socket) {
     socket.on('scan_complete', (data) => {
         resetScanUI();
         stopPhaseTimer(data.phase, data.duration);
-        document.getElementById('last-scan-time-val').textContent = data.duration + 's';
-        document.getElementById('last-scan-duration').classList.remove('hidden');
+        showLastScanDuration(data.duration);
         socket.emit('get_history');
         socket.emit('get_reports');
     });
@@ -482,11 +499,13 @@ function initializeScanRuntime(socket) {
             }
             historyList.innerHTML = data.map(item => {
                 const failed = item.status === 'failed';
+                const reportHref = window.safeHttpHref?.(String(item.reportUrl ?? ''));
+                const pdfHref = window.safeHttpHref?.(String(item.pdfUrl ?? ''));
                 return `
                 <div class="bg-white border ${failed ? 'border-red-200' : 'border-olive-200'} rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow">
                     <div class="flex justify-between items-start mb-4">
                         <span class="text-[10px] font-bold ${failed ? 'text-red-500' : 'text-olive-400'} uppercase tracking-widest">${new Date(item.timestamp).toLocaleString()}</span>
-                        <span class="px-2 py-1 ${failed ? 'bg-red-100 text-red-700' : 'bg-olive-100 text-olive-700'} text-[10px] font-bold rounded-lg">${failed ? 'FAILED' : `${item.duration}s`}</span>
+                        <span class="px-2 py-1 ${failed ? 'bg-red-100 text-red-700' : 'bg-olive-100 text-olive-700'} text-[10px] font-bold rounded-lg">${failed ? 'FAILED' : `${escapeHTMLValue(item.duration)}s`}</span>
                     </div>
                     <div class="mb-4">
                         <h4 class="text-olive-900 font-bold text-lg">${escapeHTMLValue(item.customerProfile?.baseName || item.target)}</h4>
@@ -494,8 +513,8 @@ function initializeScanRuntime(socket) {
                         ${failed && item.error ? `<p class="mt-2 line-clamp-2 rounded-lg bg-red-50 p-2 font-mono text-[10px] text-red-700">${escapeHTML(item.error)}</p>` : ''}
                     </div>
                     <div class="grid gap-2 sm:grid-cols-2">
-                        ${item.reportUrl ? `<a href="${item.reportUrl}" target="_blank" class="block text-center py-2 bg-olive-50 text-olive-700 text-xs font-bold rounded-xl hover:bg-olive-100 transition-colors">OPEN HTML</a>` : ''}
-                        ${item.pdfUrl ? `<a href="${item.pdfUrl}" target="_blank" class="block text-center py-2 bg-red-50 text-red-700 text-xs font-bold rounded-xl hover:bg-red-100 transition-colors">OPEN PDF</a>` : ''}
+                        ${reportHref ? `<a href="${escapeHTMLValue(reportHref)}" target="_blank" rel="noopener noreferrer" class="block text-center py-2 bg-olive-50 text-olive-700 text-xs font-bold rounded-xl hover:bg-olive-100 transition-colors">OPEN HTML</a>` : ''}
+                        ${pdfHref ? `<a href="${escapeHTMLValue(pdfHref)}" target="_blank" rel="noopener noreferrer" class="block text-center py-2 bg-red-50 text-red-700 text-xs font-bold rounded-xl hover:bg-red-100 transition-colors">OPEN PDF</a>` : ''}
                     </div>
                 </div>
             `;
@@ -550,7 +569,7 @@ function initializeScanRuntime(socket) {
                         </div>
                         ${failed && report.error ? `<p class="mt-2 line-clamp-2 rounded-lg bg-red-50 p-2 font-mono text-[10px] text-red-700">${escapeHTML(report.error)}</p>` : ''}
                         <div class="mt-3 flex items-center justify-between gap-2">
-                            <span class="text-[10px] font-medium ${failed ? 'text-red-600' : 'text-olive-500'}">${failed ? `Failed${report.duration ? ` after ${report.duration}s` : ''}` : (report.drivePdfUrl || report.driveHtmlUrl ? 'Drive synced' : 'Local only')}</span>
+                            <span class="text-[10px] font-medium ${failed ? 'text-red-600' : 'text-olive-500'}">${failed ? `Failed${report.duration ? ` after ${escapeHTML(report.duration)}s` : ''}` : (report.drivePdfUrl || report.driveHtmlUrl ? 'Drive synced' : 'Local only')}</span>
                             <div class="flex items-center gap-1.5">${actions}</div>
                         </div>
                     </div>
@@ -749,7 +768,7 @@ function initializeScanButtonWiring(socket) {
     }
     if (stopScanBtn) {
         stopScanBtn.addEventListener('click', () => {
-            socket.emit('stop_scan');
+            socket.emit('cancel_job', { job_type: 'scan' });
         });
     }
     document.getElementById('discovery-table')?.addEventListener('click', event => {

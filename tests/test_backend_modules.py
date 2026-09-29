@@ -1,11 +1,15 @@
 from datetime import datetime
 from pathlib import Path
 import base64
+import json
 import logging
+import threading
 
 from flask import Flask
 from flask_socketio import SocketIO
+import pytest
 
+from nmapui import auto_scan, private_storage
 from nmapui.auto_scan import (
     DEFAULT_AUTO_SCAN_CONFIG,
     build_auto_scan_status_payload,
@@ -16,6 +20,7 @@ from nmapui.auto_scan import (
 from nmapui.auto_scan_runtime import AUTO_SCAN_SID, execute_auto_scan
 from nmapui.handlers.auto_scan import (
     acquire_auto_scan_scheduler_lock,
+    auto_scan_loop,
     register_auto_scan_handlers,
     start_auto_scan_thread,
 )
@@ -117,6 +122,13 @@ def test_validate_auto_scan_config_rejects_invalid_socket_payload():
     assert config == original
 
 
+def test_validate_auto_scan_config_rejects_out_of_range_time():
+    assert validate_auto_scan_config_update({"start_time": "99:99"}) == (
+        False,
+        "'start_time' must be a valid time of day",
+    )
+
+
 def test_http_auto_scan_update_rejects_invalid_payload(monkeypatch):
     configure_auth(monkeypatch)
     app = Flask(__name__)
@@ -149,6 +161,33 @@ def test_http_auto_scan_update_rejects_invalid_payload(monkeypatch):
     assert config == DEFAULT_AUTO_SCAN_CONFIG
 
 
+def test_http_auto_scan_update_does_not_claim_success_when_save_fails(monkeypatch):
+    configure_auth(monkeypatch)
+    app = Flask(__name__)
+    socketio = SocketIO(app, cors_allowed_origins="*", test_mode=True)
+    config = dict(DEFAULT_AUTO_SCAN_CONFIG)
+
+    def fail_save(_updated):
+        raise OSError("disk is read-only")
+
+    register_auto_scan_handlers(
+        app,
+        socketio,
+        {"auto_scan_config": config, "save_auto_scan_config": fail_save, "logger": app.logger},
+    )
+
+    response = app.test_client().post(
+        "/api/auto_scan/update", json={"enabled": True}, headers=basic_auth_header()
+    )
+
+    assert response.status_code == 500
+    assert response.get_json() == {
+        "success": False,
+        "error": "Could not save auto-scan settings",
+    }
+    assert config == DEFAULT_AUTO_SCAN_CONFIG
+
+
 def test_socket_auto_scan_update_rejects_invalid_payload(monkeypatch):
     configure_auth(monkeypatch)
     app = Flask(__name__)
@@ -176,6 +215,114 @@ def test_socket_auto_scan_update_rejects_invalid_payload(monkeypatch):
         for event in received
     )
     assert config == DEFAULT_AUTO_SCAN_CONFIG
+
+
+def test_socket_auto_scan_update_does_not_broadcast_unsaved_state(monkeypatch):
+    configure_auth(monkeypatch)
+    app = Flask(__name__)
+    socketio = SocketIO(app, cors_allowed_origins="*", test_mode=True)
+    config = dict(DEFAULT_AUTO_SCAN_CONFIG)
+
+    def fail_save(_updated):
+        raise OSError("disk is read-only")
+
+    register_auto_scan_handlers(
+        app,
+        socketio,
+        {"auto_scan_config": config, "save_auto_scan_config": fail_save, "logger": app.logger},
+    )
+
+    client = socketio.test_client(app, headers=basic_auth_header())
+    client.emit("update_auto_scan", {"enabled": True})
+    received = client.get_received()
+
+    assert any(
+        event["name"] == "auto_scan_error"
+        and event["args"] == [{"error": "Could not save auto-scan settings"}]
+        for event in received
+    )
+    assert not any(event["name"] == "auto_scan_status" for event in received)
+    assert config == DEFAULT_AUTO_SCAN_CONFIG
+
+
+def test_auto_scan_config_write_keeps_previous_file_on_sync_failure(tmp_path, monkeypatch):
+    config_path = tmp_path / "auto_scan.json"
+    monkeypatch.setattr(auto_scan, "AUTO_SCAN_CONFIG_FILE", config_path)
+    auto_scan.save_auto_scan_config({"enabled": False})
+
+    def fail_sync(_file_descriptor):
+        raise OSError("sync failed")
+
+    monkeypatch.setattr(private_storage.os, "fsync", fail_sync)
+    with pytest.raises(OSError, match="sync failed"):
+        auto_scan.save_auto_scan_config({"enabled": True})
+
+    assert json.loads(config_path.read_text()) == {"enabled": False}
+    assert not list(tmp_path.glob(".auto_scan.json.*.tmp"))
+
+
+def test_overlapping_auto_scan_updates_keep_memory_and_disk_state_consistent(monkeypatch):
+    configure_auth(monkeypatch)
+    app = Flask(__name__)
+    socketio = SocketIO(app, cors_allowed_origins="*", test_mode=True)
+    config = dict(DEFAULT_AUTO_SCAN_CONFIG)
+    persisted = {}
+    first_saved = threading.Event()
+    release_first = threading.Event()
+    second_validated = threading.Event()
+    second_saved = threading.Event()
+    responses = []
+
+    def validate(payload):
+        if payload.get("start_time") == "02:00":
+            second_validated.set()
+        return validate_auto_scan_config_update(payload)
+
+    def save(updated):
+        persisted.clear()
+        persisted.update(updated)
+        if updated["start_time"] == "01:00":
+            first_saved.set()
+            assert release_first.wait(2)
+        else:
+            second_saved.set()
+
+    register_auto_scan_handlers(
+        app,
+        socketio,
+        {
+            "auto_scan_config": config,
+            "save_auto_scan_config": save,
+            "validate_auto_scan_config_update": validate,
+            "logger": app.logger,
+        },
+    )
+
+    def post(payload):
+        with app.test_client() as client:
+            responses.append(client.post(
+                "/api/auto_scan/update", json=payload, headers=basic_auth_header()
+            ).status_code)
+
+    first = threading.Thread(target=post, args=({"enabled": True},))
+    second = threading.Thread(target=post, args=({"start_time": "02:00"},))
+    first.start()
+    try:
+        assert first_saved.wait(2)
+        second.start()
+        assert second_validated.wait(2)
+        assert not second_saved.wait(0.1)
+    finally:
+        release_first.set()
+        first.join(timeout=2)
+        if second.ident is not None:
+            second.join(timeout=2)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert responses == [200, 200]
+    assert persisted == config
+    assert config["enabled"] is True
+    assert config["start_time"] == "02:00"
 
 
 def test_resolve_scan_path_rejects_traversal():
@@ -302,6 +449,193 @@ def test_start_auto_scan_thread_starts_when_lock_acquired():
     assert created["thread"].started is True
 
 
+def test_auto_scan_loop_dispatches_due_work_off_scheduler_thread():
+    dispatched = []
+    executed = []
+
+    class SocketStub:
+        def start_background_task(self, function, *args):
+            dispatched.append((function, args))
+
+        def sleep(self, _seconds):
+            raise StopIteration
+
+    def execute():
+        executed.append("auto_scan")
+
+    try:
+        auto_scan_loop(
+            socketio=SocketStub(),
+            auto_scan_config={"enabled": True},
+            settings_state={},
+            should_run_auto_scan=lambda *args, **kwargs: True,
+            startup_at=datetime(2026, 3, 13, 0, 0),
+            startup_grace_seconds=0,
+            execute_auto_scan=execute,
+            logger=logging.getLogger(__name__),
+        )
+    except StopIteration:
+        pass
+
+    assert len(dispatched) == 1
+    worker, args = dispatched[0]
+    assert args[:3] == (True, [], False)
+    assert executed == []
+    worker(*args)
+    assert executed == ["auto_scan"]
+
+
+def test_queued_auto_scan_does_not_run_after_operator_disables_it():
+    dispatched = []
+    executed = []
+    config = {"enabled": True}
+
+    class SocketStub:
+        def start_background_task(self, function, *args):
+            dispatched.append((function, args))
+
+        def sleep(self, _seconds):
+            raise StopIteration
+
+    try:
+        auto_scan_loop(
+            socketio=SocketStub(),
+            auto_scan_config=config,
+            settings_state={},
+            should_run_auto_scan=lambda *args, **kwargs: True,
+            startup_at=datetime(2026, 3, 13),
+            startup_grace_seconds=0,
+            execute_auto_scan=lambda: executed.append("auto_scan"),
+            logger=logging.getLogger(__name__),
+        )
+    except StopIteration:
+        pass
+
+    assert len(dispatched) == 1
+    config["enabled"] = False
+    dispatched[0][0](*dispatched[0][1])
+    assert executed == []
+
+
+def test_auto_scan_loop_keeps_one_worker_while_prior_work_is_running(monkeypatch):
+    from nmapui.handlers import auto_scan as auto_scan_handlers
+
+    moments = iter((datetime(2026, 3, 13, 1, 0), datetime(2026, 3, 13, 1, 1)))
+    monkeypatch.setattr(
+        auto_scan_handlers,
+        "datetime",
+        type("Clock", (), {"now": staticmethod(lambda: next(moments))}),
+    )
+    dispatched = []
+
+    class SocketStub:
+        sleeps = 0
+
+        def start_background_task(self, function, *args):
+            dispatched.append((function, args))
+
+        def sleep(self, _seconds):
+            self.sleeps += 1
+            if self.sleeps == 2:
+                raise StopIteration
+
+    try:
+        auto_scan_loop(
+            socketio=SocketStub(),
+            auto_scan_config={},
+            settings_state={},
+            should_run_auto_scan=lambda *args, **kwargs: True,
+            startup_at=datetime(2026, 3, 13, 0, 0),
+            startup_grace_seconds=0,
+            execute_auto_scan=lambda: None,
+            logger=logging.getLogger(__name__),
+        )
+    except StopIteration:
+        pass
+
+    assert len(dispatched) == 1
+
+
+def test_auto_scan_worker_processes_due_rules_in_order(monkeypatch):
+    from nmapui.handlers import auto_scan as auto_scan_handlers
+
+    rules = [{"id": "first"}, {"id": "second"}]
+    monkeypatch.setattr(auto_scan_handlers, "get_due_auto_monitor_rules", lambda *a, **k: rules)
+    dispatched = []
+    executed = []
+
+    class SocketStub:
+        def start_background_task(self, function, *args):
+            dispatched.append((function, args))
+
+        def sleep(self, _seconds):
+            raise StopIteration
+
+    try:
+        auto_scan_loop(
+            socketio=SocketStub(),
+            auto_scan_config={},
+            settings_state={},
+            should_run_auto_scan=lambda *args, **kwargs: False,
+            startup_at=datetime(2026, 3, 13),
+            startup_grace_seconds=0,
+            execute_auto_scan=lambda: None,
+            execute_auto_monitor_rule=lambda rule: executed.append(rule["id"]),
+            logger=logging.getLogger(__name__),
+        )
+    except StopIteration:
+        pass
+
+    assert len(dispatched) == 1
+    assert executed == []
+    dispatched[0][0](*dispatched[0][1])
+    assert executed == ["first", "second"]
+
+
+def test_queued_auto_monitor_rule_does_not_run_after_operator_disables_it(monkeypatch):
+    from nmapui.handlers import auto_scan as auto_scan_handlers
+
+    monkeypatch.setattr(
+        auto_scan_handlers,
+        "get_due_auto_monitor_rules",
+        lambda settings, **kwargs: [
+            rule for rule in settings.get("rules", []) if rule.get("enabled")
+        ],
+    )
+    settings = {"auto_monitor": {"rules": [
+        {"id": "first", "customer_id": "cust-1", "enabled": True}
+    ]}}
+    dispatched = []
+    executed = []
+
+    class SocketStub:
+        def start_background_task(self, function, *args):
+            dispatched.append((function, args))
+
+        def sleep(self, _seconds):
+            raise StopIteration
+
+    try:
+        auto_scan_loop(
+            socketio=SocketStub(),
+            auto_scan_config={},
+            settings_state=settings,
+            should_run_auto_scan=lambda *args, **kwargs: False,
+            startup_at=datetime(2026, 3, 13),
+            startup_grace_seconds=0,
+            execute_auto_scan=lambda: None,
+            execute_auto_monitor_rule=lambda rule: executed.append(rule["id"]),
+            logger=logging.getLogger(__name__),
+        )
+    except StopIteration:
+        pass
+
+    assert len(dispatched) == 1
+    settings["auto_monitor"]["rules"][0]["enabled"] = False
+    dispatched[0][0](*dispatched[0][1])
+    assert executed == []
+
+
 def build_auto_scan_deps(**overrides):
     """Build a complete execute_auto_scan dependency set for tests."""
     saved = {"started": [], "report_calls": [], "customer_state": [], "targets": []}
@@ -318,13 +652,20 @@ def build_auto_scan_deps(**overrides):
         def __init__(self, start_result=True):
             self.start_result = start_result
             self.completed = []
+            self.status = "idle"
 
         def start(self, sid, job_type, details=None):
             saved["started"].append((sid, job_type, details))
+            if self.start_result:
+                self.status = "running"
             return self.start_result
 
         def complete(self, sid, job_type, status="completed", details=None):
             self.completed.append((sid, job_type, status))
+            self.status = status
+
+        def get(self, sid, job_type):
+            return {"status": self.status}
 
     deps = {
         "auto_scan_config": dict(DEFAULT_AUTO_SCAN_CONFIG),
@@ -338,11 +679,16 @@ def build_auto_scan_deps(**overrides):
         "validate_target": lambda target: (True, None),
         "job_registry": JobRegistryStub(),
         "emit_job_status": lambda sid, job_type: saved.setdefault("job_status", []).append((sid, job_type)),
-        "generate_report_task": lambda sid, payload: saved["report_calls"].append((sid, payload)),
+        "generate_report_task": None,
         "set_current_customer_state": lambda value, sid=None: saved["customer_state"].append((value, sid)),
         "set_last_scan_target_state": lambda value, sid=None: saved["targets"].append((value, sid)),
     }
     deps.update(overrides)
+    if deps["generate_report_task"] is None:
+        def complete_report(sid, payload):
+            saved["report_calls"].append((sid, payload))
+            deps["job_registry"].complete(sid, "report", status="completed")
+        deps["generate_report_task"] = complete_report
     return deps, saved
 
 
@@ -408,3 +754,27 @@ def test_execute_auto_scan_emits_validation_error_without_running():
     assert saved["emitted"] == [("auto_scan_error", {"error": "Invalid target"})]
     assert saved["started"] == []
     assert saved["report_calls"] == []
+
+
+def test_execute_auto_scan_retries_failed_report_instead_of_recording_last_run():
+    deps, saved = build_auto_scan_deps(
+        generate_report_task=lambda sid, payload: deps["job_registry"].complete(
+            sid, "report", status="failed"
+        ),
+    )
+
+    assert execute_auto_scan(deps=deps) is False
+    assert deps["auto_scan_config"]["last_run"] is None
+    assert "config" not in saved
+
+
+def test_execute_auto_scan_reports_last_run_persistence_failure():
+    def fail_save(_config):
+        raise OSError("disk is read-only")
+
+    deps, saved = build_auto_scan_deps(save_auto_scan_config=fail_save)
+
+    assert execute_auto_scan(deps=deps) is False
+    assert len(saved["report_calls"]) == 1
+    assert deps["job_registry"].get(AUTO_SCAN_SID, "report")["status"] == "completed"
+    assert deps["auto_scan_config"]["last_run"] is not None

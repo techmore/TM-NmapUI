@@ -17,6 +17,21 @@ source .venv/bin/activate
 The installer prepares the scanner dependencies, Python packages and the
 Playwright Chromium runtime used for PDF output.
 
+## Build browser assets
+
+The Flask runtime serves compiled CSS and pinned JavaScript libraries from
+`static/`, so installed and packaged apps do not need Node or a CDN at runtime.
+After changing Tailwind classes or updating the browser libraries, regenerate
+those committed assets with Node.js 24 or newer:
+
+```bash
+npm ci --prefix scripts/ui-assets
+npm run build --prefix scripts/ui-assets
+```
+
+The CI unit job rebuilds the assets and fails if the generated output differs
+from the committed files.
+
 ## Build and run
 
 ```bash
@@ -28,6 +43,14 @@ virtual environment, then installs `NmapUI.app` into `/Applications` when
 permitted or `~/Applications` otherwise. It opens the app after a normal build;
 `NMAPUI_SKIP_OPEN=1` skips that launch. Set `NMAPUI_APPLICATIONS_DIR` to choose
 the install directory.
+
+To migrate an existing runtime SQLite database from a different data location,
+stop processes using the destination, retain a separate pre-upgrade backup, and
+set `NMAPUI_MIGRATE_DB=1 NMAPUI_MIGRATE_DB_FROM=/path/to/runtime.sqlite3` for the
+build. The migration uses SQLite's backup API so committed WAL transactions are
+included. With no explicit source, the default points at the existing runtime
+database and no copy is performed. This option is for the menu-bar app build;
+the staged LaunchDaemon installer keeps mutable data outside its code releases.
 
 To launch the Flask app directly during development:
 
@@ -41,8 +64,9 @@ export NMAPUI_PASSWORD='choose-a-strong-password'
 ## Validate a build
 
 The packaged smoke test builds in an isolated temporary application directory,
-starts the bundled server with temporary data and credentials, and checks the
-authenticated UI and health endpoint:
+checks that a committed WAL row survives database migration, starts the bundled
+server with temporary data and credentials, and checks the authenticated UI and
+health endpoint:
 
 ```bash
 NMAPUI_RUN_PACKAGED_SMOKE=1 .venv/bin/python -m pytest -q tests/test_packaged_app_smoke.py

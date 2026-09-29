@@ -7,6 +7,7 @@ import shutil
 import subprocess
 
 from nmapui import privileged
+from nmapui.runtime import env_flag
 
 
 logger = logging.getLogger(__name__)
@@ -188,7 +189,14 @@ def run_arp_scan(
         return {}
 
     try:
-        command_str = f"arp-scan {target} --interface {interface}"
+        command = [
+            *privileged.privileged_prefix(),
+            "arp-scan",
+            target,
+            "--interface",
+            interface,
+        ]
+        command_str = " ".join(command)
         if sid:
             emit_to_client(sid, "scan_feedback", f"Executing: {command_str}")
         else:
@@ -197,7 +205,7 @@ def run_arp_scan(
         socketio_sleep(0)
 
         result = run_cancellable_command(
-            ["arp-scan", target, "--interface", interface],
+            command,
             sid=sid,
             job_type="scan" if sid else None,
             timeout=30,
@@ -207,7 +215,8 @@ def run_arp_scan(
         else:
             if _is_permission_denied(result):
                 message = (
-                    "arp-scan requires elevated privileges; skipping MAC/vendor detection"
+                    "MAC/vendor detection was skipped because ARP privileges are "
+                    "unavailable; the Nmap scan completed normally"
                 )
                 logger.warning(message)
                 if sid:
@@ -291,26 +300,23 @@ def run_nmap_with_xml_output(
         timeout_seconds = int(timeout_seconds or 180)
     else:
         logger.info("Running comprehensive scan on %s...", target)
-        message = (
-            f"Starting comprehensive scan with vulnerability detection on {target} "
-            "(may take 10+ minutes)..."
+        vulners_enabled = env_flag("NMAPUI_ENABLE_VULNERS", default=True)
+        scan_enrichment = (
+            "with Vulners vulnerability enrichment"
+            if vulners_enabled
+            else "without external Vulners enrichment"
         )
+        message = f"Starting comprehensive scan {scan_enrichment} on {target} (may take 10+ minutes)..."
         if sid:
             emit_to_client(sid, "scan_feedback", message)
         else:
             socketio_emit("scan_feedback", message)
-        options = [
-            "-Pn",
-            "-T4",
-            "-A",
-            "-sC",
-            "--script",
-            str(vulners_script),
-            "--stylesheet",
-            str(stylesheet_pdf),
-            "-oA",
-            str(output_base),
-        ]
+        options = ["-Pn", "-T4", "-A", "-sC"]
+        if vulners_enabled:
+            options.extend(["--script", str(vulners_script)])
+        options.extend(
+            ["--stylesheet", str(stylesheet_pdf), "-oA", str(output_base)]
+        )
         timeout_seconds = int(timeout_seconds or 7200)
 
     if excluded_targets:

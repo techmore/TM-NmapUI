@@ -11,6 +11,7 @@ from flask import (
 )
 from nmapui.auth import (
     auth_uses_insecure_defaults,
+    browser_request_origin_allowed,
     check_auth,
     clear_session_cookie,
     require_auth,
@@ -19,7 +20,11 @@ from nmapui.auth import (
     set_session_cookie,
 )
 from nmapui.handlers.scans import delete_scan_artifacts
-from nmapui.reporting import _resolve_artifact_file_path, build_artifact_downloads
+from nmapui.reporting import (
+    _resolve_artifact_file_path,
+    build_artifact_downloads,
+    report_content_security_policy,
+)
 from nmapui.runtime_history import (
     backfill_runtime_history_artifacts,
     build_compare_result,
@@ -61,7 +66,10 @@ def _send_runtime_artifact(*, runtime_store, scans_dir, scan_path, artifact_key,
     kwargs = {"as_attachment": as_attachment}
     if download_name:
         kwargs["download_name"] = download_name
-    return send_file(artifact_path, **kwargs)
+    response = send_file(artifact_path, **kwargs)
+    if artifact_key == "html_path":
+        response.headers["Content-Security-Policy"] = report_content_security_policy()
+    return response
 
 
 def register_core_routes(app, deps):
@@ -100,6 +108,11 @@ def register_core_routes(app, deps):
         Kept separate from the API so an unattended appliance can authenticate
         once and keep working for months without re-prompting.
         """
+        if request.method == "POST" and not browser_request_origin_allowed():
+            return render_template("login.html", error="Sign in from the NmapUI page."), 403
+        if request_is_local_ui():
+            return redirect("/")
+
         error = None
         if request.method == "POST":
             username = (request.form.get("username") or "").strip()
@@ -112,15 +125,19 @@ def register_core_routes(app, deps):
             error = "Invalid credentials"
         elif auth_uses_insecure_defaults():
             error = (
-                "Authentication is not configured. Set NMAPUI_USERNAME and "
-                "NMAPUI_PASSWORD (or NMAPUI_ALLOW_DEFAULT_CREDENTIALS=true for a "
-                "local-only install) before signing in."
+                "Authentication credentials are empty or use the built-in default "
+                "password. Set non-empty NMAPUI_USERNAME and NMAPUI_PASSWORD values; "
+                "only enable NMAPUI_ALLOW_DEFAULT_CREDENTIALS=true when intentionally "
+                "accepting that password for a local-only install."
             )
         return render_template("login.html", error=error), (401 if error and request.method == "POST" else 200)
 
     @app.route("/logout", methods=["GET", "POST"])
     def logout():
-        return clear_session_cookie(make_response(redirect("/login")))
+        if request.method == "POST" and not browser_request_origin_allowed():
+            return jsonify({"error": "Request origin is not allowed"}), 403
+        target = "/" if request_is_local_ui() else "/login"
+        return clear_session_cookie(make_response(redirect(target)))
 
     @app.route("/api/session/status")
     @require_auth
@@ -202,6 +219,7 @@ def register_core_routes(app, deps):
         max_scan_minutes = int(scan_rules.get("max_scan_minutes", 120) or 120)
         maintenance_backfill = {}
         maintenance_retention = {}
+        automatic_retention = {}
         persisted_counts = {
             "report_artifacts": 0,
             "customer_scan_history": 0,
@@ -213,6 +231,9 @@ def register_core_routes(app, deps):
             )
             maintenance_retention = (
                 runtime_store.get_runtime_snapshot("maintenance_retention_status") or {}
+            )
+            automatic_retention = (
+                runtime_store.get_runtime_snapshot("automatic_retention_status") or {}
             )
         if runtime_store is not None:
             if hasattr(runtime_store, "count_report_artifacts"):
@@ -237,6 +258,7 @@ def register_core_routes(app, deps):
                 "tool_versions": get_versions(),
                 "maintenance_backfill": maintenance_backfill,
                 "maintenance_retention": maintenance_retention,
+                "automatic_retention": automatic_retention,
                 "persisted_counts": persisted_counts,
             }
         )

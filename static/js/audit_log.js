@@ -1,6 +1,7 @@
 (function () {
     let logCount = 0;
     const logEntries = [];
+    const MAX_LOG_ENTRIES = 1000;
     const LEVEL_STYLES = {
         log: 'text-olive-300',
         info: 'text-olive-300',
@@ -61,6 +62,9 @@
             message: String(entry.message),
             source: entry.source || 'persisted',
         });
+        if (logEntries.length > MAX_LOG_ENTRIES) {
+            logEntries.splice(0, logEntries.length - MAX_LOG_ENTRIES);
+        }
         logCount = logEntries.length;
     }
 
@@ -212,6 +216,9 @@
     function appendLog(level, message) {
         const entry = { timestamp: timestamp(), level, message: String(message), source: 'local' };
         logEntries.push(entry);
+        if (logEntries.length > MAX_LOG_ENTRIES) {
+            logEntries.splice(0, logEntries.length - MAX_LOG_ENTRIES);
+        }
         logCount = logEntries.length;
 
         const container = document.getElementById('log-entries');
@@ -221,6 +228,9 @@
         }
 
         container.appendChild(createLogRow(entry));
+        while (container.childElementCount > MAX_LOG_ENTRIES) {
+            container.firstElementChild?.remove();
+        }
 
         if (container.scrollHeight - container.scrollTop < container.clientHeight + 80) {
             container.scrollTop = container.scrollHeight;

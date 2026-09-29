@@ -2,42 +2,12 @@
 <html>
 <head>
     <title>Network Scanner GUI</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.0/socket.io.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/vendor/fonts.css" />
+    <link rel="stylesheet" href="/static/css/tailwind.css" />
+    <script src="/static/vendor/socket.io.min.js"></script>
     <script src="/static/js/utils.js"></script>
     <script src="/static/js/session_gate.js"></script>
-<script src="https://unpkg.com/lucide@latest"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        olive: {
-                            50: 'oklch(96% 0.015 110)',
-                            100: 'oklch(91% 0.020 110)',
-                            200: 'oklch(85% 0.028 110)',
-                            300: 'oklch(75% 0.040 110)',
-                            400: 'oklch(62% 0.055 110)',
-                            500: 'oklch(50% 0.065 110)',
-                            600: 'oklch(42% 0.055 110)',
-                            700: 'oklch(35% 0.045 110)',
-                            800: 'oklch(28% 0.035 110)',
-                            900: 'oklch(22% 0.025 110)',
-                            950: 'oklch(16% 0.015 110)',
-                        }
-                    },
-                    fontFamily: {
-                        display: ['Instrument Serif', 'serif'],
-                        sans: ['Inter', 'system-ui', 'sans-serif'],
-                    }
-                }
-            }
-        }
-    </script>
+    <script src="/static/vendor/lucide.min.js"></script>
 <style>
     body {
         font-family: 'Inter', system-ui, sans-serif;
@@ -300,6 +270,11 @@
         padding: 1rem;
     }
 
+    /* Keep Tailwind's hidden state effective despite this component display rule. */
+    .modal-overlay.hidden {
+        display: none;
+    }
+
     .modal-panel {
         width: 100%;
         border-radius: 0.5rem;
@@ -433,7 +408,7 @@
                             <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.71 5.47 7.8.4.08.55-.18.55-.4 0-.2-.01-.86-.01-1.56-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.56-.01-.57.63-.01 1.08.59 1.23.83.72 1.24 1.87.89 2.33.68.07-.54.28-.89.51-1.09-1.78-.21-3.64-.92-3.64-4.09 0-.9.31-1.64.82-2.22-.08-.21-.36-1.05.08-2.18 0 0 .67-.22 2.2.85.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.07 2.2-.85 2.2-.85.44 1.13.16 1.97.08 2.18.51.58.82 1.31.82 2.22 0 3.18-1.87 3.88-3.65 4.09.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .22.15.48.55.4A8.24 8.24 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
                         </svg>
                     </a>
-                    <button id="app-update-badge" onclick="showUpdateModal()" class="hidden px-2 py-0.5 bg-amber-500 text-white text-[10px] font-bold rounded-full hover:bg-amber-600 transition-colors">
+                    <button id="app-update-badge" data-action="showUpdateModal" class="hidden px-2 py-0.5 bg-amber-500 text-white text-[10px] font-bold rounded-full hover:bg-amber-600 transition-colors">
                         Update Available
                     </button>
                 </div>
@@ -658,7 +633,7 @@
                 <button id="logs-clear-btn" class="action-button action-button-secondary action-button-compact" aria-label="Clear captured log entries">
                     Clear Logs
                 </button>
-                <button onclick="toggleLogPanel()" class="action-button action-button-primary action-button-compact" aria-label="Open live audit log drawer">
+                <button data-action="toggleLogPanel" class="action-button action-button-primary action-button-compact" aria-label="Open live audit log drawer">
                     Open Live Drawer
                 </button>
             </div>
@@ -852,6 +827,11 @@
                             <label for="settings-auto-monitor-time" class="block text-sm font-medium text-olive-800">Run Time</label>
                             <input id="settings-auto-monitor-time" type="time" class="form-control form-control-md mt-1">
                         </div>
+                        <div>
+                            <label for="settings-auto-monitor-timezone" class="block text-sm font-medium text-olive-800">Time Zone</label>
+                            <input id="settings-auto-monitor-timezone" type="text" class="form-control form-control-md mt-1" placeholder="America/New_York" autocomplete="off">
+                            <p class="mt-1 text-xs text-olive-600">Use an IANA time zone for daylight saving handling. Leave blank to use the scanner host's local clock.</p>
+                        </div>
                         <div class="rounded-xl border border-olive-200 bg-white px-4 py-3 text-sm text-olive-700 md:col-span-2">
                             New customer rules default to <span class="font-semibold text-olive-900">Complete + PDF</span>. Existing customer-specific rules can still override the inherited schedule from the Customers tab.
                         </div>
@@ -899,7 +879,9 @@
                             <label for="settings-remote-sync-endpoint" class="mt-3 block text-sm font-medium text-olive-800">Remote Endpoint</label>
                             <input id="settings-remote-sync-endpoint" type="url" class="form-control form-control-md mt-1" placeholder="https://cybersecuritypilot.org/api">
                             <label for="settings-remote-sync-api-key" class="mt-3 block text-sm font-medium text-olive-800">API Key</label>
-                            <input id="settings-remote-sync-api-key" type="password" class="form-control form-control-md mt-1" placeholder="Stored locally until remote integration is implemented">
+                            <input id="settings-remote-sync-api-key" type="password" class="form-control form-control-md mt-1" placeholder="Enter to set or replace; leave blank to keep the saved key" autocomplete="new-password">
+                            <p id="settings-remote-sync-key-status" class="mt-2 text-xs text-olive-600">No key is stored on this scanner.</p>
+                            <p class="mt-2 text-xs text-amber-700">Remote-sync transfer is not connected in this build. A submitted key is stored encrypted on this scanner, never in browser storage, and is not currently used to send data.</p>
                             <button id="settings-remote-sync-test-btn" type="button" class="action-button action-button-secondary action-button-compact mt-3">Test Remote Sync</button>
                             <p id="settings-remote-sync-status" class="mt-2 text-xs text-olive-600">Not configured</p>
                         </div>
@@ -956,7 +938,7 @@
         <div class="modal-panel max-w-2xl p-6">
             <div class="flex items-center justify-between mb-4">
                 <h3 class="text-lg font-medium text-olive-900">Add Customer</h3>
-                <button onclick="hideCustomerForm()" class="icon-button size-8" aria-label="Close add customer dialog">
+                <button data-action="hideCustomerForm" class="icon-button size-8" aria-label="Close add customer dialog">
                     ✕
                 </button>
             </div>
@@ -1010,10 +992,10 @@
             </div>
             
             <div class="flex justify-end gap-2 mt-4">
-                <button onclick="hideCustomerForm()" class="action-button action-button-secondary">
+                <button data-action="hideCustomerForm" class="action-button action-button-secondary">
                     Cancel
                 </button>
-                <button onclick="addCustomer()" class="action-button action-button-primary">
+                <button data-action="addCustomer" class="action-button action-button-primary">
                     Add Customer
                 </button>
             </div>
@@ -1031,7 +1013,7 @@
         <div class="modal-panel modal-panel-scroll max-w-6xl">
             <div class="p-6 border-b border-olive-300 flex justify-between items-center">
                 <h2 class="text-2xl font-display italic text-olive-900">Scan History</h2>
-                <button onclick="hideHistoryModal()" class="icon-button size-10" aria-label="Close scan history dialog">
+                <button data-action="hideHistoryModal" class="icon-button size-10" aria-label="Close scan history dialog">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -1040,15 +1022,15 @@
 
             <div class="p-6 flex-1 overflow-y-auto">
                 <div class="mb-4 flex flex-wrap items-center gap-4">
-                    <select id="history-customer-filter" onchange="loadScanHistory()" class="form-control form-control-sm">
+                    <select id="history-customer-filter" data-action="loadScanHistory" data-action-event="change" class="form-control form-control-sm">
                         <option value="">All Customers</option>
                     </select>
-                    <input type="date" id="history-date-filter" onchange="loadScanHistory()" class="form-control form-control-sm">
+                    <input type="date" id="history-date-filter" data-action="loadScanHistory" data-action-event="change" class="form-control form-control-sm">
                     <label class="inline-flex items-center gap-2 text-sm text-olive-800">
-                        <input type="checkbox" id="history-changed-filter" onchange="loadScanHistory()" class="size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
+                        <input type="checkbox" id="history-changed-filter" data-action="loadScanHistory" data-action-event="change" class="size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
                         Changed scans only
                     </label>
-                    <button onclick="loadScanHistory()" class="action-button action-button-primary action-button-compact">
+                    <button data-action="loadScanHistory" class="action-button action-button-primary action-button-compact">
                         Refresh
                     </button>
                 </div>
@@ -1064,7 +1046,7 @@
         <div class="modal-panel modal-panel-scroll max-w-4xl">
             <div class="p-6 border-b border-olive-300 flex justify-between items-center">
                 <h2 id="asset-modal-title" class="text-2xl font-display italic text-olive-900">Asset Details</h2>
-                <button onclick="hideAssetModal()" class="icon-button size-10" aria-label="Close asset details dialog">
+                <button data-action="hideAssetModal" class="icon-button size-10" aria-label="Close asset details dialog">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -1084,7 +1066,7 @@
         <div class="modal-panel flex flex-col max-w-2xl shadow-2xl border border-olive-300">
             <div class="p-6 border-b border-olive-300 flex justify-between items-center bg-olive-50 rounded-t-lg">
                 <h2 class="text-2xl font-display italic text-olive-900">Application Update</h2>
-                <button onclick="hideUpdateModal()" class="icon-button size-10" aria-label="Close update dialog">
+                <button data-action="hideUpdateModal" class="icon-button size-10" aria-label="Close update dialog">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -1102,10 +1084,10 @@
                         <strong>Note:</strong> This will open your browser to download the new version. You'll need to install it manually.
                     </div>
                     <div class="flex justify-end gap-3 mt-6">
-                        <button onclick="hideUpdateModal()" class="px-5 py-2 text-olive-600 hover:text-olive-900 font-medium transition-colors">
+                        <button data-action="hideUpdateModal" class="px-5 py-2 text-olive-600 hover:text-olive-900 font-medium transition-colors">
                             Later
                         </button>
-                        <button onclick="startAppUpdate()" class="px-6 py-2 bg-amber-500 text-white font-bold rounded-full hover:bg-amber-600 shadow-sm transition-all">
+                        <button data-action="startAppUpdate" class="px-6 py-2 bg-amber-500 text-white font-bold rounded-full hover:bg-amber-600 shadow-sm transition-all">
                             Download Update
                         </button>
                     </div>
@@ -1132,7 +1114,7 @@
                     </div>
                     <h3 class="text-xl font-display text-olive-950">Update Successful</h3>
                     <p class="text-olive-700">The application is restarting. Please wait a moment...</p>
-                    <button onclick="window.location.reload()" class="mt-4 px-6 py-2 bg-olive-950 text-white rounded-full hover:bg-olive-800 transition-colors">
+                    <button data-action="reloadPage" class="mt-4 px-6 py-2 bg-olive-950 text-white rounded-full hover:bg-olive-800 transition-colors">
                         Reload Page
                     </button>
                 </div>
@@ -1152,7 +1134,7 @@
                         <span id="asset-detail-hostname" class="ml-2"></span>
                     </p>
                 </div>
-                <button onclick="closeAssetDetailsModal()" class="icon-button size-10" aria-label="Close asset details panel">
+                <button data-action="closeAssetDetailsModal" class="icon-button size-10" aria-label="Close asset details panel">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -1209,7 +1191,7 @@
 
             <!-- Modal Footer -->
             <div class="p-4 border-t border-olive-300 bg-olive-50 flex justify-end">
-                <button onclick="closeAssetDetailsModal()" class="action-button action-button-primary">
+                <button data-action="closeAssetDetailsModal" class="action-button action-button-primary">
                     Close
                 </button>
             </div>
@@ -1248,7 +1230,7 @@
             <div class="w-full md:w-64 space-y-2">
                 <div class="flex items-center justify-between px-1">
                     <label for="customer-quick-add" class="block text-xs font-bold uppercase tracking-wider text-olive-600">Client Profile</label>
-                    <button onclick="showCustomerForm()" class="text-[10px] font-bold text-olive-600 hover:text-olive-800 uppercase tracking-wider underline underline-offset-4 decoration-olive-200 hover:decoration-olive-400 transition-all">
+                    <button data-action="showCustomerForm" class="text-[10px] font-bold text-olive-600 hover:text-olive-800 uppercase tracking-wider underline underline-offset-4 decoration-olive-200 hover:decoration-olive-400 transition-all">
                         + New Client
                     </button>
                 </div>
@@ -1296,6 +1278,9 @@
                 <button id="stop-scan-btn" class="px-5 py-2 rounded-full bg-olive-100 text-olive-600 hover:bg-red-50 hover:text-red-600 font-bold text-xs uppercase tracking-widest transition-all active:scale-95" aria-label="Terminate scanning operations">
                     Stop
                 </button>
+                <button id="stop-report-btn" type="button" class="hidden px-5 py-2 rounded-full bg-olive-100 text-olive-600 hover:bg-red-50 hover:text-red-600 font-bold text-xs uppercase tracking-widest transition-all active:scale-95" aria-label="Cancel report generation">
+                    Stop Report
+                </button>
                 <div class="h-4 w-px bg-olive-200 mx-1"></div>
                 <button id="suspend-scan-btn" class="px-5 py-2 rounded-full text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-all" aria-label="Pause scan">
                     Pause
@@ -1321,7 +1306,7 @@
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                         Reload Last
                     </button>
-                    <button id="log-panel-toggle-btn" onclick="toggleLogPanel()" class="flex items-center gap-2 text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-colors relative" aria-label="Toggle audit log panel">
+                    <button id="log-panel-toggle-btn" data-action="toggleLogPanel" class="flex items-center gap-2 text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-colors relative" aria-label="Toggle audit log panel">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                         Log
                         <span id="log-count-badge" class="hidden absolute -top-2 -right-3 flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-olive-600 text-white text-[9px] font-black shadow-lg border-2 border-white">0</span>
@@ -1484,7 +1469,7 @@
                     </div>
                 </div>
 
-                <button onclick="hideScanSummaryBanner()" class="ml-4 text-emerald-400 hover:text-emerald-600 transition-colors">
+                <button data-action="hideScanSummaryBanner" class="ml-4 text-emerald-400 hover:text-emerald-600 transition-colors">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -1602,131 +1587,14 @@
     </section>
     <div class="page-shell">
 
-    <script>
-        // Wire tab switching immediately (pure DOM) so tab clicks work while the
-        // socket is still connecting. Data loads handle their own readiness.
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', () => {
-                if (typeof initializeReportsTab === 'function') initializeReportsTab();
-            });
-        } else if (typeof initializeReportsTab === 'function') {
-            initializeReportsTab();
-        }
-
-        // Set current date and time.
-        // Fetch the loopback socket token, then connect with it (#210).
-        window.socket = null;
-        let __socketReadyResolve;
-        const __socketReady = new Promise((resolve) => { __socketReadyResolve = resolve; });
-        (async function initSocket() {
-            let token = '';
-            try {
-                const res = await fetch('/api/socket-token');
-                if (res.ok) token = (await res.json()).token || '';
-            } catch (err) {
-                console.warn('Could not fetch socket token.');
-            }
-            const socket = io.connect(`http://${document.domain}:${location.port}`, {
-                auth: { token },
-                query: { token }
-            });
-            window.socket = socket;
-            socket.on('connect', () => console.log('Socket.IO connected'));
-            socket.on('connect_error', (err) => console.error('Socket.IO error:', err.message));
-            __socketReadyResolve(socket);
-        })();
-
-        async function bootstrapTemplateApp() {
-            const socket = await __socketReady;
-            if (document.readyState === 'loading') {
-                await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
-            }
-            // Ensure the underlying engine.io connection is live so early
-            // emits (tab loads, get_reports) are not dropped.
-            if (!socket.connected) {
-                await new Promise((resolve) => socket.on('connect', resolve));
-            }
-            if (typeof initializeScanRuntime === 'function') {
-                initializeScanRuntime(socket);
-            }
-            // Request the legacy sync snapshot now that all listeners are wired (#230 bridge).
-            socket.emit('get_initial_data');
-            // A transport-level reconnect creates a new server session; module
-            // closures still hold the dead socket, so events would vanish. Reload
-            // to rebuild everything against the live session (#237 follow-up).
-            socket.io.on('reconnect', () => { location.reload(); });
-            if (typeof initializeScanButtonWiring === 'function') {
-                initializeScanButtonWiring(socket);
-            }
-            if (typeof initializeDiscoveryUI === 'function') {
-                initializeDiscoveryUI(socket);
-            }
-            if (typeof TableSorter === 'function') {
-                window.tableSorter = new TableSorter('discovery-table');
-            }
-            if (typeof initializeSiteChrome === 'function') {
-                initializeSiteChrome();
-            }
-            if (typeof initializeUpdateModal === 'function') {
-                initializeUpdateModal(socket, {
-                    showReportStatus: window.showReportStatus
-                });
-            }
-            if (typeof initializeAutoUpdateBanner === 'function') {
-                initializeAutoUpdateBanner(socket);
-            }
-            if (typeof initializeLayoutRuntime === 'function') {
-                initializeLayoutRuntime();
-            }
-            if (typeof initializeReportsTab === 'function') {
-                initializeReportsTab();
-            }
-            if (typeof initializeSettingsTab === 'function') {
-                initializeSettingsTab(socket);
-            }
-            if (typeof initializeAutoScanUI === 'function') {
-                initializeAutoScanUI(socket, {
-                    getClientJobs: window.getClientJobs,
-                    getLastScanTarget: window.getLastScanTarget
-                });
-            }
-            if (typeof initializeReportGenerationUI === 'function') {
-                initializeReportGenerationUI(socket, {
-                    getClientJobs: window.getClientJobs
-                });
-            }
-            if (typeof initializeCustomerUI === 'function') {
-                initializeCustomerUI(socket);
-            }
-            if (typeof initializeMonitoringHub === 'function') {
-                initializeMonitoringHub(socket);
-            }
-            if (typeof initializeAuditLog === 'function') {
-                initializeAuditLog();
-            }
-        }
-
-        document.getElementById('reload-last-scan-btn').addEventListener('click', function() {
-            // Try localStorage first (faster, more current); fall back to server XML
-            if (!loadHostsFromStorage()) {
-                if (window.currentMatchedCustomerId && window.currentMatchedCustomerId !== 'unknown') {
-                    socket.emit('resume_from_last_scan', {
-                        customer_id: window.currentMatchedCustomerId,
-                        max_days: 30
-                    });
-                }
-            }
-        });
-        bootstrapTemplateApp();
-
-    </script>
+    <script src="/static/js/template_bootstrap.js"></script>
     
     <!-- Auto Scan Time Modal -->
     <div id="auto-scan-modal" class="hidden modal-overlay z-50">
         <div class="modal-panel max-w-md p-6">
             <div class="flex items-center justify-between mb-4">
                 <h3 class="text-lg font-display italic text-olive-900">Set Auto Scan Times</h3>
-                <button onclick="hideAutoScanTimeModal()" class="icon-button size-8 text-xl" aria-label="Close auto scan schedule dialog">&times;</button>
+                <button data-action="hideAutoScanTimeModal" class="icon-button size-8 text-xl" aria-label="Close auto scan schedule dialog">&times;</button>
             </div>
 
             <div class="space-y-4">
@@ -1748,13 +1616,13 @@
                 </div>
 
                 <div class="flex gap-3 pt-4">
-                    <button onclick="saveAutoScanTimes()" class="action-button action-button-primary flex-1">
+                    <button data-action="saveAutoScanTimes" class="action-button action-button-primary flex-1">
                         Enable Auto Scan
                     </button>
-                    <button onclick="saveAndRunScan()" class="action-button action-button-primary flex-1">
+                    <button data-action="saveAndRunScan" class="action-button action-button-primary flex-1">
                         Save and Run Scan
                     </button>
-                    <button onclick="hideAutoScanTimeModal()" class="action-button action-button-secondary">
+                    <button data-action="hideAutoScanTimeModal" class="action-button action-button-secondary">
                         Cancel
                     </button>
                 </div>
@@ -1771,6 +1639,7 @@
     <script src="/static/js/auto_update_banner.js"></script>
     <script src="/static/js/asset_details_modal.js"></script>
     <script src="/static/js/layout_runtime.js"></script>
+    <script src="/static/js/history_modal.js"></script>
     <script src="/static/js/table_sorter.js"></script>
     <script src="/static/js/site_chrome.js"></script>
     <script src="/static/js/reports_tab.js"></script>
@@ -1779,6 +1648,7 @@
     <script src="/static/js/customer_ui.js"></script>
     <script src="/static/js/report_generation_ui.js"></script>
     <script src="/static/js/audit_log.js"></script>
+    <script src="/static/js/template_actions.js"></script>
 
     <!-- ── Audit Log Panel ─────────────────────────────────────────────── -->
     <div id="log-panel" class="hidden fixed bottom-0 left-0 right-0 z-50 flex flex-col" style="height:320px;">
@@ -1789,9 +1659,9 @@
                 <span id="log-entry-count" class="text-xs font-mono text-olive-500">0 entries</span>
             </div>
             <div class="flex items-center gap-2">
-                <button onclick="copyLog()" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Copy</button>
-                <button onclick="clearLog()" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Clear</button>
-                <button onclick="toggleLogPanel()" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Close</button>
+                <button data-action="copyLog" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Copy</button>
+                <button data-action="clearLog" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Clear</button>
+                <button data-action="toggleLogPanel" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Close</button>
             </div>
         </div>
         <div id="log-entries" class="flex-1 overflow-y-auto bg-olive-950 font-mono text-xs px-4 py-2 space-y-0.5"></div>

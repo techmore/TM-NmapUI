@@ -20,6 +20,39 @@ function getSettingsStorageKey() {
     return 'gemini-nmap-settings';
 }
 
+function loadLocalSettingsWithoutSecrets() {
+    let saved;
+    try {
+        saved = JSON.parse(localStorage.getItem(getSettingsStorageKey()) || 'null');
+    } catch (error) {
+        return null;
+    }
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return null;
+
+    // Older versions kept the remote-sync key in localStorage. Remove it before
+    // applying the settings so a password field cannot silently restore it.
+    if (Object.prototype.hasOwnProperty.call(saved, 'remoteSyncApiKey')) {
+        const safeSettings = { ...saved };
+        delete safeSettings.remoteSyncApiKey;
+        try {
+            localStorage.removeItem(getSettingsStorageKey());
+            localStorage.setItem(getSettingsStorageKey(), JSON.stringify(safeSettings));
+        } catch (error) {
+            // At minimum, remove the legacy copy of the secret if rewriting the
+            // non-secret preferences fails (for example, due to storage quota).
+            try { localStorage.removeItem(getSettingsStorageKey()); } catch (_) {}
+        }
+        saved = safeSettings;
+    }
+    return saved;
+}
+
+function saveLocalSettingsWithoutSecrets(settings) {
+    const safeSettings = { ...settings };
+    delete safeSettings.remoteSyncApiKey;
+    localStorage.setItem(getSettingsStorageKey(), JSON.stringify(safeSettings));
+}
+
 function escapeSettingsHTML(value) {
     return String(value).replace(/[&<>"']/g, char => ({
         '&': '&amp;',
@@ -40,6 +73,7 @@ function collectSettingsForm() {
         autoMonitorRecurrence: document.getElementById('settings-auto-monitor-recurrence')?.value || 'weekly',
         autoMonitorDay: document.getElementById('settings-auto-monitor-day')?.value || 'sunday',
         autoMonitorTime: document.getElementById('settings-auto-monitor-time')?.value || '01:00',
+        autoMonitorTimezone: document.getElementById('settings-auto-monitor-timezone')?.value?.trim() || '',
         googleDriveEnabled: document.getElementById('settings-google-drive-enabled')?.checked || false,
         googleDriveFolder: document.getElementById('settings-google-drive-folder')?.value || '',
         remoteSyncEnabled: document.getElementById('settings-remote-sync-enabled')?.checked || false,
@@ -58,6 +92,7 @@ function applySettingsForm(settings) {
     if (document.getElementById('settings-auto-monitor-recurrence')) document.getElementById('settings-auto-monitor-recurrence').value = settings.autoMonitorRecurrence || 'weekly';
     if (document.getElementById('settings-auto-monitor-day')) document.getElementById('settings-auto-monitor-day').value = settings.autoMonitorDay || 'sunday';
     if (document.getElementById('settings-auto-monitor-time')) document.getElementById('settings-auto-monitor-time').value = settings.autoMonitorTime || '01:00';
+    if (document.getElementById('settings-auto-monitor-timezone')) document.getElementById('settings-auto-monitor-timezone').value = settings.autoMonitorTimezone || '';
     if (document.getElementById('settings-google-drive-enabled')) document.getElementById('settings-google-drive-enabled').checked = !!settings.googleDriveEnabled;
     if (document.getElementById('settings-google-drive-folder')) document.getElementById('settings-google-drive-folder').value = settings.googleDriveFolder || '';
     if (document.getElementById('settings-remote-sync-enabled')) document.getElementById('settings-remote-sync-enabled').checked = !!settings.remoteSyncEnabled;
@@ -129,6 +164,14 @@ function applyServerSettingsDocument(doc = {}) {
         remoteSyncEnabled: !!(sync.remote_sync || {}).enabled,
         remoteSyncEndpoint: (sync.remote_sync || {}).endpoint || '',
     });
+    const remoteSyncKey = document.getElementById('settings-remote-sync-api-key');
+    if (remoteSyncKey) remoteSyncKey.value = '';
+    const remoteSyncKeyStatus = document.getElementById('settings-remote-sync-key-status');
+    if (remoteSyncKeyStatus) {
+        remoteSyncKeyStatus.textContent = (sync.remote_sync || {}).api_key_configured
+            ? 'A key is stored encrypted on this scanner. Leave this field blank to keep it, or enter a replacement.'
+            : 'No key is stored on this scanner.';
+    }
     // Auto-monitor defaults come from the server document, not localStorage.
     const defaults = (doc.auto_monitor || {}).defaults || {};
     if (document.getElementById('settings-auto-monitor-enabled-by-default')) {
@@ -142,6 +185,9 @@ function applyServerSettingsDocument(doc = {}) {
     }
     if (document.getElementById('settings-auto-monitor-time')) {
         document.getElementById('settings-auto-monitor-time').value = defaults.time || '01:00';
+    }
+    if (document.getElementById('settings-auto-monitor-timezone')) {
+        document.getElementById('settings-auto-monitor-timezone').value = defaults.timezone || '';
     }
     renderGoogleDriveSummary({ config: sync.google_drive || {}, status: {} });
 }
@@ -176,12 +222,7 @@ async function fetchServerSettings() {
 }
 
 async function loadSettingsTab() {
-    let saved = null;
-    try {
-        saved = JSON.parse(localStorage.getItem(getSettingsStorageKey()) || 'null');
-    } catch (error) {
-        saved = null;
-    }
+    const saved = loadLocalSettingsWithoutSecrets();
     if (saved) applySettingsForm(saved);
     window.socket?.emit('get_google_drive_status');
     renderSettingsRuntimeSummary();
@@ -206,6 +247,7 @@ function buildAutoMonitorDefaultsPayload(settings, existingDoc = {}) {
             recurrence: settings.autoMonitorRecurrence || defaults.recurrence || 'weekly',
             day_of_week: settings.autoMonitorDay || defaults.day_of_week || 'sunday',
             time: settings.autoMonitorTime || defaults.time || '01:00',
+            timezone: settings.autoMonitorTimezone || '',
         },
         rules: Array.isArray(existing.rules) ? existing.rules : [],
     };
@@ -252,7 +294,7 @@ async function saveSettingsTab() {
     let settings;
     try {
         settings = collectSettingsForm();
-        localStorage.setItem(getSettingsStorageKey(), JSON.stringify(settings));
+        saveLocalSettingsWithoutSecrets(settings);
     } catch (error) {
         setSettingsStatus('Failed to save local settings.', true);
         return;
@@ -279,6 +321,7 @@ async function saveSettingsTab() {
             throw new Error(payload.error || `Save failed (${response.status})`);
         }
         pendingTargetProfiles = [];
+        applyServerSettingsDocument(payload.settings || {});
         renderSettingsRuntimeSummary();
         setSettingsStatus('Settings saved to the local runtime and this browser.');
     } catch (error) {

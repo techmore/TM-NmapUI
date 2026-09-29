@@ -16,13 +16,11 @@ import base64
 import hashlib
 import hmac
 import json
-import logging
-import os
 import secrets
 import time
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from .private_storage import load_or_create_private_bytes
 
 SESSION_COOKIE = "nmapui_session"
 # ~13 months: comfortably longer than the one-year unattended target.
@@ -41,30 +39,12 @@ def _b64d(text: str) -> bytes:
 
 
 def load_or_create_secret(secret_path: Path) -> bytes:
-    """Return the persisted signing key, creating it with 0600 if needed."""
-    try:
-        existing = secret_path.read_bytes()
-        if len(existing) >= _SECRET_BYTES:
-            return existing
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        logger.error("Could not read session secret %s: %s", secret_path, exc)
-
-    secret = secrets.token_bytes(_SECRET_BYTES)
-    tmp_path = secret_path.with_name(secret_path.name + ".tmp")
-    try:
-        secret_path.parent.mkdir(parents=True, exist_ok=True)
-        # Create with restrictive permissions up front; chmod-after-write leaves
-        # a umask-dependent window where the key is world-readable.
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(secret)
-        os.replace(tmp_path, secret_path)
-        os.chmod(secret_path, 0o600)
-    except OSError as exc:
-        logger.error("Could not persist session secret %s: %s", secret_path, exc)
-    return secret
+    """Return one durable signing key, or fail closed if it cannot be stored."""
+    return load_or_create_private_bytes(
+        secret_path,
+        lambda: secrets.token_bytes(_SECRET_BYTES),
+        minimum_size=_SECRET_BYTES,
+    )
 
 
 def issue_token(secret: bytes, username: str, *, now=None, ttl=SESSION_TTL_SECONDS) -> str:
