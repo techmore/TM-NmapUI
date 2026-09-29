@@ -68,6 +68,14 @@ changes correct the contracts/dependencies and protect that runner directory;
 the production safety check remains unchanged. Hosted validation of the
 follow-up revision is required.
 
+The second hosted run on `3f8e033a` passed unit/contract tests, asset
+reproducibility and the dependency audit. It exposed an additional writable
+runner parent (`/opt`) during actual service installation and a font test that
+checked readiness before explicitly requesting the face. CI now protects both
+runner directories, and the font regression requires successfully loaded real
+faces. The first run's macOS packaged job passed. These follow-up checks still
+require a green hosted run on the final candidate.
+
 ## Gates still requiring external evidence or decisions
 
 - Run hosted CI on the candidate revision, including the new Ubuntu job.

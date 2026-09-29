@@ -424,9 +424,16 @@ def test_browser_security_policy_blocks_inline_scripts_and_delegates_actions(
         )
 
         page.locator("#scan-target").wait_for()
-        page.evaluate("document.fonts.ready")
-        assert page.evaluate("document.fonts.check('16px Inter')")
-        assert page.evaluate("document.fonts.check('16px \\\"Instrument Serif\\\"')")
+        for font in ('16px Inter', '16px "Instrument Serif"'):
+            # FontFaceSet.ready can resolve before a later layout requests a
+            # swap font. Explicitly load the Latin face and require a real face.
+            assert page.evaluate(
+                """async (font) => {
+                    const faces = await document.fonts.load(font, 'Network Scanner');
+                    return faces.length > 0 && faces.every(face => face.status === 'loaded')
+                        && document.fonts.check(font, 'Network Scanner');
+                }""", font,
+            )
         assert page.locator('link[href="/static/vendor/fonts.css"]').count() == 1
         assert page.evaluate("typeof window.lucide?.createIcons === 'function'")
         assert page.locator("script:not([src])").count() == 0
