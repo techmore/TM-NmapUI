@@ -268,8 +268,8 @@ function renderHistoryContextPanel(scans) {
                 <h3 class="mt-2 text-2xl font-display italic text-olive-950">${escapeHTMLValue(latestScan.customer_name || 'Unknown')}</h3>
                 <p class="mt-1 text-sm text-olive-700">Target: <span class="font-mono">${escapeHTMLValue(latestScan.target || '--')}</span></p>
                 <p class="mt-1 text-sm text-olive-600">Latest scan: ${formatScanTimestamp(latestScan)}</p>
-                <p class="mt-2 text-sm text-olive-700">${assetCount !== null ? `${assetCount} asset(s) in the saved snapshot.` : 'Asset snapshot unavailable for this saved scan.'}</p>
-                <p class="mt-1 text-sm text-olive-700">${diffSummary?.has_changes ? 'Changes detected since the previous scan.' : 'No recorded changes since the previous scan.'}</p>
+                <p class="mt-2 text-sm text-olive-700">${latestScan.record_type === 'scan_run' ? `Reported hosts: ${escapeHTMLValue(String(latestScan.host_count ?? 'not reported'))}. Expand saved host and port results below.` : (assetCount !== null ? `${assetCount} asset(s) in the saved snapshot.` : 'Asset snapshot unavailable for this saved scan.')}</p>
+                <p class="mt-1 text-sm text-olive-700">${diffSummary ? (diffSummary.has_changes ? 'Changes detected since the previous scan.' : 'No recorded changes since the previous scan.') : 'Comparison unavailable for this saved scan.'}</p>
             </div>
         </div>
     `;
@@ -578,7 +578,7 @@ function renderHistoryTab(scans) {
     renderHistoryContextPanel(usingCurrentContext ? contextScans : []);
 
     if (!visibleScans.length) {
-        setTabStatus('history-tab-status', 'No scan history found yet.');
+        setTabStatus('history-tab-status', usingCurrentContext && scans.length ? 'No saved scans for this network context. Choose Show all history to view other targets.' : 'No scan history found yet.');
         return;
     }
 
@@ -586,8 +586,8 @@ function renderHistoryTab(scans) {
     setTabStatus(
         'history-tab-status',
         usingCurrentContext
-            ? `Showing ${visibleScans.length} scan(s) for the current network context.`
-            : ''
+            ? `Showing ${visibleScans.length} scan(s) for the current network context. Scan-run history includes up to 200 recent runs.`
+            : `Showing ${visibleScans.length} saved record(s). Scan-run history includes up to 200 recent runs.`
     );
     visibleScans.forEach((scan) => {
         const timeline = timelineLabels.get(scan.path) || {};
