@@ -3,6 +3,7 @@ let reportsTabLoaded = false;
 let historyTabLoaded = false;
 let currentAppTab = 'dashboard';
 let historyCompareBasePath = null;
+let historyCompareBaseTarget = null;
 let reportsCustomerFilter = 'all';
 let historyViewMode = 'current';
 
@@ -301,6 +302,13 @@ function renderHistoryContextPanel(scans) {
     panel.classList.remove('hidden');
 }
 
+function revealHistoryComparison(panel) {
+    panel.classList.remove('hidden');
+    panel.tabIndex = -1;
+    panel.focus({preventScroll: true});
+    panel.scrollIntoView({block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+}
+
 function renderHistoryCompareResult(payload) {
     const panel = document.getElementById('history-compare-panel');
     const summary = document.getElementById('history-compare-summary');
@@ -382,7 +390,7 @@ function renderHistoryCompareResult(payload) {
         details.appendChild(changedSection);
     }
 
-    panel.classList.remove('hidden');
+    revealHistoryComparison(panel);
 }
 
 function renderScanObservationComparison(payload) {
@@ -406,7 +414,7 @@ function renderScanObservationComparison(payload) {
         row.textContent = `${change.ip} ${change.port}/${change.protocol}: ${label(change.previous)} → ${label(change.current)}`;
         details.appendChild(row);
     });
-    panel.classList.remove('hidden');
+    revealHistoryComparison(panel);
 }
 
 async function compareHistoryScans(basePath, currentPath) {
@@ -562,10 +570,11 @@ function createHistoryCard(scan, options = {}) {
         const selectBaseButton = document.createElement('button');
         selectBaseButton.type = 'button';
         selectBaseButton.className = 'action-button action-button-secondary action-button-compact';
-        selectBaseButton.disabled = scan.record_type === 'scan_run' && scan.status !== 'completed';
+        selectBaseButton.disabled = scan.record_type === 'scan_run' && (scan.status !== 'completed' || scan.host_count === 0);
         selectBaseButton.textContent = historyCompareBasePath === scan.path ? 'Base Selected' : 'Select Base';
         selectBaseButton.addEventListener('click', () => {
             historyCompareBasePath = historyCompareBasePath === scan.path ? null : scan.path;
+            historyCompareBaseTarget = historyCompareBasePath ? scan.target : null;
             renderCompareStatus(
                 historyCompareBasePath
                     ? `Base scan selected: ${formatScanTimestamp(scan)}`
@@ -580,7 +589,7 @@ function createHistoryCard(scan, options = {}) {
         compareButton.type = 'button';
         compareButton.className = 'action-button action-button-primary action-button-compact';
         compareButton.textContent = 'Compare to Base';
-        compareButton.disabled = !historyCompareBasePath || historyCompareBasePath === scan.path || (historyCompareBasePath.startsWith('runtime-job:') !== scan.path.startsWith('runtime-job:')) || (scan.record_type === 'scan_run' && scan.status !== 'completed');
+        compareButton.disabled = !historyCompareBasePath || historyCompareBasePath === scan.path || (historyCompareBasePath.startsWith('runtime-job:') !== scan.path.startsWith('runtime-job:')) || (scan.record_type === 'scan_run' && (scan.status !== 'completed' || scan.host_count === 0 || historyCompareBaseTarget !== scan.target));
         compareButton.classList.toggle('opacity-50', compareButton.disabled);
         compareButton.addEventListener('click', () => {
             if (!historyCompareBasePath || historyCompareBasePath === scan.path) {
@@ -603,7 +612,7 @@ function renderHistoryTab(scans) {
 
     list.replaceChildren();
     const contextScans = filterScansToCurrentContext(scans);
-    const usingCurrentContext = historyViewMode === 'current';
+    const usingCurrentContext = historyViewMode === 'current' && getCurrentHistoryContext().hasContext;
     const visibleScans = usingCurrentContext ? contextScans : scans;
     renderHistoryContextPanel(usingCurrentContext ? contextScans : []);
 
