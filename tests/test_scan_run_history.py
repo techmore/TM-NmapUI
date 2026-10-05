@@ -1,5 +1,5 @@
 import json
-from nmapui.runtime_scan_history import scan_run_rows, scan_run_details
+from nmapui.runtime_scan_history import scan_run_rows, scan_run_details, public_scan_id
 from nmapui.runtime_history import build_history_rows
 
 
@@ -32,7 +32,7 @@ def test_scan_only_runs_appear_without_report_artifacts():
 
 
 def test_details_expose_port_evidence_without_session_or_raw_output():
-    result = scan_run_details(Store(), 'source-job:abc')
+    result = scan_run_details(Store(), public_scan_id('source-job:abc'))
     assert result['hosts'][0]['ports'][0]['port'] == '22'
     assert result['bounded'] is False
     assert 'private-' not in json.dumps(result)
@@ -46,7 +46,9 @@ def test_malformed_payloads_are_ignored():
         def list_job_events(self, **kwargs):
             return [{'event_name': 'deep_scan_results', 'payload': [{'ip': '127.0.0.1', 'ports': 'bad'}, None]}]
     assert scan_run_rows(Broken())[0]['target'] == ''
-    assert scan_run_details(Broken(), 'source-job:abc')['hosts'][0]['ports'] == []
+    broken = Broken()
+    broken.list_jobs = Store().list_jobs
+    assert scan_run_details(broken, public_scan_id('source-job:abc'))['hosts'][0]['ports'] == []
 
 
 def test_saved_result_route_requires_auth_and_rejects_non_scan_jobs(monkeypatch):
@@ -59,10 +61,28 @@ def test_saved_result_route_requires_auth_and_rejects_non_scan_jobs(monkeypatch)
     app = Flask(__name__)
     register_core_routes(app, {'runtime_store': Store(), 'build_liveness_payload': lambda **kw: {}, 'build_readiness_payload': lambda **kw: ({}, 200), 'get_app_version': lambda: 'test', 'get_default_interface_cached': lambda: 'en0', 'get_versions': lambda: {}, 'job_registry': None, 'settings_state': {}, 'startup_state': {}, 'get_auto_scan_thread': lambda: None})
     client = app.test_client()
-    assert client.get('/api/runtime/scan-runs/source-job:abc').status_code != 200
+    assert client.get('/api/runtime/scan-runs/' + public_scan_id('source-job:abc')).status_code != 200
     headers = {'Authorization': 'Basic ' + base64.b64encode(b'scanner:test-only-password').decode()}
-    response = client.get('/api/runtime/scan-runs/source-job:abc', headers=headers)
+    response = client.get('/api/runtime/scan-runs/' + public_scan_id('source-job:abc'), headers=headers)
     assert response.status_code == 200
     assert response.headers['Cache-Control'] == 'no-store'
     assert response.json['hosts'][0]['ip'] == '127.0.0.1'
     assert client.get('/api/runtime/scan-runs/command:1', headers=headers).status_code == 404
+
+
+def test_legacy_session_identifiers_are_not_exposed():
+    class Legacy(Store):
+        def list_jobs(self, **kwargs):
+            return [{'job_id': 'private-session:scan', 'owner_sid': 'private-session', 'status': 'completed', 'payload': {}}]
+    rows = scan_run_rows(Legacy())
+    assert 'private-session' not in json.dumps(rows)
+    assert len(rows[0]['job_id']) == 64
+
+
+def test_oversized_port_evidence_is_marked_as_partial():
+    class Large(Store):
+        def list_job_events(self, **kwargs):
+            return [{'event_name': 'deep_scan_results', 'payload': [{'ip': '127.0.0.1', 'ports': [{'port': '22'}] * 1025}]}]
+    result = scan_run_details(Large(), public_scan_id('source-job:abc'))
+    assert result['bounded']
+    assert len(result['hosts'][0]['ports']) == 1024

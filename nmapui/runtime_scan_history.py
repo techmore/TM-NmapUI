@@ -1,5 +1,11 @@
 """Public projections of persisted scanner jobs; no session or command secrets."""
 
+import hashlib
+
+
+def public_scan_id(job_id):
+    return hashlib.sha256(str(job_id).encode()).hexdigest()
+
 
 def scan_run_rows(store):
     if store is None or not hasattr(store, 'list_jobs'):
@@ -9,8 +15,8 @@ def scan_run_rows(store):
         payload = job.get('payload') if isinstance(job.get('payload'), dict) else {}
         details = payload.get('details') if isinstance(payload.get('details'), dict) else {}
         rows.append({
-            'record_type': 'scan_run', 'job_id': job['job_id'],
-            'path': 'runtime-job:' + job['job_id'],
+            'record_type': 'scan_run', 'job_id': public_scan_id(job['job_id']),
+            'path': 'runtime-job:' + public_scan_id(job['job_id']),
             'timestamp': job.get('created_at', ''),
             'updated_at': job.get('updated_at', ''),
             'target': str(details.get('target') or '')[:255],
@@ -23,8 +29,13 @@ def scan_run_rows(store):
 
 
 def scan_run_details(store, job_id):
-    job = store.get_job(job_id) if store is not None else None
-    if not job or job.get('job_type') != 'scan':
+    if store is None or not hasattr(store, 'list_jobs'):
+        return None
+    job = next((row for row in store.list_jobs(job_type='scan', limit=200) if public_scan_id(row['job_id']) == job_id), None)
+    if not job:
+        return None
+    job_id = job['job_id']
+    if job.get('job_type', 'scan') != 'scan':
         return None
     hosts = {}
     truncated = False
