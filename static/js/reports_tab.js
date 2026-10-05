@@ -477,7 +477,7 @@ function createHistoryCard(scan, options = {}) {
     if (scan.record_type === 'scan_run') {
         const facts = document.createElement('p');
         facts.className = 'mt-3 text-sm text-olive-800';
-        facts.textContent = `Status: ${scan.status || 'unknown'} · Hosts: ${scan.host_count ?? 'not reported'} · PDF not generated for this run`;
+        facts.textContent = `Status: ${scan.status || 'unknown'} · Hosts: ${scan.host_count ?? 'not reported'} · Local PDF: unavailable`;
         card.appendChild(facts);
         const evidence = document.createElement('details');
         evidence.className = 'mt-4 rounded-xl border border-olive-200 bg-white/70 p-3';
