@@ -31,6 +31,7 @@ from nmapui.runtime_history import (
     build_history_rows,
     normalize_runtime_report_row,
 )
+from nmapui.runtime_scan_history import scan_run_details
 from nmapui.runtime_log import append_runtime_log
 from nmapui.runtime_db import (
     DEFAULT_CUSTOMER_SCAN_HISTORY_RETENTION,
@@ -460,6 +461,14 @@ def register_core_routes(app, deps):
             customer_fingerprinter=customer_fingerprinter,
         )
         return jsonify({"history": history})
+
+    @app.route("/api/runtime/scan-runs/<path:job_id>")
+    @require_auth
+    def runtime_scan_run_details(job_id):
+        result = scan_run_details(runtime_store, job_id)
+        response = jsonify(result if result is not None else {"error": "Scan run not found"})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 200 if result is not None else 404
 
     @app.route("/api/runtime/history/<path:scan_path>", methods=["DELETE"])
     @require_auth

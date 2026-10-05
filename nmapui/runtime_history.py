@@ -1,3 +1,4 @@
+from nmapui.runtime_scan_history import scan_run_rows
 from nmapui.reporting import (
     build_artifact_downloads,
     find_previous_scan_metadata,
@@ -182,6 +183,8 @@ def build_history_rows(
                 "baseline_timestamp": previous.get("timestamp", ""),
             }
 
+    history.extend(scan_run_rows(runtime_store))
+    history.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
     return history
 
 

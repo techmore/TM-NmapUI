@@ -474,7 +474,38 @@ function createHistoryCard(scan, options = {}) {
         }
     }
 
-    card.appendChild(createHistoryDetailBlock(scan));
+    if (scan.record_type === 'scan_run') {
+        const facts = document.createElement('p');
+        facts.className = 'mt-3 text-sm text-olive-800';
+        facts.textContent = `Status: ${scan.status || 'unknown'} · Hosts: ${scan.host_count ?? 'not reported'} · PDF not generated for this run`;
+        card.appendChild(facts);
+        const evidence = document.createElement('details');
+        evidence.className = 'mt-4 rounded-xl border border-olive-200 bg-white/70 p-3';
+        const summary = document.createElement('summary'); summary.textContent = 'Saved host and port results';
+        const body = document.createElement('div'); body.className = 'mt-3 text-sm text-olive-800';
+        evidence.append(summary, body); card.appendChild(evidence);
+        let loaded = false;
+        evidence.addEventListener('toggle', async () => {
+            if (!evidence.open || loaded) return;
+            body.textContent = 'Loading saved results…';
+            try {
+                const response = await fetch(`/api/runtime/scan-runs/${encodeURIComponent(scan.job_id)}`);
+                if (!response.ok) throw new Error('Saved results unavailable. Close and reopen to retry.');
+                const data = await response.json(); body.replaceChildren();
+                const scope = document.createElement('p'); scope.textContent = data.evidence_scope; body.appendChild(scope);
+                if (!data.hosts.length) { const empty = document.createElement('p'); empty.textContent = 'No saved deep scan results for this run.'; body.appendChild(empty); }
+                data.hosts.forEach(host => {
+                    const heading = document.createElement('h4'); heading.className = 'mt-3 font-mono font-semibold'; heading.textContent = host.ip; body.appendChild(heading);
+                    const list = document.createElement('ul');
+                    host.ports.forEach(port => { const row = document.createElement('li'); row.textContent = `${port.port}/${port.protocol} · ${port.state} · ${port.service}`; list.appendChild(row); });
+                    if (!host.ports.length) { const empty = document.createElement('li'); empty.textContent = 'No ports reported.'; list.appendChild(empty); }
+                    body.appendChild(list);
+                });
+                if (data.bounded) { const warning = document.createElement('p'); warning.textContent = 'This view is limited to recent saved evidence; it may not contain the whole run.'; body.appendChild(warning); }
+                loaded = true;
+            } catch (error) { body.textContent = error.message; }
+        });
+    } else { card.appendChild(createHistoryDetailBlock(scan)); }
 
     const actions = document.createElement('div');
     actions.className = 'mt-4 flex flex-wrap gap-2';
@@ -498,7 +529,7 @@ function createHistoryCard(scan, options = {}) {
         actions.appendChild(uploadButton);
     }
 
-    if (options.enableCompare) {
+    if (options.enableCompare && scan.record_type !== 'scan_run') {
         const selectBaseButton = document.createElement('button');
         selectBaseButton.type = 'button';
         selectBaseButton.className = 'action-button action-button-secondary action-button-compact';
