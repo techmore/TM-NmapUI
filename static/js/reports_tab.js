@@ -269,7 +269,7 @@ function renderHistoryContextPanel(scans) {
                 <p class="mt-1 text-sm text-olive-700">Target: <span class="font-mono">${escapeHTMLValue(latestScan.target || '--')}</span></p>
                 <p class="mt-1 text-sm text-olive-600">Latest scan: ${formatScanTimestamp(latestScan)}</p>
                 <p class="mt-2 text-sm text-olive-700">${latestScan.record_type === 'scan_run' ? `Reported hosts: ${escapeHTMLValue(String(latestScan.host_count ?? 'not reported'))}. Expand saved host and port results below.` : (assetCount !== null ? `${assetCount} asset(s) in the saved snapshot.` : 'Asset snapshot unavailable for this saved scan.')}</p>
-                <p class="mt-1 text-sm text-olive-700">${diffSummary ? (diffSummary.has_changes ? 'Changes detected since the previous scan.' : 'No recorded changes since the previous scan.') : 'Comparison unavailable for this saved scan.'}</p>
+                <p class="mt-1 text-sm text-olive-700">${diffSummary ? (diffSummary.has_changes ? 'Changes detected since the previous scan.' : 'No recorded changes since the previous scan.') : (latestScan.record_type === 'scan_run' ? 'Select two completed runs with saved deep scan evidence to compare observations.' : 'Comparison unavailable for this saved scan.')}</p>
             </div>
         </div>
     `;
@@ -385,19 +385,47 @@ function renderHistoryCompareResult(payload) {
     panel.classList.remove('hidden');
 }
 
+function renderScanObservationComparison(payload) {
+    const panel = document.getElementById('history-compare-panel');
+    const summary = document.getElementById('history-compare-summary');
+    const details = document.getElementById('history-compare-details');
+    if (!panel || !summary || !details) return;
+    details.replaceChildren();
+    summary.textContent = `${payload.target}: ${payload.port_observation_changes.length} port observation difference(s)`;
+    const scope = document.createElement('p'); scope.textContent = payload.scope; details.appendChild(scope);
+    for (const [label, values] of [['Additional host observations', payload.added_host_observations], ['Missing host observations', payload.missing_host_observations]]) {
+        if (!values.length) continue;
+        const text = document.createElement('p'); text.textContent = `${label}: ${values.join(', ')}`; details.appendChild(text);
+    }
+    if (!payload.port_observation_changes.length && !payload.added_host_observations.length && !payload.missing_host_observations.length) {
+        const text = document.createElement('p'); text.textContent = 'Saved observations match. This does not verify equivalent scan coverage.'; details.appendChild(text);
+    }
+    payload.port_observation_changes.forEach(change => {
+        const row = document.createElement('p'); row.className = 'mt-2 text-sm font-mono';
+        const label = value => value ? value.join(' · ') : 'not observed';
+        row.textContent = `${change.ip} ${change.port}/${change.protocol}: ${label(change.previous)} → ${label(change.current)}`;
+        details.appendChild(row);
+    });
+    panel.classList.remove('hidden');
+}
+
 async function compareHistoryScans(basePath, currentPath) {
     renderCompareStatus('Comparing selected scans...');
     try {
-        const response = await fetch(
-            `/api/runtime/history/compare?base_path=${encodeURIComponent(basePath)}&current_path=${encodeURIComponent(currentPath)}`
-        );
+        const localRuns = basePath.startsWith('runtime-job:') && currentPath.startsWith('runtime-job:');
+        if (basePath.startsWith('runtime-job:') !== currentPath.startsWith('runtime-job:')) throw new Error('Select two scan runs or two report artifacts.');
+        const endpoint = localRuns
+            ? `/api/runtime/scan-runs/compare?base_id=${encodeURIComponent(basePath.slice(12))}&current_id=${encodeURIComponent(currentPath.slice(12))}`
+            : `/api/runtime/history/compare?base_path=${encodeURIComponent(basePath)}&current_path=${encodeURIComponent(currentPath)}`;
+        const response = await fetch(endpoint);
         if (!response.ok) {
             const payload = await response.json().catch(() => ({}));
             throw new Error(payload.error || `Failed to compare scans (${response.status})`);
         }
         const payload = await response.json();
         renderCompareStatus('');
-        renderHistoryCompareResult(payload);
+        if (payload.comparison_type === 'scan_observations') renderScanObservationComparison(payload);
+        else renderHistoryCompareResult(payload);
     } catch (error) {
         console.error('Error comparing scans:', error);
         renderCompareStatus(error.message || 'Failed to compare scans.', true);
@@ -493,6 +521,7 @@ function createHistoryCard(scan, options = {}) {
                 if (!response.ok) throw new Error('Saved results unavailable. Close and reopen to retry.');
                 const data = await response.json(); body.replaceChildren();
                 const scope = document.createElement('p'); scope.textContent = data.evidence_scope; body.appendChild(scope);
+                if (!data.evidence_valid) { const invalid = document.createElement('p'); invalid.textContent = 'Some saved evidence is invalid. This run cannot be compared.'; body.appendChild(invalid); }
                 if (!data.hosts.length) { const empty = document.createElement('p'); empty.textContent = 'No saved deep scan results for this run.'; body.appendChild(empty); }
                 data.hosts.forEach(host => {
                     const heading = document.createElement('h4'); heading.className = 'mt-3 font-mono font-semibold'; heading.textContent = host.ip; body.appendChild(heading);
@@ -529,10 +558,11 @@ function createHistoryCard(scan, options = {}) {
         actions.appendChild(uploadButton);
     }
 
-    if (options.enableCompare && scan.record_type !== 'scan_run') {
+    if (options.enableCompare) {
         const selectBaseButton = document.createElement('button');
         selectBaseButton.type = 'button';
         selectBaseButton.className = 'action-button action-button-secondary action-button-compact';
+        selectBaseButton.disabled = scan.record_type === 'scan_run' && scan.status !== 'completed';
         selectBaseButton.textContent = historyCompareBasePath === scan.path ? 'Base Selected' : 'Select Base';
         selectBaseButton.addEventListener('click', () => {
             historyCompareBasePath = historyCompareBasePath === scan.path ? null : scan.path;
@@ -550,7 +580,7 @@ function createHistoryCard(scan, options = {}) {
         compareButton.type = 'button';
         compareButton.className = 'action-button action-button-primary action-button-compact';
         compareButton.textContent = 'Compare to Base';
-        compareButton.disabled = !historyCompareBasePath || historyCompareBasePath === scan.path;
+        compareButton.disabled = !historyCompareBasePath || historyCompareBasePath === scan.path || (historyCompareBasePath.startsWith('runtime-job:') !== scan.path.startsWith('runtime-job:')) || (scan.record_type === 'scan_run' && scan.status !== 'completed');
         compareButton.classList.toggle('opacity-50', compareButton.disabled);
         compareButton.addEventListener('click', () => {
             if (!historyCompareBasePath || historyCompareBasePath === scan.path) {
@@ -594,7 +624,7 @@ function renderHistoryTab(scans) {
         list.appendChild(
             createHistoryCard(scan, {
                 enableCompare: true,
-                timelineLabel: timeline.label,
+                timelineLabel: usingCurrentContext ? timeline.label : (scan === visibleScans[0] ? 'Latest saved scan' : 'Earlier saved scan'),
                 timelineTone: timeline.tone,
             })
         );
@@ -686,7 +716,9 @@ function setTabButtonState(button, active) {
 }
 
 function switchAppTab(tabName) {
+    if (!['dashboard', 'history', 'reports', 'customers', 'logs', 'settings'].includes(tabName)) tabName = 'dashboard';
     currentAppTab = tabName;
+    if (window.location.hash !== `#${tabName}`) window.history.replaceState(null, '', `#${tabName}`);
 
     const panels = {
         dashboard: document.getElementById('dashboard-tab-panel'),
@@ -727,6 +759,8 @@ function initializeReportsTab() {
     }
     appTabsInitialized = true;
     ensureTabPanelsAreSiblings();
+    switchAppTab(window.location.hash.slice(1) || 'dashboard');
+    window.addEventListener('hashchange', () => switchAppTab(window.location.hash.slice(1)));
 
     document.getElementById('tab-dashboard-btn')?.addEventListener('click', () => switchAppTab('dashboard'));
     document.getElementById('tab-history-btn')?.addEventListener('click', () => switchAppTab('history'));

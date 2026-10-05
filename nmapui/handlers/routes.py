@@ -31,7 +31,7 @@ from nmapui.runtime_history import (
     build_history_rows,
     normalize_runtime_report_row,
 )
-from nmapui.runtime_scan_history import scan_run_details
+from nmapui.runtime_scan_history import scan_run_details, compare_scan_runs
 from nmapui.runtime_log import append_runtime_log
 from nmapui.runtime_db import (
     DEFAULT_CUSTOMER_SCAN_HISTORY_RETENTION,
@@ -461,6 +461,18 @@ def register_core_routes(app, deps):
             customer_fingerprinter=customer_fingerprinter,
         )
         return jsonify({"history": history})
+
+    @app.route("/api/runtime/scan-runs/compare")
+    @require_auth
+    def runtime_scan_run_compare():
+        try:
+            result = compare_scan_runs(runtime_store, request.args.get("base_id", ""), request.args.get("current_id", ""))
+        except ValueError as exc:
+            response = jsonify({"error": str(exc)})
+            response.headers["Cache-Control"] = "no-store"
+            return response, 422
+        response = jsonify(result); response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.route("/api/runtime/scan-runs/<path:job_id>")
     @require_auth

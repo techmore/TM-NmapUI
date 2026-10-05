@@ -86,3 +86,69 @@ def test_oversized_port_evidence_is_marked_as_partial():
     result = scan_run_details(Large(), public_scan_id('source-job:abc'))
     assert result['bounded']
     assert len(result['hosts'][0]['ports']) == 1024
+
+
+class ComparisonStore:
+    target = '127.0.0.1'
+    status = 'completed'
+    def list_jobs(self, **kwargs):
+        return [{'job_id': name, 'job_type': 'scan', 'status': self.status,
+                 'payload': {'details': {'target': self.target}}} for name in ('old', 'new')]
+    def list_job_events(self, *, job_id, limit):
+        return [{'event_name': 'deep_scan_results', 'payload': [{'ip': '127.0.0.1', 'ports': [
+            {'port': '22', 'protocol': 'tcp', 'state': 'open' if job_id == 'old' else 'filtered', 'service': 'ssh'}]}]}]
+
+
+def test_scan_comparison_reports_observations_without_remediation_claims():
+    from nmapui.runtime_scan_history import compare_scan_runs
+    result = compare_scan_runs(ComparisonStore(), public_scan_id('old'), public_scan_id('new'))
+    assert result['port_observation_changes'] == [{'ip': '127.0.0.1', 'protocol': 'tcp', 'port': '22', 'previous': ('open', 'ssh'), 'current': ('filtered', 'ssh')}]
+    assert 'do not prove removal or remediation' in result['scope']
+    assert not result['missing_host_observations']
+
+
+def test_scan_comparison_rejects_incomplete_invalid_or_truncated_evidence():
+    import pytest
+    from nmapui.runtime_scan_history import compare_scan_runs
+    store = ComparisonStore()
+    for status in ('failed', 'running', 'cancelled'):
+        store.status = status
+        with pytest.raises(ValueError): compare_scan_runs(store, public_scan_id('old'), public_scan_id('new'))
+    store.status = 'completed'
+    store.list_job_events = lambda **kw: [{'event_name': 'deep_scan_results', 'payload': []}]
+    with pytest.raises(ValueError): compare_scan_runs(store, public_scan_id('old'), public_scan_id('new'))
+    store.list_job_events = lambda **kw: [{'event_name': 'deep_scan_results', 'payload': [{'ip': '127.0.0.1', 'ports': [{'port': 'bad'}]}]}]
+    with pytest.raises(ValueError): compare_scan_runs(store, public_scan_id('old'), public_scan_id('new'))
+    store.list_job_events = lambda **kw: [{'event_name': 'deep_scan_results', 'payload': [{'ip': '127.0.0.1', 'ports': []}]}] * 500
+    with pytest.raises(ValueError): compare_scan_runs(store, public_scan_id('old'), public_scan_id('new'))
+
+
+def test_scan_comparison_requires_same_nonempty_target_and_distinct_runs():
+    import pytest
+    from nmapui.runtime_scan_history import compare_scan_runs
+    store = ComparisonStore()
+    with pytest.raises(ValueError): compare_scan_runs(store, public_scan_id('old'), public_scan_id('old'))
+    store.target = ''
+    with pytest.raises(ValueError): compare_scan_runs(store, public_scan_id('old'), public_scan_id('new'))
+    store.list_jobs = lambda **kw: [{'job_id': name, 'status': 'completed', 'payload': {'details': {'target': target}}} for name, target in [('old', '127.0.0.1'), ('new', '10.20.0.0/24')]]
+    with pytest.raises(ValueError): compare_scan_runs(store, public_scan_id('old'), public_scan_id('new'))
+
+
+def test_scan_comparison_route_is_authenticated_and_no_store(monkeypatch):
+    from flask import Flask
+    from nmapui.handlers.routes import register_core_routes
+    import base64
+    monkeypatch.setenv('NMAPUI_USERNAME', 'scanner')
+    monkeypatch.setenv('NMAPUI_PASSWORD', 'test-only-password')
+    monkeypatch.setenv('NMAPUI_TRUST_LOCAL_UI', 'false')
+    app = Flask(__name__)
+    register_core_routes(app, {'runtime_store': ComparisonStore(), 'build_liveness_payload': lambda **kw: {}, 'build_readiness_payload': lambda **kw: ({}, 200), 'get_app_version': lambda: 'test', 'get_default_interface_cached': lambda: 'en0', 'get_versions': lambda: {}, 'job_registry': None, 'settings_state': {}, 'startup_state': {}, 'get_auto_scan_thread': lambda: None})
+    client = app.test_client()
+    path = '/api/runtime/scan-runs/compare?base_id=' + public_scan_id('old') + '&current_id=' + public_scan_id('new')
+    assert client.get(path).status_code != 200
+    headers = {'Authorization': 'Basic ' + base64.b64encode(b'scanner:test-only-password').decode()}
+    response = client.get(path, headers=headers)
+    assert response.status_code == 200
+    assert response.headers['Cache-Control'] == 'no-store'
+    assert response.json['comparison_type'] == 'scan_observations'
+    assert client.get('/api/runtime/scan-runs/compare?base_id=missing&current_id=other', headers=headers).status_code == 422
