@@ -17,6 +17,8 @@ from nmapui.reporting import (
 )
 from nmapui.settings import get_effective_scan_rules
 from nmapui.networking import discovery_only_gateway_addresses
+from nmapui.host_identity import query_mdns_hostname
+from concurrent.futures import ThreadPoolExecutor
 from nmapui.validation import DEFAULT_MAX_TARGETS, count_target_addresses
 
 
@@ -412,6 +414,27 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
                 emit_to_client(sid, "arp_results", arp_data)
 
             emit_to_client(sid, "arp_scan_complete")
+
+        # Resolve missing names directly from observed clients, without depending
+        # on directory PTR records. Respect discovery-only gateway protection.
+        protected_names = set()
+        if scan_rules.get("firewall_discovery_only", True):
+            protected_names = set(discovery_only_gateway_addresses(context.get_client_state(sid=sid).get("network_key", {})))
+            _, gateway_names = identify_gateway_firewall_targets(hosts)
+            protected_names.update(h["ip"] for h in gateway_names)
+        unnamed = [h for h in sorted_hosts if not h.get("hostname") and h["ip"] not in protected_names and h.get("status")][:256]
+        if unnamed:
+            emit_to_client(sid, "scan_feedback", "Asking discovered clients directly for missing hostnames (mDNS). No reply does not mean offline.")
+            for start in range(0, len(unnamed), 8):
+                ensure_job_not_cancelled(sid, "scan")
+                batch = unnamed[start:start + 8]
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    identities = list(pool.map(lambda host: query_mdns_hostname(host["ip"]), batch))
+                ensure_job_not_cancelled(sid, "scan")
+                for host, identity in zip(batch, identities):
+                    if identity:
+                        host.update(identity)
+                socketio_sleep(0)
 
         display_hosts = []
         for host in sorted_hosts:
