@@ -228,3 +228,23 @@ def test_bridge_cannot_cancel_another_namespace_owned_scan(monkeypatch, tmp_path
     assert registry.get(tasks[0][0], "scan")["status"] == "running"
     assert any(item["command_id"] == 1002 and item["status"] == "failed" for item in receipts(emitted))
     first.disconnect(); second.disconnect()
+
+
+def test_observer_cancels_only_the_observed_scan(monkeypatch, tmp_path):
+    app, socket, store, broadcaster, registry, emitted, tasks = fixture(monkeypatch, tmp_path)
+    owner = client(app, socket, bridge=False)
+    observer = client(app, socket, bridge=False)
+    owner.emit("start_scan", {"target": "fixture"})
+    sid = tasks[0][0]
+    source = registry.get(sid, "scan")["source_job_id"]
+    observer.emit("cancel_job", {"job_type": "scan", "source_job_id": "stale"})
+    assert registry.get(sid, "scan")["status"] == "running"
+    observer.emit("cancel_job", {"job_type": "scan", "source_job_id": source})
+    assert registry.get(sid, "scan")["status"] == "cancelling"
+
+
+def test_registry_rejects_stale_cancellation():
+    registry = ClientJobRegistry()
+    registry.start("owner", "scan")
+    assert not registry.cancel("owner", "scan", expected_source_job_id="old-run")
+    assert registry.get("owner", "scan")["status"] == "running"

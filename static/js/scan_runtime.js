@@ -10,6 +10,7 @@ let activeScanPhase = null;
 let activePhaseStartedAt = null;
 let activePhaseTimer = null;
 let activeScanKind = null;
+let activeScanSourceJobId = null;
 
 function setText(id, value) {
     const el = document.getElementById(id);
@@ -325,6 +326,7 @@ function initializeScanRuntime(socket) {
     socket.on('job_status', (job = {}) => {
         if (job.job_type !== 'scan') return;
         if (job.status === 'running' || job.status === 'cancelling') {
+            activeScanSourceJobId = job.source_job_id || null;
             setScanUIActive(1, 'quick');
             if (activeScanPhase !== 1) startPhaseTimer(1, job.started_at);
         } else if (activeScanKind === 'quick') {
@@ -770,7 +772,7 @@ function initializeScanButtonWiring(socket) {
     }
     if (stopScanBtn) {
         stopScanBtn.addEventListener('click', () => {
-            socket.emit('cancel_job', { job_type: 'scan' });
+            socket.emit('cancel_job', { job_type: 'scan', ...(activeScanSourceJobId ? { source_job_id: activeScanSourceJobId } : {}) });
         });
     }
     document.getElementById('discovery-table')?.addEventListener('click', event => {

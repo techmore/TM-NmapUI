@@ -5,6 +5,7 @@ import re
 import shutil
 import hashlib
 import tempfile
+import subprocess
 
 from nmapui.runtime_log import append_runtime_log
 from nmapui.runtime import env_flag
@@ -25,8 +26,8 @@ def _run_deep_scan_with_xml(context, cmd, sid, target):
     """Keep normal text output and capture original XML for the approved PDF."""
     with tempfile.TemporaryDirectory(prefix="nmapui-evidence-") as directory:
         xml_path = Path(directory) / "scan.xml"
-        argv = list(cmd[:-1]) + ["-oX", str(xml_path), cmd[-1]]
-        result = context.run_cancellable_command(argv, sid=sid, job_type="scan")
+        argv = list(cmd[:-1]) + ["--host-timeout", "120s", "-oX", str(xml_path), cmd[-1]]
+        result = context.run_cancellable_command(argv, sid=sid, job_type="scan", timeout=135)
         if xml_path.is_file():
             size = xml_path.stat().st_size
             if 0 < size <= 16 * 1024 * 1024:
@@ -158,7 +159,9 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False, skip_host_dis
         emit_to_client(sid, "deep_scan_start")
         socketio_sleep(0)
 
-        for target in targets:
+        for index, target in enumerate(targets):
+            if hasattr(context, "update_job_progress"):
+                context.update_job_progress(sid, "scan", phase="service_scan", progress=(80 if is_gateway_phase else 60) + int(19 * index / max(1, len(targets))), message=f"Service scan {index + 1}/{len(targets)}: {target}")
             ensure_job_not_cancelled(sid, "scan")
             emit_to_client(sid, "deep_scan_host_start", {"ip": target})
             cmd = ["nmap", "-T3", "-sV"]
@@ -177,8 +180,23 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False, skip_host_dis
             logger.info("Executing: %s", " ".join(cmd))
             socketio_sleep(0)
 
-            result = _run_deep_scan_with_xml(context, cmd, sid, target)
-            output = result.stdout
+            try:
+                result = _run_deep_scan_with_xml(context, cmd, sid, target)
+                output = result.stdout
+                incomplete = getattr(result, "returncode", 0) != 0 or "due to host timeout" in output.lower()
+            except subprocess.TimeoutExpired:
+                output = "Service scan exceeded the 135 second process deadline."
+                incomplete = True
+            if incomplete:
+                emit_to_client(sid, "scan_raw_output", {"target": target, "output": output})
+                emit_to_client(sid, "scan_feedback", f"{target}: incomplete service scan; retry this device separately.")
+                emit_to_client(sid, "deep_scan_host_complete", {"ip": target, "status": "incomplete"})
+                if hasattr(context, "job_registry"):
+                    job = context.job_registry.get(sid, "scan") or {}
+                    hosts = list((job.get("details") or {}).get("incomplete_hosts", []))
+                    hosts.append(target)
+                    context.job_registry.update(sid, "scan", details={"incomplete_hosts": hosts})
+                continue
             # Use target as the authoritative IP — avoids parentheses when nmap
             # resolves a hostname: "Nmap scan report for host (1.2.3.4)"
             current_host = {"ip": target, "ports": [], "cves": []}
@@ -436,7 +454,8 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
             )
             start_deep_scan_fn(context, gateway_targets, sid, is_gateway_phase=True, **({"skip_host_discovery": True} if skip_host_discovery else {}))
 
-        update_job_progress(sid, "scan", phase="complete", message=f"Scan workflow completed; {len(hosts)} discovered or explicitly selected hosts", progress=100, details={"host_count": len(hosts), "skip_host_discovery": skip_host_discovery})
+        incomplete_hosts = ((context.job_registry.get(sid, "scan") or {}).get("details") or {}).get("incomplete_hosts", [])
+        update_job_progress(sid, "scan", phase="complete", message=f"Scan workflow completed; {len(hosts)} discovered or explicitly selected hosts; {len(incomplete_hosts)} incomplete service scans", progress=100, details={"host_count": len(hosts), "skip_host_discovery": skip_host_discovery, "incomplete_hosts": incomplete_hosts})
     except RuntimeError as exc:
         if str(exc) == "scan cancelled":
             job_registry.complete(sid, "scan", status="cancelled")

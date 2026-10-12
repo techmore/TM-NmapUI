@@ -154,7 +154,7 @@ def register_history_handlers(socketio, deps):
         emit_preferred_job_status(request.sid, "scan")
         emit_preferred_job_status(request.sid, "report")
 
-    def request_job_cancellation(job_type, command_id=None):
+    def request_job_cancellation(job_type, command_id=None, source_job_id=None):
         receipt_deps = {"broadcaster": broadcaster, "emit_to_client": emit_to_client, "runtime_store": runtime_store}
         if job_type not in {"scan", "report"} or command_id is not None and job_type != "scan":
             emit_command_result(command_id=command_id, owner_sid=request.sid, status="failed", result="Invalid scan cancellation request.", **receipt_deps)
@@ -165,6 +165,16 @@ def register_history_handlers(socketio, deps):
             namespace = broadcaster.get_bridge_namespace(request.sid)
             candidates = [job["sid"] for job in job_registry.snapshot()["active_jobs"] if job.get("job_type") == "scan" and (job.get("details") or {}).get("daedalus_command_namespace") == namespace]
             owner_sid = (request.sid if request.sid in candidates else candidates[0]) if candidates else (broadcaster.find_active_owner("scan") or request.sid)
+        if source_job_id is not None and command_id is None:
+            if broadcaster and broadcaster.get_bridge_namespace(request.sid):
+                emit("scan_error", "Bridge cancellation requires a command identifier")
+                return
+            observed_owner = broadcaster.find_active_owner(job_type) if broadcaster else None
+            observed = job_registry.get(observed_owner, job_type) if observed_owner else None
+            if not observed or observed.get("source_job_id") != source_job_id:
+                emit("scan_error", "This scan is no longer active; refresh its status")
+                return
+            owner_sid = observed_owner
         current = job_registry.get(owner_sid, job_type)
         if command_id is not None:
             if not current or current.get("status") not in {"running", "cancelling"}:
@@ -181,7 +191,7 @@ def register_history_handlers(socketio, deps):
                 return
             identifiers.append({"command_id": command_id, "command_namespace": namespace})
             job_registry.update(owner_sid, job_type, details={"daedalus_cancel_commands": identifiers})
-        cancelled = job_registry.cancel(owner_sid, job_type)
+        cancelled = job_registry.cancel(owner_sid, job_type, expected_source_job_id=source_job_id)
         if command_id is not None:
             current = job_registry.get(owner_sid, job_type)
             if current:
@@ -204,7 +214,7 @@ def register_history_handlers(socketio, deps):
         if not begin_command(command_id=command_id, owner_sid=request.sid, action="cancel_scan", broadcaster=broadcaster, emit_to_client=emit_to_client, runtime_store=runtime_store):
             return
         job_type = data.get("job_type") if isinstance(data, dict) else None
-        request_job_cancellation(job_type, command_id)
+        request_job_cancellation(job_type, command_id, data.get("source_job_id") if isinstance(data, dict) else None)
 
     @socketio.on("stop_scan")
     @require_socket_auth()

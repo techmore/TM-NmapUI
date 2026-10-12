@@ -112,6 +112,7 @@ def test_runtime_status_route_reports_active_jobs():
 
     assert response.status_code == 200
     assert response.get_json() == {
+        "maintenance_active": False,
         "has_active_jobs": True,
         "active_job_types": ["report"],
         "active_jobs": [

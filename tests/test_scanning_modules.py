@@ -60,7 +60,7 @@ def test_deep_scan_can_disable_vulners_egress(monkeypatch):
     start_deep_scan(context, ["127.0.0.1"], "sid-test")
 
     assert len(commands) == 1
-    assert commands[0][:4] == ["nmap", "-T3", "-sV", "-oX"]
+    assert commands[0][:5] == ["nmap", "-T3", "-sV", "--host-timeout", "120s"]
     assert commands[0][-1] == "127.0.0.1"
 
 

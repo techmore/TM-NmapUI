@@ -105,7 +105,7 @@ def test_known_target_deep_scan_keeps_product_pn(monkeypatch):
     context = SimpleNamespace(emit_to_client=lambda *args: None, socketio_sleep=lambda *args: None, ensure_job_not_cancelled=lambda *args: None, run_cancellable_command=lambda argv, **kwargs: commands.append(argv) or SimpleNamespace(stdout=''), vulners_script='unused', cve_pattern=re.compile('CVE-'), port_info_regex=re.compile('unused'))
     start_deep_scan(context, ['127.0.0.1'], 'sid', skip_host_discovery=True)
     assert len(commands) == 1
-    assert commands[0][:5] == ['nmap', '-T3', '-sV', '-Pn', '-oX']
+    assert commands[0][:6] == ['nmap', '-T3', '-sV', '-Pn', '--host-timeout', '120s']
     assert commands[0][-1] == '127.0.0.1'
 
 

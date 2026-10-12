@@ -16,7 +16,7 @@ def test_original_xml_is_chunked_losslessly_and_temporary_file_is_removed():
         paths.append(path)
         path.write_bytes(original.encode())
         assert argv[-1] == '127.0.0.1'
-        assert kwargs == {'sid': 'sid', 'job_type': 'scan'}
+        assert kwargs == {'sid': 'sid', 'job_type': 'scan', 'timeout': 135}
         return SimpleNamespace(stdout='normal nmap text')
 
     context = SimpleNamespace(run_cancellable_command=run, emit_to_client=lambda *args: events.append(args))

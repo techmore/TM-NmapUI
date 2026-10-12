@@ -401,11 +401,13 @@ class ClientJobRegistry:
             self._jobs[key] = current
             self._persist_job(sid, job_type)
 
-    def cancel(self, sid: str, job_type: str) -> bool:
+    def cancel(self, sid: str, job_type: str, expected_source_job_id=None) -> bool:
         with self._lock:
             key = (sid, job_type)
             current = self._jobs.get(key)
             if not current or current.get("status") != "running":
+                return False
+            if expected_source_job_id is not None and current.get("source_job_id") != expected_source_job_id:
                 return False
             current["cancel_requested"] = True
             current["status"] = "cancelling"
