@@ -25,6 +25,7 @@ DEFAULT_APP_SETTINGS = {
     "scan_rules": {
         "scan_only_mode": False,
         "skip_host_discovery": False,
+        "firewall_discovery_only": True,
         "excluded_targets": [],
         "max_scan_minutes": 120,
     },
@@ -208,6 +209,7 @@ def normalize_settings_document(
                 (scan_rules or {}).get("scan_only_mode", False)
             ),
             "skip_host_discovery": (scan_rules or {}).get("skip_host_discovery", False) is True,
+            "firewall_discovery_only": (scan_rules or {}).get("firewall_discovery_only", True) is True,
             "excluded_targets": _normalize_string_list(
                 (scan_rules or {}).get("excluded_targets", [])
             ),
@@ -423,6 +425,7 @@ def get_effective_scan_rules(*, settings_state, target="", customer_id="") -> di
         return {
             "scan_only_mode": bool(global_rules.get("scan_only_mode", False)),
             "skip_host_discovery": global_rules.get("skip_host_discovery", False) is True,
+            "firewall_discovery_only": global_rules.get("firewall_discovery_only", True) is True,
             "excluded_targets": _normalize_string_list(
                 global_rules.get("excluded_targets", [])
             ),
@@ -435,6 +438,7 @@ def get_effective_scan_rules(*, settings_state, target="", customer_id="") -> di
             profile_rules.get("scan_only_mode", global_rules.get("scan_only_mode", False))
         ),
         "skip_host_discovery": profile_rules.get("skip_host_discovery", global_rules.get("skip_host_discovery", False)) is True,
+        "firewall_discovery_only": global_rules.get("firewall_discovery_only", True) is True,
         "excluded_targets": _normalize_string_list(
             profile_rules.get("excluded_targets", global_rules.get("excluded_targets", []))
         ),

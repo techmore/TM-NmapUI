@@ -66,6 +66,7 @@ function escapeSettingsHTML(value) {
 function collectSettingsForm() {
     return {
         skipHostDiscovery: document.getElementById('settings-skip-host-discovery')?.checked || false,
+        firewallDiscoveryOnly: document.getElementById('settings-firewall-discovery-only')?.checked !== false,
         scanOnlyMode: document.getElementById('settings-scan-only-mode')?.checked || false,
         excludedTargets: document.getElementById('settings-excluded-targets')?.value || '',
         maxScanMinutes: document.getElementById('settings-max-scan-minutes')?.value || '',
@@ -85,6 +86,7 @@ function collectSettingsForm() {
 
 function applySettingsForm(settings) {
     if (!settings) return;
+    if (document.getElementById('settings-firewall-discovery-only')) document.getElementById('settings-firewall-discovery-only').checked = settings.firewallDiscoveryOnly !== false;
     if (document.getElementById('settings-skip-host-discovery')) document.getElementById('settings-skip-host-discovery').checked = !!settings.skipHostDiscovery;
     if (document.getElementById('settings-scan-only-mode')) document.getElementById('settings-scan-only-mode').checked = !!settings.scanOnlyMode;
     if (document.getElementById('settings-excluded-targets')) document.getElementById('settings-excluded-targets').value = settings.excludedTargets || '';
@@ -159,6 +161,7 @@ function applyServerSettingsDocument(doc = {}) {
     applySettingsForm({
         scanOnlyMode: !!scanRules.scan_only_mode,
         skipHostDiscovery: !!scanRules.skip_host_discovery,
+        firewallDiscoveryOnly: scanRules.firewall_discovery_only !== false,
         excludedTargets: (scanRules.excluded_targets || []).join('\n'),
         maxScanMinutes: scanRules.max_scan_minutes != null ? String(scanRules.max_scan_minutes) : '',
         saveReportsDesktop: !!reports.save_to_desktop,
@@ -265,6 +268,7 @@ function buildServerSettingsPayload(settings, existingDoc = {}) {
         scan_rules: {
             scan_only_mode: !!settings.scanOnlyMode,
             skip_host_discovery: !!settings.skipHostDiscovery,
+            firewall_discovery_only: settings.firewallDiscoveryOnly !== false,
             excluded_targets: String(settings.excludedTargets || '')
                 .split(/[\n,]+/)
                 .map((entry) => entry.trim())

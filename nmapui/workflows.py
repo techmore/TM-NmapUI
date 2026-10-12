@@ -16,6 +16,7 @@ from nmapui.reporting import (
     mark_scan_failure,
 )
 from nmapui.settings import get_effective_scan_rules
+from nmapui.networking import discovery_only_gateway_addresses
 from nmapui.validation import DEFAULT_MAX_TARGETS, count_target_addresses
 
 
@@ -430,6 +431,12 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
         regular_hosts, gateway_hosts = identify_gateway_firewall_targets(hosts)
         regular_targets = [host["ip"] for host in regular_hosts]
         gateway_targets = [host["ip"] for host in gateway_hosts]
+        if scan_rules.get("firewall_discovery_only", True):
+            protected = set(discovery_only_gateway_addresses(context.get_client_state(sid=sid).get("network_key", {}))) | set(gateway_targets)
+            regular_targets = [ip for ip in regular_targets if ip not in protected]
+            gateway_targets = []
+            job_registry.update(sid, "scan", details={"firewall_discovery_only": True, "discovery_only_addresses": sorted(protected)})
+            emit_to_client(sid, "scan_feedback", "Firewall/gateway discovery only: service scans skipped for " + (", ".join(sorted(protected)) or "no identified gateways"))
 
         logger.info("Phase 1 - Regular hosts: %s", len(regular_targets))
         logger.info("Phase 2 - Gateway hosts: %s", len(gateway_targets))
@@ -549,6 +556,12 @@ def generate_report_task(context, sid, data):
         for item in scan_rules.get("excluded_targets", [])
         if str(item or "").strip()
     ]
+
+    if scan_rules.get("firewall_discovery_only", True):
+        protected = discovery_only_gateway_addresses(network_key)
+        excluded_targets = sorted(set(excluded_targets) | set(protected))
+        job_registry.update(sid, "report", details={"firewall_discovery_only": True, "discovery_only_addresses": protected})
+        emit_to_client(sid, "scan_feedback", "Firewall/gateway discovery-only protection: comprehensive report scans exclude " + (", ".join(protected) or "no identified gateway addresses") + ". Run Quick Scan for their discovery inventory.")
 
     if not target:
         job_registry.complete(sid, "report", status="failed", details={"error": "No target specified"})

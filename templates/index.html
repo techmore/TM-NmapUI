@@ -792,6 +792,10 @@
                     <p class="mt-2 text-sm text-olive-700">Persist operator safety defaults without scattering them across runtime controls.</p>
                     <div class="mt-4 space-y-4">
                         <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
+                            <input id="settings-firewall-discovery-only" type="checkbox" checked class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
+                            <span><span class="block text-sm font-semibold text-olive-900">Discovery only for firewall / gateway</span><span class="block text-sm text-olive-700">Keep detected gateways in discovery. Skip their port, service and vulnerability scans. Uses the default route and route-discovery evidence; add other firewall addresses to Excluded Targets. Applies to new scans after saving.</span></span>
+                        </label>
+                        <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
                             <input id="settings-skip-host-discovery" type="checkbox" class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
                             <span><span class="block text-sm font-semibold text-olive-900">Scan known targets without host discovery</span><span class="block text-sm text-olive-700">May scan unresponsive hosts. Enable only for known targets that block discovery probes.</span></span>
                         </label>

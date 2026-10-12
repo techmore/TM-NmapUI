@@ -95,3 +95,23 @@ def identify_gateway_firewall_targets(hosts, network_key):
 
 def ip_sort_key(value):
     return ipaddress.IPv4Address(value)
+
+
+def discovery_only_gateway_addresses(network_key):
+    """Use routing evidence, not a guessed .1 address or vendor classification."""
+    addresses = set()
+    try:
+        import netifaces
+        gateway = netifaces.gateways().get("default", {}).get(netifaces.AF_INET)
+        if gateway:
+            addresses.add(str(ipaddress.ip_address(gateway[0])))
+    except (ImportError, ValueError, OSError):
+        pass
+    for private in (True, False):
+        hop = next((h for h in (network_key or {}).get("hops", []) if h.get("is_private") is private), None)
+        if hop:
+            try:
+                addresses.add(str(ipaddress.ip_address(hop["ip"])))
+            except (KeyError, ValueError):
+                pass
+    return sorted(addresses)
