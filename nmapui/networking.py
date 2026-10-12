@@ -102,9 +102,17 @@ def discovery_only_gateway_addresses(network_key):
     addresses = set()
     try:
         import netifaces
-        gateway = netifaces.gateways().get("default", {}).get(netifaces.AF_INET)
-        if gateway:
-            addresses.add(str(ipaddress.ip_address(gateway[0])))
+        routes = netifaces.gateways()
+        gateways = list(routes.get(netifaces.AF_INET, []))
+        default = routes.get("default", {}).get(netifaces.AF_INET)
+        if default:
+            gateways.append(default)
+        # VPN defaults can hide the gateway of a directly attached customer LAN.
+        for gateway in gateways:
+            try:
+                addresses.add(str(ipaddress.IPv4Address(gateway[0])))
+            except (ValueError, IndexError, TypeError):
+                continue
     except (ImportError, ValueError, OSError):
         pass
     for private in (True, False):
