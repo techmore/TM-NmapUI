@@ -751,6 +751,7 @@
                                 <option value="">Use current customer selection</option>
                             </select>
                         </div>
+                        <label class="flex items-center gap-2 text-sm text-olive-800"><input id="settings-profile-topology-recommendations" type="checkbox"> Include topology recommendations for this customer/subnet</label>
                         <div>
                             <label for="settings-profile-notes" class="block text-sm font-medium text-olive-800">Notes</label>
                             <input id="settings-profile-notes" type="text" class="form-control form-control-md mt-1" placeholder="Optional notes">
@@ -1376,6 +1377,7 @@
         <div id="report-status-actions" class="hidden mt-3 flex flex-wrap gap-2"></div>
     </div>
 
+    <section id="network-plan-panel" class="hidden mt-4 p-4 rounded-xl border border-olive-300 bg-olive-50" aria-label="Customer network map"></section>
         <!-- Scan Stats Cards -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
             <div id="quick-scan-card" class="bg-olive-50 p-5 rounded-xl shadow-sm border border-olive-300 compact-card hover-lift">
@@ -1691,6 +1693,7 @@
     <script src="/static/js/site_chrome.js"></script>
     <script src="/static/js/reports_tab.js"></script>
     <script src="/static/js/settings_tab.js"></script>
+    <script src="/static/js/network_plan.js"></script>
     <script src="/static/js/auto_scan_ui.js"></script>
     <script src="/static/js/customer_ui.js"></script>
     <script src="/static/js/report_generation_ui.js"></script>

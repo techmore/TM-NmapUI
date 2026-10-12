@@ -648,6 +648,7 @@ def convert_xml_to_html(
     get_app_version,
     feedback=None,
     include_topology_recommendations=False,
+    network_plan=None,
 ):
     """Convert Nmap XML to HTML using xsltproc."""
     if not stylesheet.exists():
@@ -680,7 +681,7 @@ def convert_xml_to_html(
         if include_topology_recommendations:
             from nmapui.topology_recommendations import append_recommendations
             html_path.write_text(append_recommendations(
-                html_path.read_text(encoding="utf-8"), [xml_path.read_bytes()]
+                html_path.read_text(encoding="utf-8"), [xml_path.read_bytes()], network_plan=network_plan
             ), encoding="utf-8")
         return True
     except subprocess.TimeoutExpired:
@@ -1509,6 +1510,7 @@ def generate_pdf_from_saved_task(context, sid, data):
             stylesheet=web_stylesheet,
             get_app_version=get_app_version,
             feedback=feedback,
+            report_target=target, report_customer_id=customer_id,
         )
         inject_diff_summary_into_report_html(web_html_path, diff_summary)
 
@@ -1519,6 +1521,7 @@ def generate_pdf_from_saved_task(context, sid, data):
             stylesheet=pdf_stylesheet,
             get_app_version=get_app_version,
             feedback=feedback,
+            report_target=target, report_customer_id=customer_id,
         )
         inject_diff_summary_into_report_html(pdf_html_path, diff_summary)
 

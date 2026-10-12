@@ -1,6 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import ipaddress
 from pathlib import Path
 import threading
 from typing import Any
@@ -160,6 +161,50 @@ def _normalize_string_list(values: Any) -> list[str]:
     return normalized
 
 
+def normalize_network_plan(value):
+    if not isinstance(value, dict):
+        return None
+    try:
+        subnet = ipaddress.ip_network(str(value.get("subnet", "")), strict=False)
+    except ValueError:
+        return None
+    devices = []
+    entries = value.get("devices")
+    for item in (entries if isinstance(entries, list) else [])[:100]:
+        if not isinstance(item, dict):
+            continue
+        device = {key: str(item.get(key, "") or "")[:500] for key in ("id", "name", "role", "status", "proposed_ip", "parent", "notes")}
+        try:
+            if ipaddress.ip_address(device["proposed_ip"]) not in subnet:
+                continue
+        except ValueError:
+            continue
+        devices.append(device)
+    return {"schema_version": 1, "subnet": str(subnet), "devices": devices,
+            **{key: str(value.get(key, "") or "")[:500] for key in ("title", "gateway", "gateway_evidence", "address_status")}}
+
+
+def get_network_report_profile(settings_state, target, customer_id):
+    """Require BOTH customer and subnet identity; RFC1918 ranges are reused."""
+    try:
+        network = ipaddress.ip_network(str(target), strict=False)
+    except ValueError:
+        return None
+    if not customer_id:
+        return None
+    for raw in settings_state.get("target_profiles", []):
+        profile = normalize_target_profile(raw)
+        if profile["customer_id"] != str(customer_id):
+            continue
+        try:
+            expected = ipaddress.ip_network(profile["target"], strict=False)
+            if network.version == expected.version and network.subnet_of(expected):
+                return profile
+        except ValueError:
+            continue
+    return None
+
+
 def normalize_target_profile(profile: Any) -> dict[str, Any]:
     profile = profile if isinstance(profile, dict) else {}
     scan_rules = profile.get("scan_rules")
@@ -170,6 +215,8 @@ def normalize_target_profile(profile: Any) -> dict[str, Any]:
         "customer_id": str(profile.get("customer_id", "") or "").strip(),
         "customer_name": str(profile.get("customer_name", "") or "").strip(),
         "notes": str(profile.get("notes", "") or "").strip(),
+        "reports": {"include_topology_recommendations": (profile.get("reports") or {}).get("include_topology_recommendations", False) is True},
+        "network_plan": normalize_network_plan(profile.get("network_plan")),
         "scan_rules": {
             "scan_only_mode": bool((scan_rules or {}).get("scan_only_mode", False)),
             **({"skip_host_discovery": scan_rules["skip_host_discovery"]} if isinstance(scan_rules, dict) and type(scan_rules.get("skip_host_discovery")) is bool else {}),

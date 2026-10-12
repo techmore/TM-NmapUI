@@ -58,7 +58,13 @@ def build_task_bindings(
     original_convert_xml_to_html = convert_xml_to_html
 
     def convert_xml_to_html(*args, **kwargs):
-        kwargs["include_topology_recommendations"] = (settings_state.get("reports") or {}).get("include_topology_recommendations", False) is True
+        from nmapui.settings import get_network_report_profile
+        target = kwargs.pop("report_target", "")
+        customer_id = kwargs.pop("report_customer_id", "")
+        profile = get_network_report_profile(settings_state, target, customer_id)
+        report_settings = profile["reports"] if profile else (settings_state.get("reports") or {})
+        kwargs["include_topology_recommendations"] = report_settings.get("include_topology_recommendations", False) is True
+        kwargs["network_plan"] = profile.get("network_plan") if profile else None
         return original_convert_xml_to_html(*args, **kwargs)
 
     def run_arp_scan(target, interface=None, sid=None, emit_to_client_override=None):

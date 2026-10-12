@@ -368,6 +368,7 @@ function addTargetProfile() {
         customer_id: document.getElementById('settings-profile-customer')?.value || '',
         customer_name: '',
         notes,
+        reports: {include_topology_recommendations: !!document.getElementById('settings-profile-topology-recommendations')?.checked},
         scan_rules: {
             scan_only_mode: !!document.getElementById('settings-profile-scan-only-mode')?.checked,
             ...(['true', 'false'].includes(document.getElementById('settings-profile-skip-host-discovery')?.value) ? {skip_host_discovery: document.getElementById('settings-profile-skip-host-discovery').value === 'true'} : {}),

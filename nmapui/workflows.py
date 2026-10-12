@@ -817,7 +817,7 @@ def generate_report_task(context, sid, data):
         emit_to_client(sid, "scan_feedback", "📄 Converting XML to HTML (web view)...")
         update_job_progress(sid, "report", phase="html_web", message="Generating web HTML report", progress=70)
         socketio_sleep(0)
-        if convert_xml_to_html(xml_path, web_html_path, stylesheet=web_stylesheet, get_app_version=get_app_version, feedback=feedback):
+        if convert_xml_to_html(xml_path, web_html_path, stylesheet=web_stylesheet, get_app_version=get_app_version, feedback=feedback, report_target=target, report_customer_id=current_customer_id):
             inject_diff_summary_into_report_html(web_html_path, diff_summary)
             file_size = web_html_path.stat().st_size if web_html_path.exists() else 0
             logger.info("✓ Web HTML created: %s (%s bytes)", web_html_path, file_size)
@@ -829,7 +829,7 @@ def generate_report_task(context, sid, data):
         emit_to_client(sid, "scan_feedback", "📄 Converting XML to HTML (PDF view)...")
         update_job_progress(sid, "report", phase="html_pdf", message="Generating PDF HTML report", progress=78)
         socketio_sleep(0)
-        if convert_xml_to_html(xml_path, pdf_html_path, stylesheet=pdf_stylesheet, get_app_version=get_app_version, feedback=feedback):
+        if convert_xml_to_html(xml_path, pdf_html_path, stylesheet=pdf_stylesheet, get_app_version=get_app_version, feedback=feedback, report_target=target, report_customer_id=current_customer_id):
             inject_diff_summary_into_report_html(pdf_html_path, diff_summary)
             file_size = pdf_html_path.stat().st_size if pdf_html_path.exists() else 0
             logger.info("✓ PDF HTML created: %s (%s bytes)", pdf_html_path, file_size)

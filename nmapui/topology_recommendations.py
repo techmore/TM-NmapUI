@@ -70,9 +70,28 @@ def recommendation_html(xml_documents):
     </ol><p><strong>Scope:</strong> conceptual before/after addressing view based on available scan evidence, not a verified physical topology. Confirm all proposals with the network administrator.</p></section>'''
 
 
-def append_recommendations(html, xml_documents):
-    panel = recommendation_html(xml_documents)
+def append_recommendations(html, xml_documents, network_plan=None):
+    panel = recommendation_html(xml_documents) + network_plan_html(network_plan)
     if not panel:
         return html
     html = re.sub(r'<section id="topology-recommendations".*?</section>', '', html, flags=re.DOTALL)
     return re.sub(r'</body\s*>', lambda match: panel + match.group(0), html, count=1, flags=re.IGNORECASE)
+
+def network_plan_html(plan):
+    """Render user-supplied operational relationships, never guessed cabling."""
+    if not isinstance(plan, dict) or not plan.get('devices'):
+        return ''
+    devices = plan['devices']
+    def card(device):
+        fields = [escape(str(device.get(key, '') or '')) for key in ('name', 'role', 'status', 'proposed_ip', 'notes')]
+        name, role, status, address, notes = fields
+        icon = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="3" width="18" height="12" rx="2"/><path d="M8 21h8M12 15v6"/></svg>' if device.get('parent') == 'lan' else '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6 8V3h12v5M6 17H3V8h18v9h-3M6 14h12v7H6z"/></svg>'
+        return f'<article class="plan-device">{icon}<strong>{name}</strong><span>{role}</span><span>{status}</span><b>Proposed: {address}</b><small>{notes}</small></article>'
+    branches = []
+    for station in devices:
+        if station.get('parent') != 'lan':
+            continue
+        children = [d for d in devices if d.get('parent') == station.get('id')]
+        branches.append('<div class="plan-branch">' + card(station) + '<div class="plan-children"><small>Used by this station · connection medium unconfirmed</small>' + ''.join(card(d) for d in children) + '</div></div>')
+    table = ''.join('<tr>' + ''.join('<td>' + escape(str(d.get(k, '') or '')) + '</td>' for k in ('name', 'status', 'proposed_ip')) + '</tr>' for d in devices)
+    return '''<section id="customer-network-plan" class="topology-recommendations"><style>.plan-root{padding:10px;border:1px solid #95977e;border-radius:6px;background:#e9eadf}.plan-branches{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px}.plan-branch{border-left:2px solid #95977e;padding-left:12px}.plan-device{display:grid;grid-template-columns:24px 1fr;gap:4px 8px;border:1px solid #c8c9b9;border-radius:6px;padding:10px;margin:8px 0;background:#faf9f5;break-inside:avoid}.plan-device>svg{grid-row:1 / 6}.plan-children{border-left:1px dashed #95977e;margin-left:12px;padding-left:12px}.plan-device small{line-height:1.4}.plan-device>span,.plan-device>b,.plan-device>small{grid-column:2}.plan-device>b{color:#515b30}@media(max-width:700px){.plan-branches{grid-template-columns:1fr}}@media print{.plan-branches{gap:10px}.plan-device{font-size:9pt}}</style><h2>''' + escape(str(plan.get('title', 'Customer network plan'))) + '''</h2><p><strong>Planned operational map · not verified cabling.</strong> Online/offline notes below are supplied by the customer; PC identities have not been matched to scan IP/MAC evidence.</p><div class="plan-root">[ Existing LAN · ''' + escape(str(plan.get('subnet', ''))) + ''' ]<br/>Gateway: ''' + escape(str(plan.get('gateway', 'unconfirmed'))) + ''' · switch ports and physical links unverified</div><div class="plan-branches">''' + ''.join(branches) + '''</div><h3>Proposed stable addresses</h3><table><thead><tr><th>Device</th><th>Reported state</th><th>Proposed IP</th></tr></thead><tbody>''' + table + '''</tbody></table><p><strong>Not assigned:</strong> verify the authoritative DHCP scope, exclusions, existing reservations and device MACs before using these addresses. Prefer DHCP reservations. USB-only printers, scales and cameras do not need LAN IP addresses. Retain existing .10 servers and gateway settings.</p></section>'''
