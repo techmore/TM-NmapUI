@@ -31,6 +31,7 @@ DEFAULT_APP_SETTINGS = {
     },
     "reports": {
         "save_to_desktop": False,
+        "include_topology_recommendations": False,
     },
     "sync": {
         "google_drive": {
@@ -217,6 +218,7 @@ def normalize_settings_document(
         },
         "reports": {
             "save_to_desktop": bool((reports or {}).get("save_to_desktop", False)),
+            "include_topology_recommendations": (reports or {}).get("include_topology_recommendations", False) is True,
         },
         "sync": {
             "google_drive": {

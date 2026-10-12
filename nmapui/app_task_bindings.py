@@ -55,6 +55,12 @@ def build_task_bindings(
     load_json_document,
     normalize_scan_metadata_document,
 ):
+    original_convert_xml_to_html = convert_xml_to_html
+
+    def convert_xml_to_html(*args, **kwargs):
+        kwargs["include_topology_recommendations"] = (settings_state.get("reports") or {}).get("include_topology_recommendations", False) is True
+        return original_convert_xml_to_html(*args, **kwargs)
+
     def run_arp_scan(target, interface=None, sid=None, emit_to_client_override=None):
         return run_arp_scan_runtime(
             target=target,

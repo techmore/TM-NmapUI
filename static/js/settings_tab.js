@@ -71,6 +71,7 @@ function collectSettingsForm() {
         excludedTargets: document.getElementById('settings-excluded-targets')?.value || '',
         maxScanMinutes: document.getElementById('settings-max-scan-minutes')?.value || '',
         saveReportsDesktop: document.getElementById('settings-save-reports-desktop')?.checked || false,
+        includeTopologyRecommendations: document.getElementById('settings-topology-recommendations')?.checked || false,
         autoMonitorEnabledByDefault: document.getElementById('settings-auto-monitor-enabled-by-default')?.checked || false,
         autoMonitorRecurrence: document.getElementById('settings-auto-monitor-recurrence')?.value || 'weekly',
         autoMonitorDay: document.getElementById('settings-auto-monitor-day')?.value || 'sunday',
@@ -91,6 +92,7 @@ function applySettingsForm(settings) {
     if (document.getElementById('settings-scan-only-mode')) document.getElementById('settings-scan-only-mode').checked = !!settings.scanOnlyMode;
     if (document.getElementById('settings-excluded-targets')) document.getElementById('settings-excluded-targets').value = settings.excludedTargets || '';
     if (document.getElementById('settings-max-scan-minutes')) document.getElementById('settings-max-scan-minutes').value = settings.maxScanMinutes || '';
+    if (document.getElementById('settings-topology-recommendations')) document.getElementById('settings-topology-recommendations').checked = !!settings.includeTopologyRecommendations;
     if (document.getElementById('settings-save-reports-desktop')) document.getElementById('settings-save-reports-desktop').checked = !!settings.saveReportsDesktop;
     if (document.getElementById('settings-auto-monitor-enabled-by-default')) document.getElementById('settings-auto-monitor-enabled-by-default').checked = !!settings.autoMonitorEnabledByDefault;
     if (document.getElementById('settings-auto-monitor-recurrence')) document.getElementById('settings-auto-monitor-recurrence').value = settings.autoMonitorRecurrence || 'weekly';
@@ -165,6 +167,7 @@ function applyServerSettingsDocument(doc = {}) {
         excludedTargets: (scanRules.excluded_targets || []).join('\n'),
         maxScanMinutes: scanRules.max_scan_minutes != null ? String(scanRules.max_scan_minutes) : '',
         saveReportsDesktop: !!reports.save_to_desktop,
+        includeTopologyRecommendations: !!reports.include_topology_recommendations,
         googleDriveEnabled: !!(sync.google_drive || {}).enabled,
         googleDriveFolder: (sync.google_drive || {}).folder_id || '',
         remoteSyncEnabled: !!(sync.remote_sync || {}).enabled,
@@ -277,6 +280,7 @@ function buildServerSettingsPayload(settings, existingDoc = {}) {
         },
         reports: {
             save_to_desktop: !!settings.saveReportsDesktop,
+            include_topology_recommendations: !!settings.includeTopologyRecommendations,
         },
         sync: {
             google_drive: {
