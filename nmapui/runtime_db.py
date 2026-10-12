@@ -310,6 +310,25 @@ class RuntimeStateStore:
             )
         self._run_write(operation)
 
+    def record_daedalus_command_receipt(self, *, job_id, owner_sid, status, command, source_event):
+        """Persist the command state and its replay envelope in one transaction."""
+        now = utcnow_iso()
+        stored = {"_daedalus_source_v1": {"client_event_id": source_event["client_event_id"], "occurred_at": source_event["occurred_at"]}, "payload": source_event["payload"]}
+        def operation(conn):
+            conn.execute(
+                """INSERT INTO jobs(job_id, owner_sid, job_type, status, payload_json, created_at, updated_at)
+                VALUES (?, ?, 'command', ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET owner_sid=excluded.owner_sid,
+                status=excluded.status, payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+                (job_id, owner_sid, status, _json_dumps(command), now, now),
+            )
+            conn.execute(
+                """INSERT INTO job_events(job_id, owner_sid, job_type, event_name, payload_json, created_at)
+                VALUES (?, ?, 'command', 'daedalus_command_result', ?, ?)""",
+                (job_id, owner_sid, _json_dumps(stored), now),
+            )
+        self._run_write(operation)
+
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -519,15 +538,22 @@ class RuntimeStateStore:
         event_name: str,
         payload: Any = None,
         max_events: int = 200,
+        source_event: dict[str, Any] | None = None,
+        max_bytes: int = 32 * 1024 * 1024,
     ) -> int:
         now = utcnow_iso()
+        stored_payload = {"_daedalus_source_v1": {
+            "client_event_id": source_event["client_event_id"],
+            "occurred_at": source_event["occurred_at"],
+            **({"source_job_id": source_event["source_job_id"], "source_job_type": source_event["source_job_type"]} if source_event.get("source_job_id") and source_event.get("source_job_type") in {"scan", "report"} else {}),
+        }, "payload": payload} if source_event else payload
         def operation(conn):
             cursor = conn.execute(
                 """
                 INSERT INTO job_events(job_id, owner_sid, job_type, event_name, payload_json, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (job_id, owner_sid, job_type, event_name, _json_dumps(payload), now),
+                (job_id, owner_sid, job_type, event_name, _json_dumps(stored_payload), now),
             )
             conn.execute(
                 """
@@ -542,6 +568,12 @@ class RuntimeStateStore:
                 """,
                 (job_id, job_id, max_events),
             )
+            retained = conn.execute("SELECT id, length(CAST(payload_json AS BLOB)) AS bytes FROM job_events WHERE job_id = ? ORDER BY id DESC", (job_id,)).fetchall()
+            retained_bytes = 0
+            for row in retained:
+                retained_bytes += row["bytes"]
+                if retained_bytes > max_bytes:
+                    conn.execute("DELETE FROM job_events WHERE id = ?", (row["id"],))
             return int(cursor.lastrowid)
         return self._run_write(operation)
 
@@ -562,7 +594,7 @@ class RuntimeStateStore:
                 """,
                 (job_id, limit),
             ).fetchall()
-        return [
+        result = [
             {
                 "id": row["id"],
                 "job_id": row["job_id"],
@@ -574,6 +606,14 @@ class RuntimeStateStore:
             }
             for row in reversed(rows)
         ]
+        for event in result:
+            stored = event["payload"]
+            if isinstance(stored, dict) and set(stored) == {"_daedalus_source_v1", "payload"}:
+                metadata = stored["_daedalus_source_v1"]
+                if isinstance(metadata, dict) and metadata.get("client_event_id") and metadata.get("occurred_at"):
+                    event["payload"] = stored["payload"]
+                    event["source_event"] = {**metadata, "event_name": event["event_name"], "payload": event["payload"]}
+        return result
 
     def get_recent_logs(
         self,

@@ -3,6 +3,7 @@ from datetime import datetime
 from flask import request
 from flask_socketio import emit
 from nmapui.auth import require_socket_auth
+from nmapui.daedalus_commands import command_id_from_payload, begin_command, emit_command_result, report_scan_completion
 
 
 def register_history_handlers(socketio, deps):
@@ -153,32 +154,57 @@ def register_history_handlers(socketio, deps):
         emit_preferred_job_status(request.sid, "scan")
         emit_preferred_job_status(request.sid, "report")
 
-    def request_job_cancellation(job_type):
-        if job_type not in {"scan", "report"}:
+    def request_job_cancellation(job_type, command_id=None):
+        receipt_deps = {"broadcaster": broadcaster, "emit_to_client": emit_to_client, "runtime_store": runtime_store}
+        if job_type not in {"scan", "report"} or command_id is not None and job_type != "scan":
+            emit_command_result(command_id=command_id, owner_sid=request.sid, status="failed", result="Invalid scan cancellation request.", **receipt_deps)
             emit("scan_error", "Invalid job type")
             return
-
-        if not job_registry.cancel(request.sid, job_type):
-            emit_to_client(
-                request.sid,
-                "job_cancelled",
-                {"job_type": job_type, "message": "No running job to cancel"},
-            )
-            emit_job_status(request.sid, job_type)
+        owner_sid = request.sid
+        if command_id is not None and broadcaster:
+            namespace = broadcaster.get_bridge_namespace(request.sid)
+            candidates = [job["sid"] for job in job_registry.snapshot()["active_jobs"] if job.get("job_type") == "scan" and (job.get("details") or {}).get("daedalus_command_namespace") == namespace]
+            owner_sid = (request.sid if request.sid in candidates else candidates[0]) if candidates else (broadcaster.find_active_owner("scan") or request.sid)
+        current = job_registry.get(owner_sid, job_type)
+        if command_id is not None:
+            if not current or current.get("status") not in {"running", "cancelling"}:
+                emit_command_result(command_id=command_id, owner_sid=request.sid, status="succeeded", result="No running scan needed cancellation.", **receipt_deps)
+                return
+            namespace = broadcaster.get_bridge_namespace(request.sid)
+            original_namespace = (current.get("details") or {}).get("daedalus_command_namespace")
+            if original_namespace is not None and original_namespace != namespace:
+                emit_command_result(command_id=command_id, owner_sid=request.sid, status="failed", result="The active scan belongs to a different bridge control session.", **receipt_deps)
+                return
+            identifiers = list((current.get("details") or {}).get("daedalus_cancel_commands", []))
+            if len(identifiers) >= 10:
+                emit_command_result(command_id=command_id, owner_sid=request.sid, status="failed", result="The pending scan cancellation receipt limit was reached.", **receipt_deps)
+                return
+            identifiers.append({"command_id": command_id, "command_namespace": namespace})
+            job_registry.update(owner_sid, job_type, details={"daedalus_cancel_commands": identifiers})
+        cancelled = job_registry.cancel(owner_sid, job_type)
+        if command_id is not None:
+            current = job_registry.get(owner_sid, job_type)
+            if current:
+                report_scan_completion(sid=owner_sid, job=current, **receipt_deps)
+        if not cancelled:
+            emit_to_client(request.sid, "job_cancelled", {"job_type": job_type, "message": "No running job to cancel"})
+            emit_job_status(owner_sid, job_type)
             return
-
-        emit_job_status(request.sid, job_type)
-        emit_to_client(
-            request.sid,
-            "job_cancelled",
-            {"job_type": job_type, "message": f"Cancelling {job_type} job..."},
-        )
+        emit_job_status(owner_sid, job_type)
+        emit_to_client(request.sid, "job_cancelled", {"job_type": job_type, "message": f"Cancelling {job_type} job..."})
 
     @socketio.on("cancel_job")
     @require_socket_auth()
     def cancel_job_event(data):
+        try:
+            command_id = command_id_from_payload(data, sid=request.sid, broadcaster=broadcaster)
+        except ValueError:
+            emit("scan_error", "Invalid Daedalus command identifier")
+            return
+        if not begin_command(command_id=command_id, owner_sid=request.sid, action="cancel_scan", broadcaster=broadcaster, emit_to_client=emit_to_client, runtime_store=runtime_store):
+            return
         job_type = data.get("job_type") if isinstance(data, dict) else None
-        request_job_cancellation(job_type)
+        request_job_cancellation(job_type, command_id)
 
     @socketio.on("stop_scan")
     @require_socket_auth()

@@ -273,7 +273,7 @@ def test_client_job_registry_persists_jobs_to_runtime_store(tmp_path):
     registry.update("sid-1", "report", phase="rendering", details={"progress": 50})
     registry.complete("sid-1", "report", status="completed", details={"path": "scan_report.pdf"})
 
-    persisted = store.get_job("sid-1:report")
+    persisted = store.get_job(f"source-job:{registry.get('sid-1', 'report')['source_job_id']}")
 
     assert persisted is not None
     assert persisted["job_type"] == "report"

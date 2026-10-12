@@ -113,12 +113,13 @@ def _select_release_asset(release: dict, *, platform_name: Optional[str] = None,
     return assets[0]
 
 
-def check_for_updates():
-    """Check for new releases on GitHub with a process-wide rate-limit cache."""
+def check_for_updates(*, operator_requested=False):
+    """Check GitHub release metadata, keeping background checks opt-in."""
     global _UPDATE_CHECK_CACHE, _UPDATE_CHECK_CACHE_EXPIRES_AT
 
     current_version = get_app_version()
-    if not env_flag("NMAPUI_ENABLE_UPDATE_CHECK", default=True):
+    automatic_checks_enabled = env_flag("NMAPUI_ENABLE_UPDATE_CHECK", default=True)
+    if not automatic_checks_enabled and not operator_requested:
         return {
             "available": False,
             "disabled": True,
@@ -175,6 +176,11 @@ def check_for_updates():
                 "error": str(exc),
             }
             cache_ttl = UPDATE_CHECK_ERROR_TTL_SECONDS
+
+        if not automatic_checks_enabled:
+            # A direct user request may fetch release metadata without enabling
+            # the idle update workflow used by standalone NmapUI installations.
+            result["manual_check_only"] = True
 
         _UPDATE_CHECK_CACHE = copy.deepcopy(result)
         _UPDATE_CHECK_CACHE_EXPIRES_AT = time.monotonic() + cache_ttl

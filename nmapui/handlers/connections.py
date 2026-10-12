@@ -1,5 +1,8 @@
 from flask import request
+import uuid
+from datetime import datetime, timedelta, timezone
 from nmapui.auth import require_socket_auth, socket_authorized
+from nmapui.daedalus_commands import emit_command_result, NAMESPACE
 from nmapui.auto_scan import build_auto_scan_status_payload
 
 
@@ -109,6 +112,41 @@ def register_connection_handlers(socketio, deps):
         new_sid = request.sid
         if hasattr(broadcaster, "register_client"):
             broadcaster.register_client(new_sid)
+        bridge_client = bool(isinstance(auth, dict) and auth.get("daedalus_bridge") is True)
+        if bridge_client and hasattr(broadcaster, "set_bridge_client"):
+            command_namespace = auth.get("command_namespace")
+            command_namespace = command_namespace if isinstance(command_namespace, str) and NAMESPACE.fullmatch(command_namespace) else None
+            broadcaster.set_bridge_client(new_sid, command_namespace=command_namespace)
+            emit_to_client(new_sid, "daedalus_protocol", {"version": 1, "command_results": command_namespace is not None, "source_job_metadata": True, "command_namespace": command_namespace})
+
+        def replay_persisted_bridge_events():
+            if not bridge_client or runtime_store is None or not hasattr(runtime_store, "list_jobs"):
+                return
+            # Recover terminal evidence that completed while the bridge was absent.
+            for saved_job in reversed(runtime_store.list_jobs(limit=20)):
+                if saved_job.get("job_type") == "command" and (saved_job.get("payload") or {}).get("command_namespace") != broadcaster.get_bridge_namespace(new_sid):
+                    continue
+                if saved_job.get("job_type") == "command" and saved_job.get("status") == "interrupted":
+                    command_id = (saved_job.get("payload") or {}).get("command_id")
+                    if isinstance(command_id, int) and not isinstance(command_id, bool):
+                        emit_command_result(command_id=command_id, owner_sid=new_sid, status="failed", result="NmapUI restarted before this command completed.", broadcaster=broadcaster, emit_to_client=emit_to_client, runtime_store=runtime_store, command_namespace=(saved_job.get("payload") or {}).get("command_namespace"))
+                if saved_job.get("status") not in {"running", "cancelling"}:
+                    try:
+                        updated = datetime.fromisoformat(str(saved_job["updated_at"]).replace("Z", "+00:00"))
+                        updated = updated.replace(tzinfo=updated.tzinfo or timezone.utc)
+                        if updated < datetime.now(timezone.utc) - timedelta(days=7):
+                            continue
+                    except (ValueError, KeyError):
+                        continue
+                for saved in _load_persisted_job_events(runtime_store, saved_job["job_id"]):
+                    envelope = saved.get("source_event") or {
+                        "client_event_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"nmapui:{saved['job_id']}:{saved['id']}:{saved['created_at']}")),
+                        "occurred_at": saved["created_at"],
+                        "event_name": saved["event_name"], "payload": saved["payload"],
+                    }
+                    emit_to_client(new_sid, "daedalus_event", envelope)
+
+        replay_persisted_bridge_events()
         active_job_type = None
         owner_sid = broadcaster.find_active_owner("scan")
         if owner_sid is not None:
@@ -139,13 +177,6 @@ def register_connection_handlers(socketio, deps):
         if auto_scan_config is not None:
             emit_to_client(new_sid, "auto_scan_status", build_auto_scan_status_payload(auto_scan_config))
 
-        # #237: ignore zombie jobs whose owner tab has disconnected.
-        if owner_sid and owner_sid not in getattr(broadcaster, "_connected_sids", set()):
-            _complete = getattr(job_registry, "complete", None)
-            if callable(_complete):
-                _complete(owner_sid, active_job_type or "scan", status="completed")
-            broadcaster.end_job(owner_sid, job_type=active_job_type or "scan")
-            job = None
         job = job_registry.get(owner_sid, active_job_type) if owner_sid else None
         is_scanning = bool(job and job.get("status") in ("running", "cancelling"))
         last_scan_target = source_state.get("last_scan_target") or ""
@@ -171,7 +202,7 @@ def register_connection_handlers(socketio, deps):
             if persisted_job is not None:
                 persisted_job_id = persisted_job.pop("job_id", None)
                 emit_to_client(new_sid, "job_status", persisted_job)
-                if persisted_job_id:
+                if persisted_job_id and not bridge_client:
                     for event in _load_persisted_job_events(runtime_store, persisted_job_id):
                         emit_to_client(new_sid, event["event_name"], event["payload"])
             return
@@ -193,8 +224,12 @@ def register_connection_handlers(socketio, deps):
         broadcaster.subscribe(owner_sid, new_sid, job_type=active_job_type)
         emit_to_client(new_sid, "job_status", {**job, "job_type": active_job_type})
 
-        for event, data in replay_buffer:
-            emit_to_client(new_sid, event, data)
+        if bridge_client and hasattr(broadcaster, "get_bridge_replay_buffer"):
+            for envelope in broadcaster.get_bridge_replay_buffer(owner_sid, job_type=active_job_type):
+                emit_to_client(new_sid, "daedalus_event", envelope)
+        else:
+            for event, data in replay_buffer:
+                emit_to_client(new_sid, event, data)
 
     @socketio.on("get_initial_data")
     @require_socket_auth()
@@ -216,14 +251,6 @@ def register_connection_handlers(socketio, deps):
         )
 
         job = job_registry.get(owner_sid, active_job_type) if owner_sid else None
-        # #237 follow-up: a job whose owner tab is gone is a zombie - it would
-        # otherwise disable scan buttons for every future page load.
-        if owner_sid and owner_sid not in getattr(broadcaster, "_connected_sids", set()):
-            job = None
-            _complete = getattr(job_registry, "complete", None)
-            if callable(_complete):
-                _complete(owner_sid, active_job_type or "scan", status="completed")
-            broadcaster.end_job(owner_sid, job_type=active_job_type or "scan")
         is_scanning = bool(job and job.get("status") in ("running", "cancelling"))
         last_scan_target = source_state.get("last_scan_target") or ""
         network_key = source_state.get("network_key") or {}

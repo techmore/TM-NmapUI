@@ -97,7 +97,10 @@ function renderRoutePath(data) {
         });
     } else {
         const span = document.createElement('span');
-        if (data.error) {
+        if (data.fingerprinting_enabled === false) {
+            span.className = 'text-olive-500';
+            span.textContent = 'External route discovery is disabled for this scanner.';
+        } else if (data.error) {
             span.className = 'text-red-700 font-medium';
             span.textContent = data.error;
         } else {
@@ -472,7 +475,6 @@ function initializeDiscoveryUI(socket) {
         if (settingsNmapVersion) settingsNmapVersion.textContent = `Nmap: ${nmapVersion}`;
         if (settingsVulnersVersion) settingsVulnersVersion.textContent = `Vulners: ${vulnersVersion}`;
         if (settingsArpScanVersion) settingsArpScanVersion.textContent = `ARP-Scan: ${arpScanVersion}`;
-        socket.emit('check_app_updates');
     });
 
     socket.on('history_counts', data => {

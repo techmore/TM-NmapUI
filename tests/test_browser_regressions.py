@@ -66,9 +66,26 @@ def _get_socket_sid(client):
     return client.get_sid("/")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def browser_server(tmp_path_factory):
     _require_browser_regression_enabled()
+
+    managed_environment_keys = (
+        "NMAPUI_TRUST_LOCAL_UI",
+        "NMAPUI_ALLOW_UNSAFE_WERKZEUG",
+        "NMAPUI_DEBUG",
+        "NMAPUI_USERNAME",
+        "NMAPUI_PASSWORD",
+        "NMAPUI_ENABLE_NETWORK_FINGERPRINT",
+        "NMAPUI_ENABLE_UPDATE_CHECK",
+        "NMAPUI_ENABLE_VULNERS",
+        "NMAPUI_SOCKET_AUTH_DISABLED",
+        "NMAPUI_PORT",
+        "NMAPUI_DATA_DIR",
+    )
+    previous_environment = {
+        key: os.environ.get(key) for key in managed_environment_keys
+    }
 
     os.environ.setdefault("NMAPUI_TRUST_LOCAL_UI", "true")
     os.environ.setdefault("NMAPUI_ALLOW_UNSAFE_WERKZEUG", "true")
@@ -97,6 +114,7 @@ def browser_server(tmp_path_factory):
     original_traceroute = app_module.run_traceroute_runtime
     original_requests_get = app_module.requests.get
     allowed_external_lookups = []
+    expected_external_lookups = []
     unexpected_lookups = []
     allowed_urls = {
         "https://api.github.com/repos/techmore/TM-NmapUI/releases/latest",
@@ -158,15 +176,22 @@ def browser_server(tmp_path_factory):
             "base_url": f"http://127.0.0.1:{port}",
             "scans_dir": data_dir / "scans",
             "external_lookups": allowed_external_lookups,
+            "expected_external_lookups": expected_external_lookups,
         }
         assert not unexpected_lookups, f"Unexpected external test requests: {unexpected_lookups}"
-        assert not allowed_external_lookups, (
-            "managed-service opt-outs should keep browser connections from "
-            f"requesting external enrichment services: {allowed_external_lookups}"
+        assert allowed_external_lookups == expected_external_lookups, (
+            "managed-service opt-outs should block automatic external requests; "
+            "only explicit user actions may request the documented release endpoint: "
+            f"observed={allowed_external_lookups}, expected={expected_external_lookups}"
         )
     finally:
         app_module.run_traceroute_runtime = original_traceroute
         app_module.requests.get = original_requests_get
+        for key, value in previous_environment.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 @pytest.fixture
@@ -1274,4 +1299,26 @@ def test_completed_scan_job_status_updates_last_duration(browser_server, playwri
             app_module.broadcaster.end_job(owner_sid, job_type="scan")
             app_module.job_registry.complete(owner_sid, "scan", status="completed")
             owner_client.disconnect()
+        context.close()
+
+
+def test_release_metadata_is_checked_only_after_explicit_user_action(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    release_url = "https://api.github.com/repos/techmore/TM-NmapUI/releases/latest"
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.wait_for_function("() => window.socket && window.socket.connected")
+        page.wait_for_function(
+            "() => document.getElementById('app-version').textContent !== 'v--.--.--.__'"
+        )
+        assert browser_server["external_lookups"] == []
+
+        browser_server["expected_external_lookups"].append(release_url)
+        page.locator("#check-app-updates").click()
+        page.wait_for_function(
+            "() => document.getElementById('update-check-status').textContent.includes('Up to date')"
+        )
+        assert browser_server["external_lookups"] == [release_url]
+    finally:
         context.close()

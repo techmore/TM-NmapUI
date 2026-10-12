@@ -136,13 +136,14 @@ discovery remain available without outbound lookups. Inter and Instrument
 Serif are self-hosted, so the app and generated scan reports do not contact
 Google Fonts.
 
-The dashboard can check GitHub's latest-release API when a browser connects to
-show update notices. Managed service installs disable this check by default; an
-operator can set `NMAPUI_ENABLE_UPDATE_CHECK=true` in the protected service
-credentials file and restart the service. When enabled, successful results are
-cached for six hours per process (one minute after a failed check). The request
-reveals the scanner's outbound public IP but does not send scan targets or
-results.
+Update metadata is checked only after an operator clicks **Check for updates**
+or an authorized Daedalus command requests it; opening the dashboard does not
+contact GitHub. Managed service installs keep background update checks disabled
+by default. `NMAPUI_ENABLE_UPDATE_CHECK=true` in the protected service
+credentials file opts into background checks; an explicit operator check remains
+available. Successful results are cached for six hours per process (one minute
+after a failed check). The request reveals the scanner's outbound public IP but
+does not send scan targets or results.
 
 PDF rendering disables JavaScript and blocks external network resources in
 Playwright; supported fallbacks also disable active scripting and restrict

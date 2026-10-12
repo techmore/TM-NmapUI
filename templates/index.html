@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Network Scanner GUI</title>
     <link rel="stylesheet" href="/static/vendor/fonts.css" />
     <link rel="stylesheet" href="/static/css/tailwind.css" />
@@ -384,19 +385,44 @@
     .focus-ring-olive:focus {
         --tw-ring-color: oklch(62% 0.055 110);
     }
+
+/* Keep the selected target readable independently of action button widths. */
+@media (min-width: 768px) {
+    #scan-command-center > div:first-child { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 1fr); }
+    #scan-command-center > div:first-child > div { width: 100%; min-width: 0; }
+    #scan-command-center > div:first-child > div:last-child { grid-column: 1 / -1; }
+    #scan-command-center > div:first-child > div:last-child > div:first-child { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    #scan-command-center button { white-space: normal; }
+}
+
+@media (max-width: 767px) {
+    #scanner-header { flex-direction: column; align-items: flex-start; gap: 16px; }
+    #scanner-header > div:first-child { flex-direction: column; align-items: flex-start; gap: 16px; width: 100%; }
+    #scanner-header h1 { font-size: 2rem; }
+    #scanner-header h1 + div { flex-wrap: wrap; }
+    #current-date-time { font-size: 1rem; text-align: left; }
+    #network-key-banner > div > div:first-child { flex-direction: column; align-items: flex-start; gap: 12px; }
+    #network-key-banner > div > div:first-child > div:last-child { gap: 16px; width: 100%; justify-content: space-between; }
+}
 </style>
 </head>
 <body class="py-8">
     <!-- Main Content Container (1200px) -->
     <div class="page-shell">
     <!-- Header with Title -->
-    <div class="flex items-center justify-between mb-8">
+    <div id="scanner-header" class="flex items-center justify-between mb-8">
         <div class="flex items-center gap-6">
             <img src="static/techmore.png" class="h-12 w-auto">
             <div>
                 <h1 class="text-4xl font-display italic text-olive-950">Network Scanner</h1>
                 <div class="flex items-center gap-2">
                     <div id="app-version" class="text-sm text-olive-600 font-medium">v--.--.--.__</div>
+                    <button
+                        id="check-app-updates"
+                        type="button"
+                        class="rounded-full border border-olive-300 bg-white px-2.5 py-1 text-xs font-medium text-olive-800 transition-colors hover:bg-olive-50 disabled:cursor-wait disabled:opacity-60"
+                    >Check for updates</button>
+                    <span id="update-check-status" class="text-xs text-olive-600" aria-live="polite"></span>
                     <a
                         href="https://github.com/techmore/TM-NmapUI"
                         target="_blank"
@@ -590,12 +616,17 @@
         <div class="flex flex-wrap items-center justify-between gap-4 border-b border-olive-100 pb-4">
             <div>
                 <h2 class="text-3xl font-display italic text-olive-950">Reports</h2>
-                <p class="mt-1 text-sm text-olive-600">Open completed scan reports without relying on transient status messages.</p>
+                <p class="mt-1 text-sm text-olive-600">Open report files saved on this scanner. Scan history can also include runs without local report files.</p>
             </div>
             <button id="refresh-reports-btn" class="action-button action-button-primary action-button-compact" aria-label="Refresh available reports">
                 Refresh Reports
             </button>
         </div>
+        {% if management_history_url %}
+        <p class="mt-4 text-sm text-olive-700">Uploaded scans and hosted PDFs are kept in Daedalus.
+            <a href="{{ management_history_url }}" target="_blank" rel="noopener noreferrer" class="underline font-medium">Open Daedalus scan history</a>
+        </p>
+        {% endif %}
         <div id="reports-tab-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800"></div>
         <div id="reports-customer-filters" class="mt-4 flex flex-wrap gap-2"></div>
         <div id="reports-tab-list" class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3"></div>
@@ -725,6 +756,10 @@
                             <input id="settings-profile-notes" type="text" class="form-control form-control-md mt-1" placeholder="Optional notes">
                         </div>
                         <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
+                            <select id="settings-profile-skip-host-discovery" class="form-control form-control-md"><option value="inherit">Use global discovery setting</option><option value="false">Require host discovery</option><option value="true">Scan known targets without host discovery</option></select>
+                            <span><span class="block text-sm font-semibold text-olive-900">Scan known targets without host discovery</span><span class="block text-sm text-olive-700">May scan unresponsive hosts. Enable only for known targets that block discovery probes.</span></span>
+                        </label>
+                        <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
                             <input id="settings-profile-scan-only-mode" type="checkbox" class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
                             <span>
                                 <span class="block text-sm font-semibold text-olive-900">Profile scan-only override</span>
@@ -756,6 +791,10 @@
                     <h3 class="text-xl font-display italic text-olive-900">Scan Rules</h3>
                     <p class="mt-2 text-sm text-olive-700">Persist operator safety defaults without scattering them across runtime controls.</p>
                     <div class="mt-4 space-y-4">
+                        <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
+                            <input id="settings-skip-host-discovery" type="checkbox" class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
+                            <span><span class="block text-sm font-semibold text-olive-900">Scan known targets without host discovery</span><span class="block text-sm text-olive-700">May scan unresponsive hosts. Enable only for known targets that block discovery probes.</span></span>
+                        </label>
                         <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
                             <input id="settings-scan-only-mode" type="checkbox" class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
                             <span>
@@ -1199,7 +1238,7 @@
     </div>
 
     <!-- Scan Command Center -->
-    <div class="mt-8 bg-olive-50 p-6 rounded-2xl shadow-sm border border-olive-200">
+    <div id="scan-command-center" class="mt-8 bg-olive-50 p-6 rounded-2xl shadow-sm border border-olive-200">
         <div class="flex flex-col md:flex-row md:items-end gap-6">
             <!-- Target Input Group -->
             <div class="flex-1 space-y-2">
@@ -1480,7 +1519,7 @@
 
     </div>
     <!-- Results Table -->
-    <section class="page-shell">
+    <section id="dashboard-results-panel" class="page-shell">
         <div class="results-band">
         <table id="discovery-table" class="table-fixed min-w-[2400px]">
                         <thead>

@@ -631,7 +631,9 @@ register_app_handlers(
         deps=traceroute_bindings["traceroute_deps"](),
     ),
     validate_target=validate_target,
-    start_scan_task=lambda sid, target: start_scan_task(sid, target),
+    start_scan_task=lambda sid, target, skip_host_discovery_override=None: start_scan_task(
+        sid, target, skip_host_discovery_override
+    ),
     generate_report_task=lambda sid, data: generate_report_task(sid, data),
     generate_pdf_from_saved_task=lambda sid, data: generate_pdf_from_saved_task(sid, data),
     validate_google_drive_settings=lambda *, folder_id: validate_google_drive_settings(

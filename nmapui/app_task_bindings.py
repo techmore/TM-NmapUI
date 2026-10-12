@@ -75,6 +75,7 @@ def build_task_bindings(
         sid=None,
         excluded_targets=None,
         scan_only_mode=False,
+        skip_host_discovery=False,
         force_privileged_scan=False,
         timeout_seconds=None,
         emit_to_client_override=None,
@@ -86,6 +87,7 @@ def build_task_bindings(
             sid=sid,
             excluded_targets=excluded_targets,
             scan_only_mode=scan_only_mode,
+            skip_host_discovery=skip_host_discovery,
             force_privileged_scan=force_privileged_scan,
             timeout_seconds=timeout_seconds,
             vulners_script=vulners_script,
@@ -96,10 +98,11 @@ def build_task_bindings(
             run_cancellable_command=run_cancellable_command,
         )
 
-    def start_scan_task(sid, target):
+    def start_scan_task(sid, target, skip_host_discovery_override=None):
         return start_scan_task_runtime(
             sid=sid,
             target=target,
+            skip_host_discovery_override=skip_host_discovery_override,
             **build_scan_task_deps(
                 broadcaster=broadcaster,
                 emit_to_client=emit_to_client,

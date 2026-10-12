@@ -1,3 +1,12 @@
+function historicalScanAgeDays(value, now = new Date()) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const scan = new Date(value);
+    if (!Number.isFinite(scan.getTime()) || !Number.isFinite(now.getTime())) return null;
+    const day = date => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+    const age = (day(now) - day(scan)) / 86400000;
+    return age >= 0 ? age : null;
+}
+
 function showHistoricalDataBanner(data) {
     const banner = document.getElementById('historical-data-banner');
     const title = document.getElementById('historical-title');
@@ -6,11 +15,15 @@ function showHistoricalDataBanner(data) {
     const vulns = document.getElementById('historical-vulns');
     const exploits = document.getElementById('historical-exploits');
 
-    const ageDays = data.age_days || 0;
+    const ageDays = historicalScanAgeDays(data.scan_date);
     let ageText = '';
     let bannerColor = 'bg-olive-100 border-olive-600';
 
-    if (ageDays === 0) {
+    if (ageDays === null) {
+        ageText = 'at an unconfirmed date';
+        title.textContent = 'Saved Scan';
+        bannerColor = 'bg-amber-50 border-amber-500';
+    } else if (ageDays === 0) {
         ageText = 'today';
         title.textContent = 'Scan from Today';
         bannerColor = 'bg-olive-100 border-olive-600';
@@ -25,7 +38,7 @@ function showHistoricalDataBanner(data) {
     }
 
     const scanDate = new Date(data.scan_date);
-    const dateStr = scanDate.toLocaleString();
+    const dateStr = Number.isFinite(scanDate.getTime()) && typeof data.scan_date === 'string' ? scanDate.toLocaleString() : 'Unknown';
 
     details.textContent = `Scanned ${ageText} on ${dateStr} • Target: ${data.target || 'Unknown'}`;
     hosts.textContent = `📊 ${data.total || 0} hosts`;

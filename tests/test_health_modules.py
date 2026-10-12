@@ -215,6 +215,7 @@ def test_effective_scan_rules_prefer_matching_target_profile():
 
     assert rules == {
         "scan_only_mode": True,
+        "skip_host_discovery": False,
         "excluded_targets": ["192.168.1.50"],
         "max_scan_minutes": 120,
     }

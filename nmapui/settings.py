@@ -24,6 +24,7 @@ DEFAULT_APP_SETTINGS = {
     "target_profiles": [],
     "scan_rules": {
         "scan_only_mode": False,
+        "skip_host_discovery": False,
         "excluded_targets": [],
         "max_scan_minutes": 120,
     },
@@ -169,6 +170,7 @@ def normalize_target_profile(profile: Any) -> dict[str, Any]:
         "notes": str(profile.get("notes", "") or "").strip(),
         "scan_rules": {
             "scan_only_mode": bool((scan_rules or {}).get("scan_only_mode", False)),
+            **({"skip_host_discovery": scan_rules["skip_host_discovery"]} if isinstance(scan_rules, dict) and type(scan_rules.get("skip_host_discovery")) is bool else {}),
             "excluded_targets": _normalize_string_list(
                 (scan_rules or {}).get("excluded_targets", [])
             ),
@@ -205,6 +207,7 @@ def normalize_settings_document(
             "scan_only_mode": bool(
                 (scan_rules or {}).get("scan_only_mode", False)
             ),
+            "skip_host_discovery": (scan_rules or {}).get("skip_host_discovery", False) is True,
             "excluded_targets": _normalize_string_list(
                 (scan_rules or {}).get("excluded_targets", [])
             ),
@@ -419,6 +422,7 @@ def get_effective_scan_rules(*, settings_state, target="", customer_id="") -> di
     if matched_profile is None:
         return {
             "scan_only_mode": bool(global_rules.get("scan_only_mode", False)),
+            "skip_host_discovery": global_rules.get("skip_host_discovery", False) is True,
             "excluded_targets": _normalize_string_list(
                 global_rules.get("excluded_targets", [])
             ),
@@ -430,6 +434,7 @@ def get_effective_scan_rules(*, settings_state, target="", customer_id="") -> di
         "scan_only_mode": bool(
             profile_rules.get("scan_only_mode", global_rules.get("scan_only_mode", False))
         ),
+        "skip_host_discovery": profile_rules.get("skip_host_discovery", global_rules.get("skip_host_discovery", False)) is True,
         "excluded_targets": _normalize_string_list(
             profile_rules.get("excluded_targets", global_rules.get("excluded_targets", []))
         ),

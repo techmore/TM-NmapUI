@@ -264,6 +264,7 @@ def run_nmap_with_xml_output(
     sid=None,
     excluded_targets=None,
     scan_only_mode=False,
+    skip_host_discovery=False,
     force_privileged_scan=False,
     vulners_script,
     stylesheet_pdf,
@@ -318,6 +319,9 @@ def run_nmap_with_xml_output(
             ["--stylesheet", str(stylesheet_pdf), "-oA", str(output_base)]
         )
         timeout_seconds = int(timeout_seconds or 7200)
+
+    if skip_host_discovery and "-Pn" not in options:
+        options.insert(0, "-Pn")
 
     if excluded_targets:
         # Part of the shared option list, so the unprivileged fallback keeps it.

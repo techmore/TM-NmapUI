@@ -1,4 +1,7 @@
-from datetime import datetime, timedelta
+import copy
+from datetime import datetime, timedelta, timezone
+import uuid
+import json
 import logging
 import os
 import signal
@@ -94,6 +97,7 @@ class ScanBroadcaster:
     """
 
     MAX_BUFFER = 500
+    MAX_BUFFER_BYTES = 8 * 1024 * 1024
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -102,33 +106,87 @@ class ScanBroadcaster:
         self._subscribers: dict[str, dict[str, set[str]]] = {}
         # job_type -> owner_sid -> list of (event, data) tuples
         self._buffer: dict[str, dict[str, list]] = {}
+        self._bridge_sids: set[str] = set()
+        self._bridge_namespaces: dict[str, str] = {}
+        self._bridge_buffer: dict[str, dict[str, list]] = {}
+        self._replay_sizes: dict[str, dict[str, list]] = {}
+        self._source_jobs: dict[str, dict[str, str]] = {}
+
+    def set_bridge_client(self, sid: str, command_namespace: str | None = None) -> None:
+        with self._lock:
+            self._bridge_sids.add(sid)
+            if command_namespace is not None:
+                self._bridge_namespaces[sid] = command_namespace
+
+    def get_bridge_namespace(self, sid: str) -> str | None:
+        with self._lock:
+            return self._bridge_namespaces.get(sid)
+
+    def is_bridge_client(self, sid: str) -> bool:
+        with self._lock:
+            return sid in self._bridge_sids
+
+    def get_bridge_clients(self, command_namespace: str | None = None) -> set[str]:
+        with self._lock:
+            return {sid for sid in self._bridge_sids if command_namespace is None or self._bridge_namespaces.get(sid) == command_namespace}
 
     def register_client(self, sid: str) -> None:
         with self._lock:
             self._connected_sids.add(sid)
 
-    def start_job(self, owner_sid: str, job_type: str = "scan") -> None:
+    def start_job(self, owner_sid: str, job_type: str = "scan", source_job_id: str | None = None) -> None:
         """Call when a scan starts — creates the slot."""
         with self._lock:
+            if job_type in {"scan", "report"}:
+                self._source_jobs.setdefault(job_type, {})[owner_sid] = str(uuid.UUID(source_job_id)) if source_job_id else str(uuid.uuid4())
             subscriber_set = set(self._connected_sids) or {owner_sid}
             subscriber_set.add(owner_sid)
             self._subscribers.setdefault(job_type, {})[owner_sid] = subscriber_set
             self._buffer.setdefault(job_type, {})[owner_sid] = []
+            self._bridge_buffer.setdefault(job_type, {})[owner_sid] = []
+            self._replay_sizes.setdefault(job_type, {})[owner_sid] = []
 
     def end_job(self, owner_sid: str, job_type: str = "scan") -> None:
         """Call when a scan ends — tears down the slot."""
         with self._lock:
+            self._source_jobs.get(job_type, {}).pop(owner_sid, None)
             self._subscribers.get(job_type, {}).pop(owner_sid, None)
             self._buffer.get(job_type, {}).pop(owner_sid, None)
+            self._bridge_buffer.get(job_type, {}).pop(owner_sid, None)
+            self._replay_sizes.get(job_type, {}).pop(owner_sid, None)
 
-    def record(self, owner_sid: str, event: str, data, job_type: str = "scan") -> None:
-        """Store an event in the replay buffer for this job."""
+    def get_source_job_id(self, owner_sid: str, job_type: str = "scan") -> str | None:
         with self._lock:
-            buf = self._buffer.get(job_type, {}).get(owner_sid)
+            return self._source_jobs.get(job_type, {}).get(owner_sid)
+
+    def record(self, owner_sid: str, event: str, data, job_type: str = "scan", source_job_id: str | None = None) -> dict:
+        """Retain an independent snapshot for this event identity and job."""
+        with self._lock:
+            envelope = {"client_event_id": str(uuid.uuid4()),
+                        "occurred_at": datetime.now(timezone.utc).isoformat(),
+                        "event_name": event, "payload": copy.deepcopy(data)}
+            active_source_job_id = self._source_jobs.get(job_type, {}).get(owner_sid)
+            source_job_id = source_job_id or active_source_job_id
+            if source_job_id is not None:
+                envelope.update(source_job_id=source_job_id, source_job_type=job_type)
+            current_run = source_job_id == active_source_job_id
+            buf = self._buffer.get(job_type, {}).get(owner_sid) if current_run else None
             if buf is not None:
-                buf.append((event, data))
-                if len(buf) > self.MAX_BUFFER:
-                    buf[:] = buf[-self.MAX_BUFFER :]
+                buf.append((event, envelope["payload"]))
+            bridge_buffer = self._bridge_buffer.get(job_type, {}).get(owner_sid) if current_run else None
+            if bridge_buffer is not None:
+                bridge_buffer.append(envelope)
+                sizes = self._replay_sizes[job_type][owner_sid]
+                sizes.append(len(json.dumps(envelope, ensure_ascii=False, default=str).encode()))
+                while len(sizes) > self.MAX_BUFFER or sum(sizes) > self.MAX_BUFFER_BYTES:
+                    sizes.pop(0)
+                    bridge_buffer.pop(0)
+                    buf.pop(0)
+            return copy.deepcopy(envelope)
+
+    def get_bridge_replay_buffer(self, owner_sid: str, job_type: str = "scan") -> list:
+        with self._lock:
+            return copy.deepcopy(self._bridge_buffer.get(job_type, {}).get(owner_sid, []))
 
     def get_subscribers(self, owner_sid: str, job_type: str = "scan") -> set[str]:
         with self._lock:
@@ -136,7 +194,7 @@ class ScanBroadcaster:
 
     def get_replay_buffer(self, owner_sid: str, job_type: str = "scan") -> list:
         with self._lock:
-            return list(self._buffer.get(job_type, {}).get(owner_sid, []))
+            return copy.deepcopy(self._buffer.get(job_type, {}).get(owner_sid, []))
 
     def subscribe(self, owner_sid: str, new_sid: str, job_type: str = "scan") -> bool:
         """Add a late-joining tab. Returns False if job no longer active."""
@@ -153,6 +211,8 @@ class ScanBroadcaster:
                 for subs in subscriber_map.values():
                     subs.discard(sid)
             self._connected_sids.discard(sid)
+            self._bridge_sids.discard(sid)
+            self._bridge_namespaces.pop(sid, None)
 
     def find_active_owner(self, job_type: str = "scan") -> str | None:
         """Return any active job owner sid for the given job type."""
@@ -201,14 +261,18 @@ class ClientJobRegistry:
         self._lock = threading.Lock()
         self._processes = {}
         self._shutting_down = False
+        self._maintenance_token = None
         self._runtime_store = runtime_store
         self._max_active_jobs = (
             max(1, int(max_active_jobs)) if max_active_jobs is not None else None
         )
         self._start_rejections = {}
+        self._completion_listeners = []
 
     def _job_id(self, sid: str, job_type: str) -> str:
-        return f"{sid}:{job_type}"
+        job = self._jobs.get((sid, job_type)) or {}
+        source_job_id = job.get("source_job_id")
+        return f"source-job:{source_job_id}" if source_job_id else f"{sid}:{job_type}"
 
     def _persist_job(self, sid: str, job_type: str) -> None:
         if self._runtime_store is None:
@@ -222,6 +286,8 @@ class ClientJobRegistry:
             job_type=job_type,
             status=job.get("status", "idle"),
             payload={
+                "source_job_id": job.get("source_job_id"),
+                "source_job_type": job.get("source_job_type"),
                 "cancel_requested": bool(job.get("cancel_requested")),
                 "details": dict(job.get("details", {})),
                 "started_at": job.get("started_at"),
@@ -231,11 +297,43 @@ class ClientJobRegistry:
             },
         )
 
+    def acquire_maintenance(self, token: str | None = None) -> str | None:
+        """Atomically fence new jobs only when all tracked work is idle.
+
+        The fence has no expiry: a stalled upgrader must not reopen admissions.
+        Release requires its opaque token; restarting this process also clears it.
+        """
+        with self._lock:
+            if (self._shutting_down
+                    or self._processes
+                    or any(job.get("status") in {"running", "cancelling"} for job in self._jobs.values())):
+                return None
+            if self._maintenance_token is not None:
+                import secrets
+                if isinstance(token, str) and secrets.compare_digest(token, self._maintenance_token):
+                    return self._maintenance_token
+                return None
+            self._maintenance_token = uuid.uuid4().hex
+            return self._maintenance_token
+
+    def release_maintenance(self, token: str) -> bool:
+        with self._lock:
+            if not isinstance(token, str) or self._maintenance_token is None:
+                return False
+            import secrets
+            if not secrets.compare_digest(token, self._maintenance_token):
+                return False
+            self._maintenance_token = None
+            return True
+
     def start(self, sid: str, job_type: str, details=None) -> bool:
         with self._lock:
             key = (sid, job_type)
             if self._shutting_down:
                 self._start_rejections[key] = "Scanner is shutting down"
+                return False
+            if self._maintenance_token is not None:
+                self._start_rejections[key] = "Scanner maintenance is active; retry after the upgrade finishes or the scanner is restarted"
                 return False
             job = self._jobs.get(key)
             if job and job.get("status") in {"running", "cancelling"}:
@@ -253,6 +351,7 @@ class ClientJobRegistry:
                 return False
             self._start_rejections.pop(key, None)
             self._jobs[key] = {
+                **({"source_job_id": str(uuid.uuid4()), "source_job_type": job_type} if job_type in {"scan", "report"} else {}),
                 "status": "running",
                 "started_at": datetime.now().isoformat(),
                 "cancel_requested": False,
@@ -265,6 +364,10 @@ class ClientJobRegistry:
         with self._lock:
             return self._start_rejections.get((sid, job_type))
 
+    def add_completion_listener(self, listener):
+        with self._lock:
+            self._completion_listeners.append(listener)
+
     def complete(self, sid: str, job_type: str, status="completed", details=None):
         with self._lock:
             key = (sid, job_type)
@@ -276,6 +379,13 @@ class ClientJobRegistry:
                 current["details"] = merged
             self._jobs[key] = current
             self._persist_job(sid, job_type)
+            completed = {**current, "details": dict(current.get("details", {}))}
+            listeners = list(self._completion_listeners)
+        for listener in listeners:
+            try:
+                listener(sid, job_type, completed)
+            except Exception:
+                logger.exception("A job completion receipt could not be recorded")
 
     def update(self, sid: str, job_type: str, details=None, **fields):
         with self._lock:
@@ -283,7 +393,7 @@ class ClientJobRegistry:
             current = self._jobs.get(key)
             if not current:
                 return
-            current.update(fields)
+            current.update({key: value for key, value in fields.items() if key not in {"source_job_id", "source_job_type"}})
             if details:
                 merged = dict(current.get("details", {}))
                 merged.update(details)
@@ -386,6 +496,7 @@ class ClientJobRegistry:
             ]
             return {
                 "has_active_jobs": bool(active_jobs),
+                "maintenance_active": self._maintenance_token is not None,
                 "active_jobs": active_jobs,
                 "jobs": jobs,
             }
@@ -398,7 +509,7 @@ class ClientJobRegistry:
             for key, job in list(self._jobs.items()):
                 if key[0] != sid:
                     continue
-                if job.get("status") == "running":
+                if job.get("status") in {"running", "cancelling"}:
                     job["disconnected"] = True
                     job["disconnected_at"] = datetime.now().isoformat()
                     self._jobs[key] = job

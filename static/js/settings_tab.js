@@ -65,6 +65,7 @@ function escapeSettingsHTML(value) {
 
 function collectSettingsForm() {
     return {
+        skipHostDiscovery: document.getElementById('settings-skip-host-discovery')?.checked || false,
         scanOnlyMode: document.getElementById('settings-scan-only-mode')?.checked || false,
         excludedTargets: document.getElementById('settings-excluded-targets')?.value || '',
         maxScanMinutes: document.getElementById('settings-max-scan-minutes')?.value || '',
@@ -84,6 +85,7 @@ function collectSettingsForm() {
 
 function applySettingsForm(settings) {
     if (!settings) return;
+    if (document.getElementById('settings-skip-host-discovery')) document.getElementById('settings-skip-host-discovery').checked = !!settings.skipHostDiscovery;
     if (document.getElementById('settings-scan-only-mode')) document.getElementById('settings-scan-only-mode').checked = !!settings.scanOnlyMode;
     if (document.getElementById('settings-excluded-targets')) document.getElementById('settings-excluded-targets').value = settings.excludedTargets || '';
     if (document.getElementById('settings-max-scan-minutes')) document.getElementById('settings-max-scan-minutes').value = settings.maxScanMinutes || '';
@@ -156,6 +158,7 @@ function applyServerSettingsDocument(doc = {}) {
     const sync = doc.sync || {};
     applySettingsForm({
         scanOnlyMode: !!scanRules.scan_only_mode,
+        skipHostDiscovery: !!scanRules.skip_host_discovery,
         excludedTargets: (scanRules.excluded_targets || []).join('\n'),
         maxScanMinutes: scanRules.max_scan_minutes != null ? String(scanRules.max_scan_minutes) : '',
         saveReportsDesktop: !!reports.save_to_desktop,
@@ -261,6 +264,7 @@ function buildServerSettingsPayload(settings, existingDoc = {}) {
     return {
         scan_rules: {
             scan_only_mode: !!settings.scanOnlyMode,
+            skip_host_discovery: !!settings.skipHostDiscovery,
             excluded_targets: String(settings.excludedTargets || '')
                 .split(/[\n,]+/)
                 .map((entry) => entry.trim())
@@ -358,6 +362,7 @@ function addTargetProfile() {
         notes,
         scan_rules: {
             scan_only_mode: !!document.getElementById('settings-profile-scan-only-mode')?.checked,
+            ...(['true', 'false'].includes(document.getElementById('settings-profile-skip-host-discovery')?.value) ? {skip_host_discovery: document.getElementById('settings-profile-skip-host-discovery').value === 'true'} : {}),
             excluded_targets: String(document.getElementById('settings-profile-excluded-targets')?.value || '')
                 .split(/[\n,]+/)
                 .map((entry) => entry.trim())

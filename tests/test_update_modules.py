@@ -141,6 +141,95 @@ def test_disabled_update_check_never_contacts_github(monkeypatch):
     }
 
 
+def test_operator_requested_check_bypasses_disabled_background_check_only(monkeypatch):
+    monkeypatch.setenv("NMAPUI_ENABLE_UPDATE_CHECK", "false")
+    monkeypatch.setattr(runtime, "get_app_version", lambda: "v2026.1.1.00_00")
+    calls = []
+
+    class ResponseStub:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "tag_name": "v2026.1.9.12_53",
+                "html_url": "https://github.com/techmore/TM-NmapUI/releases/tag/v2026.1.9.12_53",
+                "body": "Release notes.",
+                "assets": [],
+            }
+
+    def get(url, timeout=10):
+        calls.append((url, timeout))
+        return ResponseStub()
+
+    monkeypatch.setattr(runtime.requests, "get", get)
+
+    result = runtime.check_for_updates(operator_requested=True)
+
+    assert result["available"] is True
+    assert result["manual_check_only"] is True
+    assert calls == [("https://api.github.com/repos/techmore/TM-NmapUI/releases/latest", 10)]
+    assert runtime.check_for_updates() == {
+        "available": False,
+        "disabled": True,
+        "current_version": "v2026.1.1.00_00",
+    }
+
+
+def test_manual_only_release_result_does_not_enter_idle_update_workflow(monkeypatch):
+    monkeypatch.setenv("NMAPUI_ENABLE_UPDATE_CHECK", "false")
+    monkeypatch.setenv("NMAPUI_USERNAME", "scanner")
+    monkeypatch.setenv("NMAPUI_PASSWORD", "secret-pass")
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "false")
+
+    app = Flask(__name__)
+    socketio = SocketIO(app, cors_allowed_origins="*", test_mode=True)
+    update_calls = []
+    idle_updates = []
+
+    class IdleStateStub:
+        def set_update_available(self, available, update_info=None):
+            idle_updates.append((available, update_info))
+
+        def cancel_countdown(self):
+            return None
+
+        def start_countdown(self):
+            return None
+
+    def check_for_updates(*, operator_requested=False):
+        update_calls.append(operator_requested)
+        return {
+            "available": True,
+            "manual_check_only": True,
+            "latest_version": "v2026.1.9.12_53",
+        }
+
+    register_update_handlers(
+        socketio,
+        {
+            "check_for_updates": check_for_updates,
+            "idle_state_manager": IdleStateStub(),
+            "logger": app.logger,
+        },
+    )
+    token_client = app.test_client()
+    import base64
+    token = base64.b64encode(b"scanner:secret-pass").decode()
+    client = socketio.test_client(
+        app,
+        flask_test_client=token_client,
+        headers={"Authorization": f"Basic {token}"},
+    )
+
+    client.emit("check_app_updates")
+    received = client.get_received()
+
+    assert update_calls == [True]
+    assert idle_updates == []
+    assert any(event["name"] == "app_update_available" for event in received)
+
+
 def test_perform_app_update_emits_manual_install_messages(monkeypatch):
     monkeypatch.setenv("NMAPUI_USERNAME", "scanner")
     monkeypatch.setenv("NMAPUI_PASSWORD", "secret-pass")

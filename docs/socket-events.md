@@ -65,7 +65,12 @@ Notes:
 
 | Event | Direction | Payload |
 |---|---|---|
-| `start_scan` | `C -> S` | `{ target }` |
+| `start_scan` | `C -> S` | `{ target, skip_host_discovery? }` |
+
+`skip_host_discovery`, when present, must be a JSON boolean. `true` applies
+`-Pn` to this job's host-discovery and deep-scan phases without changing saved
+global or target-profile settings. `false` disables it for this job. When
+omitted, the scanner's effective global/target-profile setting is used.
 | `quick_scan_start` | `S -> C` | status string |
 | `quickscan_results` | `S -> C` | `{ total_ips, hosts_up, time_taken }` |
 | `quick_scan_complete` | `S -> C` | none |

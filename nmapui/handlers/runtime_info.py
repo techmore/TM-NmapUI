@@ -23,20 +23,18 @@ def register_runtime_info_handlers(socketio, deps):
     @require_socket_auth()
     def get_network_key_event():
         client_network_key = get_client_state(sid=request.sid)["network_key"]
-        if (
-            client_network_key.get("total_hops", 0) == 0
-            and env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True)
-        ):
+        fingerprinting_enabled = env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True)
+        if client_network_key.get("total_hops", 0) == 0 and fingerprinting_enabled:
             logger.info("Network key empty for %s, running traceroute...", request.sid)
             client_network_key = run_traceroute("1.1.1.1", sid=request.sid)
-        elif not env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True):
+        elif not fingerprinting_enabled:
             logger.info("External network fingerprinting is disabled by configuration")
 
         logger.info(
             "Sending network_key to client: %s hops",
             client_network_key.get("total_hops", 0),
         )
-        emit("network_key", client_network_key)
+        emit("network_key", {**client_network_key, "fingerprinting_enabled": fingerprinting_enabled})
 
     @socketio.on("get_local_ip")
     @require_socket_auth()

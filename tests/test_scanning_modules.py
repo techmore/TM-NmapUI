@@ -59,7 +59,9 @@ def test_deep_scan_can_disable_vulners_egress(monkeypatch):
 
     start_deep_scan(context, ["127.0.0.1"], "sid-test")
 
-    assert commands == [["nmap", "-T3", "-sV", "127.0.0.1"]]
+    assert len(commands) == 1
+    assert commands[0][:4] == ["nmap", "-T3", "-sV", "-oX"]
+    assert commands[0][-1] == "127.0.0.1"
 
 
 def test_disabled_deep_scan_still_discloses_missing_vulners_enrichment(monkeypatch):

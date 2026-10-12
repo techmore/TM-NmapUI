@@ -430,16 +430,18 @@ function initializeScanRuntime(socket) {
     });
 
     socket.on('initial_data', (data) => {
-        document.getElementById('local-ip-value').textContent = data.localIP;
-        document.getElementById('subnet-mask-value').textContent = data.mask;
-        document.getElementById('cidr-value').textContent = data.cidr;
-        document.getElementById('public-ip-value').textContent = data.publicIP;
+        // The current sync message may contain only monitoring settings.
+        // Preserve network evidence already received through local_ip.
+        [['local-ip-value', 'localIP'], ['subnet-mask-value', 'mask'],
+         ['cidr-value', 'cidr'], ['public-ip-value', 'publicIP']].forEach(([id, key]) => {
+            if (typeof data[key] === 'string') setText(id, data[key]);
+        });
         if (data.customerProfile && typeof renderCustomerFingerprint === 'function') {
             renderCustomerFingerprint(data.customerProfile);
         }
         
         const targetInput = document.getElementById('scan-target');
-        if (!targetInput.value) {
+        if (!targetInput.value && typeof data.cidr === 'string' && data.cidr) {
             targetInput.value = data.cidr;
         }
     });

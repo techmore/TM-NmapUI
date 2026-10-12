@@ -333,11 +333,12 @@ def build_history_handler_deps(
     }
 
 
-def build_update_handler_deps(*, check_for_updates, idle_state_manager, logger):
+def build_update_handler_deps(*, check_for_updates, idle_state_manager, logger, broadcaster=None, runtime_store=None, emit_to_client=None):
     return {
         "check_for_updates": check_for_updates,
         "idle_state_manager": idle_state_manager,
         "logger": logger,
+        "broadcaster": broadcaster, "runtime_store": runtime_store, "emit_to_client": emit_to_client,
     }
 
 
@@ -505,6 +506,8 @@ def build_scan_job_handler_deps(
     generate_report_task,
     generate_pdf_from_saved_task,
     broadcaster,
+    runtime_store=None,
+    emit_to_client=None,
 ):
     return {
         "validate_target": validate_target,
@@ -516,6 +519,7 @@ def build_scan_job_handler_deps(
         "generate_report_task": generate_report_task,
         "generate_pdf_from_saved_task": generate_pdf_from_saved_task,
         "broadcaster": broadcaster,
+        "runtime_store": runtime_store, "emit_to_client": emit_to_client,
     }
 
 

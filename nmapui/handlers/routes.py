@@ -1,3 +1,6 @@
+import os
+import ipaddress
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 
 from flask import (
@@ -37,6 +40,31 @@ from nmapui.runtime_db import (
     DEFAULT_CUSTOMER_SCAN_HISTORY_RETENTION,
     DEFAULT_RUNTIME_LOG_RETENTION,
 )
+
+
+
+def management_history_url():
+    """Return a configured portal link without credentials or arbitrary schemes."""
+    value = os.environ.get("NMAPUI_MANAGEMENT_PORTAL_URL", "").strip()
+    try:
+        parts = urlsplit(value)
+        if (
+            parts.scheme not in {"https", "http"}
+            or not parts.hostname
+            or parts.username is not None
+            or parts.password is not None
+            or parts.query or parts.fragment
+            or chr(92) in value
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)
+        ):
+            return ""
+        if parts.scheme == "http" and parts.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return ""
+        if parts.port is not None and not 1 <= parts.port <= 65535:
+            return ""
+        return value.rstrip("/") + "/dashboard#scanners"
+    except ValueError:
+        return ""
 
 
 def _get_runtime_artifact(runtime_store, scan_path):
@@ -100,7 +128,7 @@ def register_core_routes(app, deps):
 
     @app.route("/")
     def index():
-        return render_template("index.html")
+        return render_template("index.html", management_history_url=management_history_url())
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -197,6 +225,36 @@ def register_core_routes(app, deps):
         )
         return jsonify(payload), status_code
 
+    @app.route("/api/runtime/maintenance", methods=["POST", "DELETE"])
+    @require_auth
+    def runtime_maintenance():
+        try:
+            local_peer = ipaddress.ip_address(request.remote_addr or "").is_loopback
+            host = urlsplit("http://" + request.host).hostname
+            local_host = host == "localhost" or ipaddress.ip_address(host or "").is_loopback
+        except ValueError:
+            local_peer = local_host = False
+        if not local_peer or not local_host or not browser_request_origin_allowed():
+            return jsonify({"error": "Local scanner access is required"}), 403
+        if request.method == "POST":
+            payload = request.get_json(silent=True)
+            previous_token = payload.get("token") if isinstance(payload, dict) else None
+            if previous_token is not None and (not isinstance(previous_token, str) or len(previous_token) != 32
+                    or any(c not in "0123456789abcdef" for c in previous_token)):
+                return jsonify({"error": "Invalid maintenance ownership"}), 400
+            token = job_registry.acquire_maintenance(previous_token)
+            if token is None:
+                return jsonify({"error": "Scanner work or maintenance is already active"}), 409
+            response = jsonify({"maintenance_active": True, "token": token})
+        else:
+            payload = request.get_json(silent=True)
+            token = payload.get("token") if isinstance(payload, dict) else None
+            if not isinstance(token, str) or len(token) != 32 or not job_registry.release_maintenance(token):
+                return jsonify({"error": "Maintenance ownership could not be confirmed"}), 409
+            response = jsonify({"maintenance_active": False})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.route("/api/runtime/status")
     def runtime_status():
         snapshot = job_registry.snapshot()
@@ -204,6 +262,7 @@ def register_core_routes(app, deps):
         return jsonify(
             {
                 "has_active_jobs": snapshot["has_active_jobs"],
+                "maintenance_active": snapshot.get("maintenance_active", False),
                 "active_job_types": sorted(
                     {job.get("job_type") for job in active_jobs if job.get("job_type")}
                 ),

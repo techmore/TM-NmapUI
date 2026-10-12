@@ -88,10 +88,35 @@ function startAppUpdate(socket) {
 function initializeUpdateModal(socket, deps = {}) {
     const showReportStatus =
         deps.showReportStatus || window.showReportStatus || (() => {});
+    const checkButton = document.getElementById("check-app-updates");
+    const checkStatus = document.getElementById("update-check-status");
+
+    if (checkButton && checkButton.dataset.bound !== "true") {
+        checkButton.addEventListener("click", () => {
+            checkButton.disabled = true;
+            if (checkStatus) {
+                checkStatus.textContent = "Checking release metadata…";
+            }
+            socket.emit("check_app_updates");
+        });
+        checkButton.dataset.bound = "true";
+    }
 
     socket.on("app_update_available", (data) => {
         const badge = document.getElementById("app-update-badge");
         const version = document.getElementById("update-version");
+        if (checkButton) {
+            checkButton.disabled = false;
+        }
+        if (checkStatus) {
+            if (data.error || data.disabled) {
+                checkStatus.textContent = "Update check unavailable";
+            } else if (data.available) {
+                checkStatus.textContent = `Version ${data.latest_version} is available`;
+            } else {
+                checkStatus.textContent = `Up to date (${data.current_version || "current version"})`;
+            }
+        }
         if (badge && data.available) {
             badge.classList.remove("hidden");
         } else if (badge) {
@@ -149,6 +174,12 @@ function initializeUpdateModal(socket, deps = {}) {
 
     socket.on("update_error", (data) => {
         console.error("Update error:", data.message);
+        if (checkButton) {
+            checkButton.disabled = false;
+        }
+        if (checkStatus) {
+            checkStatus.textContent = "Update check failed";
+        }
         appendUpdateLogLine(data.message, true);
         const status = document.getElementById("update-current-status");
         const progressBar = document.getElementById("update-progress-bar");

@@ -84,6 +84,12 @@ passes with the guard enabled. This is specific HTTP mutation protection; the
 physical-host and release gates remain open. The reviewable candidate scope is
 recorded in `docs/notes/PRODUCTION_CANDIDATE_REVIEW.md`.
 
+The NmapUI header now exposes **Check for updates** as an explicit action.
+Dashboard connection and version refresh no longer query GitHub; the release
+endpoint is contacted only by that button or an authorized Daedalus command.
+An opt-in Chromium regression verifies zero release lookups at startup and one
+lookup after the button is clicked.
+
 On 2026-09-27, the main UI CSP stopped allowing inline script execution and now
 sets `base-uri`, `object-src`, `form-action`, and `frame-ancestors`. The Tailwind
 config is compiled to a committed stylesheet, while pinned Socket.IO and Lucide

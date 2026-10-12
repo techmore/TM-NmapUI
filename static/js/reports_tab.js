@@ -654,7 +654,7 @@ function renderReportsTab(scans) {
     list.replaceChildren();
 
     if (!filteredScans.length) {
-        setTabStatus('reports-tab-status', 'No completed reports found yet.');
+        setTabStatus('reports-tab-status', 'No saved report files found on this scanner for the selected customer.');
         return;
     }
 
@@ -741,6 +741,8 @@ function switchAppTab(tabName) {
     Object.entries(panels).forEach(([name, panel]) => {
         panel?.classList.toggle('hidden', name !== tabName);
     });
+
+    document.getElementById('dashboard-results-panel')?.classList.toggle('hidden', tabName !== 'dashboard');
 
     setTabButtonState(document.getElementById('tab-dashboard-btn'), tabName === 'dashboard');
     setTabButtonState(document.getElementById('tab-history-btn'), tabName === 'history');

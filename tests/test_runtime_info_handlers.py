@@ -1,5 +1,6 @@
 from flask import Flask
 from flask_socketio import SocketIO
+import pytest
 
 from nmapui.app_bindings import build_event_helpers
 from nmapui.handlers.connections import register_connection_handlers
@@ -210,6 +211,69 @@ def test_start_scan_persists_last_target_with_keyword_state_setter(monkeypatch):
     assert observed["rate_recorded"] is True
 
 
+@pytest.mark.parametrize("value", [True, False])
+def test_start_scan_forwards_strict_per_job_discovery_override(monkeypatch, value):
+    configure_auth(monkeypatch)
+    observed = {}
+
+    class RateLimiterStub:
+        def can_scan(self, sid=None):
+            return True, None
+
+        def record_scan(self, sid=None):
+            return None
+
+    app, socketio = build_scan_jobs_app({
+        "validate_target": lambda target: (True, None),
+        "rate_limiter": RateLimiterStub(),
+        "job_registry": ClientJobRegistry(),
+        "emit_job_status": lambda *args: None,
+        "set_last_scan_target_state": lambda **kwargs: None,
+        "start_scan_task": lambda *args, **kwargs: observed.setdefault("task", (args, kwargs)),
+        "generate_report_task": lambda *args: None,
+        "generate_pdf_from_saved_task": lambda *args: None,
+    })
+    socketio.start_background_task = lambda fn, *args: fn(*args)
+
+    client = socketio.test_client(app, headers=basic_auth_header())
+    client.emit("start_scan", {"target": "127.0.0.1", "skip_host_discovery": value})
+
+    assert observed["task"][0][1] == "127.0.0.1"
+    assert observed["task"][0][2] is value
+
+
+@pytest.mark.parametrize("value", [None, "true", 1, [], {}])
+def test_start_scan_rejects_non_boolean_discovery_override(monkeypatch, value):
+    configure_auth(monkeypatch)
+    observed = {"started": False}
+
+    class RateLimiterStub:
+        def can_scan(self, sid=None):
+            return True, None
+
+        def record_scan(self, sid=None):
+            return None
+
+    app, socketio = build_scan_jobs_app({
+        "validate_target": lambda target: (True, None),
+        "rate_limiter": RateLimiterStub(),
+        "job_registry": ClientJobRegistry(),
+        "emit_job_status": lambda *args: None,
+        "set_last_scan_target_state": lambda **kwargs: None,
+        "start_scan_task": lambda *args, **kwargs: observed.update(started=True),
+        "generate_report_task": lambda *args: None,
+        "generate_pdf_from_saved_task": lambda *args: None,
+    })
+    socketio.start_background_task = lambda fn, *args, **kwargs: fn(*args, **kwargs)
+
+    client = socketio.test_client(app, headers=basic_auth_header())
+    client.emit("start_scan", {"target": "127.0.0.1", "skip_host_discovery": value})
+    received = client.get_received()
+
+    assert observed["started"] is False
+    assert any(event["name"] == "scan_error" for event in received)
+
+
 def test_start_scan_uses_sid_scoped_rate_limit_and_broadcaster(monkeypatch):
     configure_auth(monkeypatch)
     observed = {}
@@ -223,12 +287,15 @@ def test_start_scan_uses_sid_scoped_rate_limit_and_broadcaster(monkeypatch):
             observed["record_scan_sid"] = sid
 
     class JobRegistryStub:
+        def get(self, sid, job_type):
+            return {"source_job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+
         def start(self, sid, job_type, details):
             observed["job_start"] = (sid, job_type, details)
             return True
 
     class BroadcasterStub:
-        def start_job(self, sid, job_type="scan"):
+        def start_job(self, sid, job_type="scan", source_job_id=None):
             observed["broadcaster"] = (sid, job_type)
 
     app, socketio = build_scan_jobs_app(
@@ -374,6 +441,7 @@ def test_disabled_network_fingerprint_skips_traceroute_and_public_ip_lookup(monk
 
     network_event = next(event for event in received if event["name"] == "network_key")
     local_ip_event = next(event for event in received if event["name"] == "local_ip")
+    assert network_event["args"][0]["fingerprinting_enabled"] is False
     assert network_event["args"][0]["total_hops"] == 0
     assert local_ip_event["args"][0]["local_ip"] == "192.168.1.42"
     assert local_ip_event["args"][0]["cidr"] == "192.168.1.0/24"

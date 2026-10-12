@@ -14,6 +14,7 @@ from nmapui.app_events_runtime import (
     update_job_progress as update_job_progress_runtime,
 )
 from nmapui.runtime_log import append_runtime_log
+from nmapui.scan_runtime import make_broadcast_emit
 
 
 def _log_runtime_event(runtime_store, event, data=None):
@@ -77,6 +78,14 @@ def build_event_helpers(*, socketio, job_registry, broadcaster=None, runtime_sto
         payload = job_registry.get(sid, job_type) or {"status": "idle", "details": {}}
         payload["job_type"] = job_type
         result = None
+        if broadcaster is not None and payload.get("source_job_id"):
+            # The registry owns this run UUID; establish a slot for alternate
+            # workflow entry points only when one has not already been started.
+            if broadcaster.get_source_job_id(sid, job_type=job_type) != payload["source_job_id"]:
+                broadcaster.start_job(sid, job_type=job_type, source_job_id=payload["source_job_id"])
+            make_broadcast_emit(owner_sid=sid, broadcaster=broadcaster, emit_to_client=emit_to_client,
+                                job_type=job_type, runtime_store=runtime_store)(sid, "job_status", payload)
+            targets = set()
         for target_sid in targets:
             result = emit_to_client_runtime(
                 socketio=socketio,
@@ -105,16 +114,17 @@ def build_event_helpers(*, socketio, job_registry, broadcaster=None, runtime_sto
         progress=None,
         details=None,
     ):
-        return update_job_progress_runtime(
-            socketio=socketio,
-            job_registry=job_registry,
-            sid=sid,
-            job_type=job_type,
-            phase=phase,
-            message=message,
-            progress=progress,
-            details=details,
-        )
+        # Progress must use the same durable, grouped source-envelope path as
+        # start/completion status. Raw browser events are not bridge evidence.
+        payload = {"phase": phase}
+        if message is not None:
+            payload["message"] = message
+        if progress is not None:
+            payload["progress"] = progress
+        if details:
+            payload.update(details)
+        job_registry.update(sid, job_type, details=payload)
+        return emit_job_status(sid, job_type)
 
     def ensure_job_not_cancelled(sid, job_type):
         return ensure_job_not_cancelled_runtime(

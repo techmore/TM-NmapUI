@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import uuid
 import os
 import signal
 import sys
@@ -84,6 +85,20 @@ def reconcile_interrupted_jobs(*, runtime_store, logger=logger, status=None) -> 
                     status="interrupted",
                     payload=payload,
                 )
+                source_job_id = payload.get("source_job_id")
+                source_job_type = payload.get("source_job_type")
+                if source_job_id and source_job_type in {"scan", "report"} and hasattr(runtime_store, "append_job_event"):
+                    try:
+                        source_job_id = str(uuid.UUID(source_job_id))
+                    except (ValueError, TypeError, AttributeError):
+                        source_job_id = None
+                    if source_job_id:
+                        recovery_payload = {**payload, "status": "interrupted", "job_type": source_job_type}
+                        source_event = {"client_event_id": str(uuid.uuid4()), "occurred_at": finished_at,
+                                        "event_name": "job_status", "payload": recovery_payload,
+                                        "source_job_id": source_job_id, "source_job_type": source_job_type}
+                        runtime_store.append_job_event(job_id=job_id, owner_sid=job.get("owner_sid"), job_type=source_job_type,
+                                                       event_name="job_status", payload=recovery_payload, source_event=source_event)
                 interrupted.append(job_id)
             except Exception as exc:
                 failed_jobs += 1
