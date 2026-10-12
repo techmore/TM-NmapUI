@@ -583,21 +583,25 @@
         </div>
     </div>
 
+    <style>
+        #history-tab-list { grid-template-columns: minmax(210px, 1fr) minmax(0, 2fr); align-items: start; }
+        @media (max-width: 700px) { #history-tab-list { grid-template-columns: 1fr; } #history-tab-list nav { max-height: 220px !important; } }
+    </style>
     <section id="history-tab-panel" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
         <div class="flex flex-wrap items-center justify-between gap-4 border-b border-olive-100 pb-4">
             <div>
                 <h2 class="text-3xl font-display italic text-olive-950">History</h2>
-                <p class="mt-1 text-sm text-olive-600">Review prior scans, compare selected scan pairs, and reopen historical artifacts.</p>
+                <p class="mt-1 text-sm text-olive-600">Choose a scan to review its saved results and changes.</p>
             </div>
             <div class="flex flex-wrap gap-2">
                 <button id="history-focus-current-btn" class="action-button action-button-primary action-button-compact" aria-label="Focus history on the current network context">
-                    Current Context
+                    This network
                 </button>
                 <button id="history-focus-all-btn" class="action-button action-button-secondary action-button-compact" aria-label="Show all history">
-                    All History
+                    All networks
                 </button>
                 <button id="refresh-history-tab-btn" class="action-button action-button-primary action-button-compact" aria-label="Refresh scan history">
-                    Refresh History
+                    Refresh
                 </button>
             </div>
         </div>
@@ -609,7 +613,7 @@
             <p id="history-compare-summary" class="mt-2 text-sm text-olive-700"></p>
             <div id="history-compare-details" class="mt-4 grid gap-4 lg:grid-cols-2"></div>
         </div>
-        <div id="history-tab-list" class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3"></div>
+        <div id="history-tab-list" class="mt-4 grid gap-3"></div>
     </section>
 
     <section id="reports-tab-panel" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">

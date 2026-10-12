@@ -604,40 +604,75 @@ function createHistoryCard(scan, options = {}) {
     return card;
 }
 
+let historySelectedPath = null;
+
 function renderHistoryTab(scans) {
     const list = document.getElementById('history-tab-list');
-    if (!list) {
-        return;
-    }
-
+    if (!list) return;
     list.replaceChildren();
-    const contextScans = filterScansToCurrentContext(scans);
-    const usingCurrentContext = historyViewMode === 'current' && getCurrentHistoryContext().hasContext;
-    const visibleScans = usingCurrentContext ? contextScans : scans;
-    renderHistoryContextPanel(usingCurrentContext ? contextScans : []);
+    const scoped = historyViewMode === 'current' && getCurrentHistoryContext().hasContext;
+    const visible = [...(scoped ? filterScansToCurrentContext(scans) : scans)]
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    document.getElementById('history-context-panel')?.classList.add('hidden');
+    document.getElementById('history-compare-panel')?.classList.add('hidden');
+    renderCompareStatus('');
+    setTabStatus('history-tab-status', visible.length
+        ? `${visible.length} saved records · Newest first · Up to 200 recent scan runs`
+        : 'No saved scans here yet. Choose All networks to see other scans.');
+    if (!visible.length) return;
+    if (!visible.some(scan => scan.path === historySelectedPath)) historySelectedPath = visible[0].path;
 
-    if (!visibleScans.length) {
-        setTabStatus('history-tab-status', usingCurrentContext && scans.length ? 'No saved scans for this network context. Choose Show all history to view other targets.' : 'No scan history found yet.');
-        return;
+    const timeline = document.createElement('nav');
+    timeline.setAttribute('aria-label', 'Saved scans');
+    timeline.style.cssText = 'display:flex;flex-direction:column;gap:4px;max-height:65vh;overflow:auto';
+    const review = document.createElement('div');
+    review.style.minWidth = '0';
+    list.append(timeline, review);
+
+    function select(scan) {
+        historySelectedPath = scan.path;
+        document.getElementById('history-compare-panel')?.classList.add('hidden');
+        renderCompareStatus('');
+        timeline.querySelectorAll('button').forEach(button => {
+            const selected = button.dataset.scanPath === scan.path;
+            button.setAttribute('aria-pressed', String(selected));
+            button.style.background = selected ? '#e5e8d8' : 'transparent';
+            button.style.borderColor = selected ? '#788454' : '#d8ddc7';
+        });
+        review.replaceChildren();
+        const card = createHistoryCard(scan);
+        // Reviewing a run immediately reveals its saved evidence.
+        if (scan.record_type === 'scan_run') card.querySelector('details').open = true;
+        const comparable = item => item.record_type !== 'scan_run' || (item.status === 'completed' && item.host_count > 0);
+        const previous = visible.slice(visible.indexOf(scan) + 1).find(item =>
+            item.target === scan.target && item.customer_id === scan.customer_id &&
+            (item.record_type === 'scan_run') === (scan.record_type === 'scan_run') && comparable(item));
+        if (previous && comparable(scan)) {
+            const compare = document.createElement('button');
+            compare.type = 'button';
+            compare.className = 'action-button action-button-primary action-button-compact';
+            compare.textContent = 'Compare with previous scan';
+            compare.title = `Previous compatible scan: ${formatScanTimestamp(previous)}`;
+            compare.addEventListener('click', () => compareHistoryScans(previous.path, scan.path));
+            card.querySelector(':scope > div:last-child').prepend(compare);
+        }
+        review.appendChild(card);
     }
-
-    const timelineLabels = buildTimelineLabels(visibleScans, visibleScans[0]?.path);
-    setTabStatus(
-        'history-tab-status',
-        usingCurrentContext
-            ? `Showing ${visibleScans.length} scan(s) for the current network context. Scan-run history includes up to 200 recent runs.`
-            : `Showing ${visibleScans.length} saved record(s). Scan-run history includes up to 200 recent runs.`
-    );
-    visibleScans.forEach((scan) => {
-        const timeline = timelineLabels.get(scan.path) || {};
-        list.appendChild(
-            createHistoryCard(scan, {
-                enableCompare: true,
-                timelineLabel: usingCurrentContext ? timeline.label : (scan === visibleScans[0] ? 'Latest saved scan' : 'Earlier saved scan'),
-                timelineTone: timeline.tone,
-            })
-        );
+    visible.forEach(scan => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.scanPath = scan.path;
+        button.style.cssText = 'text-align:left;padding:9px 11px;border:1px solid #d8ddc7;border-radius:10px;color:#303a22';
+        const date = document.createElement('strong');
+        date.textContent = formatScanTimestamp(scan);
+        const facts = document.createElement('div');
+        facts.style.cssText = 'font-size:12px;margin-top:3px';
+        facts.textContent = `${scan.customer_name || 'Unassigned'} · ${scan.target || 'Unknown target'} · ${scan.status || 'completed'}${scan.host_count != null ? ` · ${scan.host_count} hosts` : ''}`;
+        button.append(date, facts);
+        button.addEventListener('click', () => select(scan));
+        timeline.appendChild(button);
     });
+    select(visible.find(scan => scan.path === historySelectedPath));
 }
 
 function renderReportsTab(scans) {
