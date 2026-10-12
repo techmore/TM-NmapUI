@@ -72,7 +72,7 @@ function syncCustomerSelectors(profile = window.currentCustomerProfile || {}) {
     ].filter(Boolean);
     const signals = getCurrentNetworkCustomerSignals(profile);
     const matchedCustomer = customers.find(customer => customerMatchesCurrentNetwork(customer, signals));
-    const selectedCustomer = matchedCustomer || currentProfileCustomer;
+    const selectedCustomer = customers.find(customer => customer.id === window.serverAssignedCustomerId) || matchedCustomer || currentProfileCustomer;
 
     selectors.forEach(select => {
         const previousValue = select.value;
@@ -185,8 +185,32 @@ function initializeCustomerUI() {
         window.currentMatchedCustomerId = event.target.value || 'unknown';
         const hiddenSelector = document.getElementById('current-customer');
         if (hiddenSelector) hiddenSelector.value = event.target.value;
+        window.serverAssignedCustomerId = event.target.value || '';
+        if (event.target.value && !event.target.value.startsWith('profile:')) {
+            window.socket?.emit('assign_customer', {customer_id:event.target.value, customer_name:event.target.options[event.target.selectedIndex]?.textContent || ''});
+        }
     });
     window.socket?.on('customer_profile', renderCustomerFingerprint);
+    window.socket?.on('customers_list', data => {
+        if (!Array.isArray(data)) return;
+        const merged = new Map(loadLocalCustomers().map(customer => [customer.id, customer]));
+        data.filter(customer => customer.id && customer.id !== 'unknown').forEach(customer => merged.set(customer.id, {
+            ...customer, target: customer.networks?.private_ranges?.[0] || '', publicIP: customer.networks?.public_ip || ''
+        }));
+        saveLocalCustomers(Array.from(merged.values()));
+        syncCustomerSelectors();
+        window.socket?.emit('get_customer_info');
+    });
+    function applyAssignedCustomer(customer) {
+        if (!customer?.id || customer.id === 'unknown') return;
+        window.serverAssignedCustomerId = customer.id;
+        syncCustomerSelectors();
+        document.getElementById('customer-quick-add')?.dispatchEvent(new Event('network-profile-ready', {bubbles:true}));
+    }
+    window.socket?.on('customer_info', applyAssignedCustomer);
+    window.socket?.on('customer_assigned', data => applyAssignedCustomer(data.customer));
+    window.socket?.emit('get_customers');
+    window.socket?.emit('get_customer_info');
     document.getElementById('customers-tab-list')?.addEventListener('click', event => {
         const button = event.target.closest('.delete-customer-btn');
         if (!button) return;

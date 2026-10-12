@@ -45,6 +45,7 @@
       }); panel.append(grid, textNode('p', 'Proposed addresses only. Check DHCP scope, reservations and device MACs before assignment. USB-only devices do not need LAN IPs. Preserve existing servers and gateway.'));
     } catch (_) { /* Keep scan controls independent of optional planning data. */ }
   }
+  document.addEventListener('network-profile-ready', renderPlan);
   document.addEventListener('change', e => { if (['scan-target','customer-quick-add'].includes(e.target.id)) renderPlan(); });
   document.addEventListener('DOMContentLoaded', () => { renderPlan(); timer = setInterval(renderPlan, 15000); });
 })();
