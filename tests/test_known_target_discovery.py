@@ -63,7 +63,7 @@ def test_known_target_workflow_passes_flag_through_both_phases(scan_only, exclus
 @pytest.mark.parametrize("override, expected", [(True, True), (False, False)])
 def test_per_scan_known_target_override_controls_discovery_and_deep_scan(override, expected):
     commands, deep_calls = [], []
-    saved_settings = {'scan_rules': {'skip_host_discovery': not expected}}
+    saved_settings = {'scan_rules': {'skip_host_discovery': not expected, 'firewall_discovery_only': False}}
     registry = ClientJobRegistry()
     registry.start('sid', 'scan')
     context = build_scan_workflow_context({

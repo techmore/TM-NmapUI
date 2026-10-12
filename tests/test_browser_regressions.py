@@ -722,6 +722,7 @@ def test_history_tab_renders_diff_summary(browser_server, playwright_browser, sc
     page.locator("#tab-history-btn").click()
     page.locator("#history-focus-all-btn").click()
 
+    page.get_by_role("navigation", name="Saved scans").get_by_role("button").filter(has_text=scan_fixture["customer_name"]).first.click()
     history_list = page.locator("#history-tab-list")
     fixture_card = history_list.locator("article").filter(
         has=page.locator("h3", has_text=scan_fixture["customer_name"])
@@ -762,6 +763,7 @@ def test_history_target_is_rendered_as_text_not_html(
         page.goto(browser_server["base_url"], wait_until="domcontentloaded")
         page.locator("#tab-history-btn").click()
         page.locator("#history-focus-all-btn").click()
+        page.get_by_role("navigation", name="Saved scans").get_by_role("button").filter(has_text=scan_fixture["customer_name"]).first.click()
         card = page.locator("#history-tab-list article").filter(
             has=page.locator("h3", has_text=scan_fixture["customer_name"])
         ).first
@@ -1005,9 +1007,11 @@ def test_history_tab_compares_selected_scan_pair(browser_server, playwright_brow
     history_cards = page.locator("#history-tab-list article").filter(
         has=page.locator("h3", has_text=scan_fixture["customer_name"])
     )
-    # History is newest first: compare the current scan against the older base.
-    history_cards.nth(1).get_by_role("button", name="Select Base").click()
-    history_cards.first.get_by_role("button", name="Compare to Base").click()
+    # Select the newest fixture; comparison chooses its compatible predecessor.
+    timeline = page.get_by_role("navigation", name="Saved scans")
+    timeline.get_by_role("button").filter(has_text=scan_fixture["customer_name"]).first.click()
+    assert history_cards.count() == 1
+    history_cards.first.get_by_role("button", name="Compare with previous scan").click()
 
     page.locator("#history-compare-panel").wait_for()
     page.locator("#history-compare-summary").get_by_text("new host(s)").wait_for()

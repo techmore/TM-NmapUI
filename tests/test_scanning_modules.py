@@ -123,7 +123,7 @@ def test_get_nmap_scan_technique_uses_syn_scan_as_root(monkeypatch):
 def test_run_arp_scan_reports_missing_privilege_as_nonfatal(monkeypatch):
     calls = []
     emitted = []
-    monkeypatch.setattr(scanning.privileged, "privileged_prefix", lambda: [])
+    monkeypatch.setattr(scanning.privileged, "arp_privileged_prefix", lambda: [])
 
     def run_cancellable_command(cmd, **kwargs):
         calls.append(cmd)
@@ -158,7 +158,7 @@ def test_run_arp_scan_reports_missing_privilege_as_nonfatal(monkeypatch):
 
 def test_run_arp_scan_uses_the_installed_privileged_helper(monkeypatch):
     helper_prefix = ["sudo", "-n", "/usr/local/libexec/nmapui-privileged-scanner"]
-    monkeypatch.setattr(scanning.privileged, "privileged_prefix", lambda: helper_prefix)
+    monkeypatch.setattr(scanning.privileged, "arp_privileged_prefix", lambda: helper_prefix)
     calls = []
 
     def run_cancellable_command(cmd, **kwargs):

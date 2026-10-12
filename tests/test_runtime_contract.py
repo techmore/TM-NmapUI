@@ -1688,7 +1688,9 @@ def test_template_does_not_keep_inline_report_generation_block():
     assert "document.getElementById('tab-customers-btn')?.addEventListener('click', () => switchAppTab('customers'));" in reports_source
     assert "document.getElementById('history-focus-current-btn')?.addEventListener('click'" in reports_source
     assert "document.getElementById('history-focus-all-btn')?.addEventListener('click'" in reports_source
-    assert "Showing ${visibleScans.length} scan(s) for the current network context." in reports_source
+    assert "Newest first" in reports_source
+    assert "Compare with previous scan" in reports_source
+    assert "historySelectedPath" in reports_source
     assert "loadCustomersTab()" in reports_source
     assert "id=\"cust-public-ip\"" in template
     # customer updates fan out from the backend handler; UI refreshes via customer_profile.

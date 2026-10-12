@@ -133,6 +133,7 @@ Updated: 2026
             table { table-layout: auto; }
             th, td { font-size: 9px !important; padding: 3px 4px !important; }
             td, th { word-break: break-word; overflow-wrap: anywhere; }
+            pre { white-space: pre-wrap !important; overflow-wrap: anywhere !important; word-break: break-word !important; overflow: visible !important; }
             .font-mono, td.font-mono { word-break: break-all !important; }
             nav.fixed { position: static !important; }
           }
