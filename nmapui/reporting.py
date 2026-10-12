@@ -676,6 +676,10 @@ def convert_xml_to_html(
             timeout=REPORT_TRANSFORM_TIMEOUT_SECONDS,
         )
         _embed_report_assets(html_path)
+        from nmapui.topology_recommendations import append_recommendations
+        html_path.write_text(append_recommendations(
+            html_path.read_text(encoding="utf-8"), [xml_path.read_bytes()]
+        ), encoding="utf-8")
         return True
     except subprocess.TimeoutExpired:
         logger.error(
