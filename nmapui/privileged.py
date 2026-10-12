@@ -115,3 +115,11 @@ def is_permission_denied(result) -> bool:
         )
     ).lower()
     return any(token in combined for token in PERMISSION_DENIED_TOKENS)
+
+
+def arp_privileged_prefix() -> list[str]:
+    """Prefer the restricted ARP-only helper on per-user Mac installations."""
+    helper = "/Library/PrivilegedHelperTools/DaedalusARP/scan"
+    if not is_root() and os.path.isfile(helper) and os.access(helper, os.X_OK):
+        return [SUDO, "-n", helper]
+    return privileged_prefix()

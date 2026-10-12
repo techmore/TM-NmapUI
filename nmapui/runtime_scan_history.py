@@ -21,7 +21,8 @@ def scan_run_rows(store):
             'timestamp': job.get('created_at', ''),
             'updated_at': job.get('updated_at', ''),
             'target': str(details.get('target') or '')[:255],
-            'customer_name': 'Scanner run', 'customer_id': '',
+            'customer_name': str(details.get('customer_name') or 'Unassigned scan')[:255],
+            'customer_id': str(details.get('customer_id') or '')[:255],
             'status': job.get('status', 'unknown'),
             'host_count': details.get('host_count'),
             'has_html': False, 'has_pdf': False, 'has_xml': False,
@@ -81,7 +82,9 @@ def scan_run_details(store, job_id):
             hosts[host['ip'][:255]] = {'ip': host['ip'][:255], 'ports': ports}
     payload = job.get('payload') if isinstance(job.get('payload'), dict) else {}
     details = payload.get('details') if isinstance(payload.get('details'), dict) else {}
-    return {'status': job.get('status'), 'target': str(details.get('target') or '').strip(),
+    return {'customer_id': str(details.get('customer_id') or '')[:255],
+            'customer_name': str(details.get('customer_name') or '')[:255],
+            'status': job.get('status'), 'target': str(details.get('target') or '').strip(),
             'evidence_valid': evidence_valid, 'hosts': list(hosts.values()),
             'evidence_scope': 'Saved deep scan events; discovery-only runs may have no port evidence.',
             'bounded': len(events) >= 500 or truncated}
@@ -94,6 +97,8 @@ def compare_scan_runs(store, base_id, current_id):
     current = scan_run_details(store, current_id)
     if baseline is None or current is None:
         raise ValueError('A selected scan is outside the available history window.')
+    if baseline['customer_id'] != current['customer_id']:
+        raise ValueError('Compare scans assigned to the same customer.')
     if not baseline['target'] or baseline['target'] != current['target']:
         raise ValueError('Compare scans of the same target.')
     if any(run['status'] != 'completed' or run['bounded'] or not run['evidence_valid'] or not run['hosts'] for run in (baseline, current)):

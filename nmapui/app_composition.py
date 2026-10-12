@@ -508,8 +508,10 @@ def build_scan_job_handler_deps(
     broadcaster,
     runtime_store=None,
     emit_to_client=None,
+    get_client_state=None,
 ):
     return {
+        "get_client_state": get_client_state,
         "validate_target": validate_target,
         "rate_limiter": rate_limiter,
         "job_registry": job_registry,

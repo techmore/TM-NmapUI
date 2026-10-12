@@ -176,6 +176,7 @@ def register_app_handlers(
             run_traceroute=run_traceroute,
         ),
         scan_job_handler_deps=build_scan_job_handler_deps(
+            get_client_state=get_client_state,
             validate_target=validate_target,
             rate_limiter=rate_limiter,
             job_registry=job_registry,

@@ -190,7 +190,7 @@ def run_arp_scan(
 
     try:
         command = [
-            *privileged.privileged_prefix(),
+            *privileged.arp_privileged_prefix(),
             "arp-scan",
             target,
             "--interface",

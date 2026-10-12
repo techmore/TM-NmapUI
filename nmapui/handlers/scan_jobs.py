@@ -16,6 +16,7 @@ def register_scan_job_handlers(socketio, deps):
     generate_report_task = deps["generate_report_task"]
     generate_pdf_from_saved_task = deps.get("generate_pdf_from_saved_task")
 
+    get_client_state = deps.get("get_client_state")
     runtime_store = deps.get("runtime_store")
     emit_to_client = deps.get("emit_to_client") or (lambda sid, event, data=None: socketio.emit(event, data, to=sid))
     receipt_deps = {"broadcaster": broadcaster, "emit_to_client": emit_to_client, "runtime_store": runtime_store}
@@ -66,7 +67,14 @@ def register_scan_job_handlers(socketio, deps):
             emit("scan_error", rate_msg)
             return
 
-        if not job_registry.start(request.sid, "scan", {"target": target, **({"daedalus_command_id": command_id, "daedalus_command_namespace": broadcaster.get_bridge_namespace(request.sid)} if command_id else {})}):
+        state = get_client_state(sid=request.sid) if get_client_state else {}
+        customer = state.get("current_customer", {})
+        customer_id = str(customer.get("id") or "")[:255]
+        if customer_id == "unknown":
+            customer_id = ""
+        identity = {"customer_id": customer_id, "customer_name": str(customer.get("name") or "")[:255] if customer_id else "",
+                    "customer_identity_source": "scanner_session_at_start"}
+        if not job_registry.start(request.sid, "scan", {"target": target, **identity, **({"daedalus_command_id": command_id, "daedalus_command_namespace": broadcaster.get_bridge_namespace(request.sid)} if command_id else {})}):
             reason = (
                 job_registry.get_start_rejection_reason(request.sid, "scan")
                 if hasattr(job_registry, "get_start_rejection_reason")
