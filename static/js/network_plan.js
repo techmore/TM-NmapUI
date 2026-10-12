@@ -12,6 +12,25 @@
       const profile = (settings.target_profiles || []).find(p => p.target === target && p.customer_id === customer && p.network_plan);
       panel.replaceChildren(); panel.classList.toggle('hidden', !profile); if (!profile) return;
       const plan = profile.network_plan;
+      const toggleLabel = document.createElement('label');
+      const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = profile.reports?.include_topology_recommendations === true;
+      toggleLabel.append(toggle, document.createTextNode(' Include this network map and recommendations in new PDFs'));
+      const saveState = textNode('small', ' Saved for this customer/subnet.');
+      toggle.addEventListener('change', async () => {
+        toggle.disabled = true;
+        try {
+          const latest = await fetch('/api/settings'); if (!latest.ok) throw new Error('Could not read settings');
+          const document = await latest.json();
+          const selected = document.target_profiles.find(p => p.id === profile.id && p.customer_id === customer && p.target === target);
+          if (!selected) throw new Error('Network profile changed; reload');
+          selected.reports = {...selected.reports, include_topology_recommendations: toggle.checked};
+          const result = await fetch('/api/settings', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(document)});
+          const payload = await result.json(); if (!result.ok || payload.success !== true) throw new Error('Save failed');
+          saveState.textContent = ' Saved for this customer/subnet.';
+        } catch (error) { toggle.checked = !toggle.checked; saveState.textContent = ' ' + error.message; }
+        finally { toggle.disabled = false; }
+      });
+      panel.append(toggleLabel, saveState);
       panel.append(textNode('h2', plan.title || profile.name), textNode('p', 'Planned operational map · customer-reported device states; cabling and PC identities unverified.'));
       const root = textNode('div', 'LAN ' + plan.subnet + ' · Gateway ' + plan.gateway + ' · switch links unverified'); root.style.cssText = 'padding:8px;border:1px solid #a6ab90;border-radius:6px;margin:8px 0'; panel.append(root);
       const grid = document.createElement('div'); grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px';
