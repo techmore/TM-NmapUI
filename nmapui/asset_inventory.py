@@ -3,6 +3,12 @@
 from datetime import datetime
 from html import escape
 
+from nmapui.mac_vendor import (
+    is_globally_administered_unicast_mac,
+    is_locally_administered_mac,
+    lookup_mac_vendor,
+)
+
 
 ICON_PATHS = {
     "gateway": '<path d="M4 12h16v7H4zM7 9l5-4 5 4M8 15h.01M12 15h.01M16 15h.01"/><path d="M3 9a9 9 0 0 1 18 0"/>',
@@ -39,18 +45,42 @@ def _device_kind(asset):
     return "unknown"
 
 
-def _service_summary(asset):
+def _asset_mac_vendor(asset):
+    mac = asset.get("mac")
+    if mac and not is_globally_administered_unicast_mac(mac):
+        return ""
+    return str(asset.get("vendor") or "").strip() or lookup_mac_vendor(mac)
+
+
+def _service_summary(asset, *, include_mac_vendor=True):
     summary = str(asset.get("scan_summary") or "").strip()
-    if summary:
-        return escape(summary)
     ports = str(asset.get("ports") or "").strip()
-    vendor = str(asset.get("vendor") or "").strip()
+    mac = str(asset.get("mac") or "").strip()
+    vendor = _asset_mac_vendor(asset)
     details = []
-    if vendor:
-        details.append(escape(vendor))
-    if ports:
+    if include_mac_vendor and vendor and vendor.casefold() not in summary.casefold():
+        details.append(f'MAC OUI vendor: {escape(vendor)}')
+    elif include_mac_vendor and not vendor and is_locally_administered_mac(mac):
+        if "random" not in summary.casefold() and "private" not in summary.casefold():
+            details.append("MAC OUI vendor unavailable: private/randomized address")
+    if summary:
+        details.append(escape(summary))
+    elif ports:
         details.append("Open: " + escape(ports))
     return "<br>".join(details) or "No service details returned"
+
+
+def _mac_vendor_line(asset, mac):
+    if not mac or mac == "—":
+        return f"MAC: {mac}"
+    vendor = _asset_mac_vendor(asset)
+    if vendor:
+        return f"MAC: {mac} · OUI vendor: {vendor}"
+    if is_locally_administered_mac(mac):
+        return f"MAC: {mac} · OUI vendor unavailable (randomized/private address)"
+    if not is_globally_administered_unicast_mac(mac):
+        return f"MAC: {mac} · OUI vendor unavailable (not a unicast address)"
+    return f"MAC: {mac} · OUI vendor unknown"
 
 
 def render_asset_inventory_html(
@@ -94,8 +124,12 @@ def render_asset_inventory_html(
             detail_parts = []
             if is_expected:
                 detail_parts.append('<span class="record-status">EXPECTED · NOT OBSERVED</span>')
-            detail_parts.append(f'<span class="details-copy">{_service_summary(asset)}</span>')
-            detail_parts.append(f'<span class="mac-inline">MAC: {mac}</span>')
+            detail_parts.append(
+                f'<span class="details-copy">{_service_summary(asset, include_mac_vendor=False)}</span>'
+            )
+            detail_parts.append(
+                f'<span class="mac-inline">{escape(_mac_vendor_line(asset, mac))}</span>'
+            )
             device_cell = (
                 f'<td class="hostname">{hostname}<span class="write"><i></i></span></td>'
             )
@@ -119,10 +153,10 @@ def render_asset_inventory_html(
     )
     if orientation == "portrait":
         colgroup = '<col style="width:8%"><col style="width:19%"><col style="width:31%"><col style="width:42%">'
-        headings = "<th>TYPE</th><th>IP / DRAFT</th><th>DEVICE NAME · ROOM</th><th>SCAN IDENTIFICATION · MAC</th>"
+        headings = "<th>TYPE</th><th>IP / DRAFT</th><th>DEVICE NAME · ROOM</th><th>SCAN DETAILS · MAC / OUI VENDOR</th>"
     else:
         colgroup = '<col class="icon"><col class="ip"><col class="hostname"><col class="details"><col class="mac"><col class="write">'
-        headings = "<th>TYPE</th><th>IP / DRAFT</th><th>HOSTNAME</th><th>SCAN IDENTIFICATION</th><th>MAC ADDRESS</th><th>YOUR DESCRIPTION / ROOM</th>"
+        headings = "<th>TYPE</th><th>IP / DRAFT</th><th>HOSTNAME</th><th>SCAN IDENTIFICATION / MAC OUI VENDOR</th><th>MAC ADDRESS</th><th>YOUR DESCRIPTION / ROOM</th>"
     legend = " ".join(
         f'<span class="{kind}"><svg viewBox="0 0 24 24" aria-hidden="true">{ICON_PATHS[kind]}</svg>{label}</span>'
         for kind, label in (("gateway", "Gateway"), ("server", "Server"), ("desktop", "Desktop"),
@@ -168,14 +202,14 @@ td {{ border-bottom:1px solid #dce3e9; height:24px; padding:1px 3px; vertical-al
 td.icon {{ padding:2px; text-align:center; }} td.icon svg {{ height:17px; width:17px; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.8; }}
 .gateway {{ color:#2d72b8; }} .server {{ color:#7558a6; }} .desktop {{ color:#227e71; }} .network {{ color:#3974a8; }} .unknown {{ color:#758392; }} .laptop {{ color:#34878a; }} .conference {{ color:#bf7a21; }} .printer {{ color:#b6514a; }}
 td.ip {{ color:#163a5b; font: bold 8.2pt "DejaVu Sans Mono", monospace; white-space:nowrap; }} td.hostname {{ font-size:7.7pt; font-weight:bold; overflow-wrap:anywhere; }}
-td.details {{ color:#47586a; font-size:7pt; line-height:1.18; overflow-wrap:anywhere; }} td.mac {{ color:#566475; font:6.5pt "DejaVu Sans Mono",monospace; overflow-wrap:anywhere; }}
+td.details {{ color:#47586a; font-size:7pt; line-height:1.18; overflow-wrap:anywhere; }} td.mac {{ color:#273444; font:bold 7.1pt "DejaVu Sans Mono",monospace; overflow-wrap:anywhere; }}
 td.write span {{ border-bottom:1px solid #c8d1db; display:block; height:8px; }} .empty {{ color:#667687; font-size:10pt; height:80px; text-align:center; }}
 .legend {{ align-items:center; color:#536477; display:flex; flex-wrap:wrap; font-size:6.6pt; gap:8px; margin-top:4px; }} .legend b {{ color:#23415f; }}
 .legend span {{ align-items:center; display:inline-flex; gap:3px; }} .legend svg {{ fill:none; height:13px; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.8; width:13px; }}
 .proposed-tag, .record-status {{ background:#edf4fa; border-radius:2px; color:#35516d; display:inline-block; font: bold 5.8pt Arial,sans-serif; letter-spacing:.2px; margin-bottom:2px; padding:1px 3px; }}
 tr.expected {{ background:#f4f7fa; }}
 td.hostname .write {{ display:block; margin-top:3px; }} td.hostname .write i {{ border-bottom:1px solid #c8d1db; display:block; height:10px; }}
-.details-copy {{ display:block; }} .mac-inline {{ color:#566475; display:block; font:6.2pt "DejaVu Sans Mono",monospace; margin-top:2px; }}
+.details-copy {{ display:block; }} .mac-inline {{ color:#273444; display:block; font:bold 6.7pt "DejaVu Sans Mono",monospace; margin-top:2px; }}
 .notes {{ background:#f3f7fa; border-left:2px solid #8a9bad; color:#47586a; font-size:6.5pt; line-height:1.15; margin-top:3px; padding:3px 5px; }}
 body.portrait header {{ align-items:flex-end; }}
 body.portrait h1 {{ font-size:17pt; }}
@@ -189,13 +223,13 @@ body.portrait td.ip {{ font-size:7.3pt; line-height:1.1; white-space:normal; ove
 body.portrait td.hostname {{ font-size:7.7pt; line-height:1.1; }}
 body.portrait td.details {{ font-size:7pt; line-height:1.08; }}
 body.portrait td.hostname .write i {{ height:9px; }}
-body.portrait .mac-inline {{ font-size:5.8pt; overflow-wrap:anywhere; }}
+body.portrait .mac-inline {{ font-size:7.2pt; overflow-wrap:anywhere; }}
 body.portrait .expected-legend {{ padding-top:1px; }}
 {monochrome_css}
 footer {{ border-top:1px solid #d7e0e8; color:#667687; display:flex; font-size:6.5pt; justify-content:space-between; margin-top:3px; padding-top:2px; break-inside:avoid; page-break-inside:avoid; }}
 </style></head><body{body_class}>
 <header><div><div class="eyebrow">Network asset inventory · printable worksheet</div><h1>{title}</h1></div><div class="badge"><span>{network_label}</span><span class="orientation">{orientation.upper()} · LETTER</span></div></header>
-<p class="sub">Scan date: {escape(str(scanned_at))} &nbsp;·&nbsp; {count_label}. Hostnames and vendors are shown only when the scan reported them.</p>
+<p class="sub">Scan date: {escape(str(scanned_at))} &nbsp;·&nbsp; {count_label}. Hostnames appear when reported; MAC OUI vendors are matched locally from Nmap data. Private/randomized MACs are not attributed.</p>
 <table><colgroup>{colgroup}</colgroup>
 <thead><tr>{headings}</tr></thead>
 <tbody>{''.join(items)}{empty}</tbody></table>

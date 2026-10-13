@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 from urllib.parse import unquote, urlsplit
 
 from nmapui.runtime_log import append_runtime_log
+from nmapui.mac_vendor import is_globally_administered_unicast_mac, lookup_mac_vendor
 from persistence import (
     get_scan_metadata_index_path,
     iter_scan_metadata_documents,
@@ -1147,6 +1148,17 @@ def parse_scan_xml_for_assets(xml_path):
                 elif addr.get("addrtype") == "mac":
                     asset["mac"] = addr.get("addr")
                     asset["vendor"] = addr.get("vendor", "")
+                    asset["vendor_source"] = "MAC OUI" if asset["vendor"] else ""
+
+            if asset["mac"]:
+                if not is_globally_administered_unicast_mac(asset["mac"]):
+                    # Private and multicast addresses cannot identify a NIC maker.
+                    asset["vendor"] = ""
+                    asset["vendor_source"] = ""
+                elif not asset["vendor"]:
+                    asset["vendor"] = lookup_mac_vendor(asset["mac"])
+                    if asset["vendor"]:
+                        asset["vendor_source"] = "MAC OUI"
 
             hostnames = host.find("hostnames")
             if hostnames is not None:

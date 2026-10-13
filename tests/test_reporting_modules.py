@@ -84,7 +84,7 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
         [{
             "ip": "192.168.1.12",
             "hostname": '<script>alert("x")</script>',
-            "mac": "AA:BB:CC:DD:EE:FF",
+            "mac": "00:BB:CC:DD:EE:FF",
             "vendor": "Example Vendor",
             "ports": "631 (ipp), 9100 (jetdirect)",
         }],
@@ -94,11 +94,12 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
 
     assert "192.168.1.0/24" in html
     assert "192.168.1.12" in html
-    assert "AA:BB:CC:DD:EE:FF" in html
+    assert "00:BB:CC:DD:EE:FF" in html
     assert "&lt;script&gt;" in html
     assert "<script>alert" not in html
     assert 'class="icon printer"' in html
     assert "YOUR DESCRIPTION / ROOM" in html
+    assert "MAC OUI vendor: Example Vendor" in html
     assert "@page { size: Letter landscape" in html
     assert "height:24px" in html
     assert "1 scan responder" in html
@@ -111,6 +112,8 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
                 "device_type": "printer",
                 "proposed_ip": "192.168.1.50",
                 "hostname": "Label_Printer",
+                "mac": "00:11:22:33:44:55",
+                "vendor": "Acme Label Systems",
                 "scan_summary": "Zebra ZT410 · verify model",
             },
         ],
@@ -122,11 +125,13 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
     assert "body.monochrome td.icon svg" in portrait_bw
     assert "PORTRAIT · LETTER" in portrait_bw
     assert "DEVICE NAME · ROOM" in portrait_bw
-    assert "SCAN IDENTIFICATION · MAC" in portrait_bw
+    assert "SCAN DETAILS · MAC / OUI VENDOR" in portrait_bw
     assert "DRAFT" in portrait_bw
     assert "EXPECTED · NOT OBSERVED" in portrait_bw
     assert "1 scan responder · 1 expected device not observed" in portrait_bw
     assert "Zebra ZT410 · verify model" in portrait_bw
+    assert "OUI vendor: Acme Label Systems" in portrait_bw
+    assert "font-size:7.2pt" in portrait_bw
 
 
 @pytest.mark.skipif(
@@ -287,7 +292,7 @@ def test_parse_scan_xml_for_assets_extracts_asset_data(tmp_path):
           <host>
             <status state="up"/>
             <address addr="192.168.1.10" addrtype="ipv4"/>
-            <address addr="AA:BB:CC:DD:EE:FF" addrtype="mac" vendor="Acme"/>
+            <address addr="00:BB:CC:DD:EE:FF" addrtype="mac" vendor="Acme"/>
             <hostnames><hostname name="router.local"/></hostnames>
             <ports>
               <port portid="80">
@@ -304,8 +309,39 @@ def test_parse_scan_xml_for_assets_extracts_asset_data(tmp_path):
 
     assert assets[0]["ip"] == "192.168.1.10"
     assert assets[0]["hostname"] == "router.local"
+    assert assets[0]["mac"] == "00:BB:CC:DD:EE:FF"
     assert assets[0]["vendor"] == "Acme"
     assert assets[0]["ports"] == "80 (http)"
+
+
+def test_parse_scan_xml_uses_local_mac_oui_fallback_and_skips_randomized_vendor(tmp_path, monkeypatch):
+    xml_path = tmp_path / "scan.xml"
+    xml_path.write_text(
+        """
+        <nmaprun>
+          <host><status state="up"/>
+            <address addr="192.168.1.20" addrtype="ipv4"/>
+            <address addr="00:11:22:33:44:55" addrtype="mac"/>
+          </host>
+          <host><status state="up"/>
+            <address addr="192.168.1.21" addrtype="ipv4"/>
+            <address addr="02:11:22:33:44:55" addrtype="mac" vendor="Misleading OUI"/>
+          </host>
+          <host><status state="up"/>
+            <address addr="192.168.1.22" addrtype="ipv4"/>
+            <address addr="01:11:22:33:44:55" addrtype="mac" vendor="Multicast OUI"/>
+          </host>
+        </nmaprun>
+        """
+    )
+    monkeypatch.setattr(reporting, "lookup_mac_vendor", lambda _mac: "Acme Networks")
+
+    assets = parse_scan_xml_for_assets(xml_path)
+
+    assert assets[0]["vendor"] == "Acme Networks"
+    assert assets[0]["vendor_source"] == "MAC OUI"
+    assert assets[1]["vendor"] == ""
+    assert assets[2]["vendor"] == ""
 
 
 def test_save_scan_metadata_persists_customer_id(tmp_path):
