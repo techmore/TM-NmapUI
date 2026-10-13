@@ -153,7 +153,7 @@ def render_asset_inventory_html(
         'No responding hosts were recorded in this scan.</td></tr>'
     )
     if orientation == "portrait":
-        colgroup = '<col style="width:8%"><col style="width:19%"><col style="width:31%"><col style="width:42%">'
+        colgroup = '<col style="width:8%"><col style="width:19%"><col style="width:35%"><col style="width:38%">'
         headings = "<th>TYPE</th><th>IP / DRAFT</th><th>DEVICE NAME · ROOM</th><th>SCAN DETAILS · MAC / OUI VENDOR</th>"
     else:
         colgroup = '<col class="icon"><col class="ip"><col class="hostname"><col class="details"><col class="mac"><col class="write">'
@@ -197,7 +197,7 @@ h1 {{ color:#183557; font-size:18pt; letter-spacing:-.3px; margin:3px 0 0; }}
 .badge .orientation {{ font-size:6.4pt; letter-spacing:.5px; }}
 .sub {{ color:#536477; font-size:7.8pt; margin:6px 0 8px; }}
 table {{ border-collapse:collapse; table-layout:fixed; width:100%; }}
-col.icon {{ width:5%; }} col.ip {{ width:12%; }} col.hostname {{ width:19%; }} col.details {{ width:27%; }} col.mac {{ width:17%; }} col.write {{ width:20%; }}
+col.icon {{ width:5%; }} col.ip {{ width:12%; }} col.hostname {{ width:24%; }} col.details {{ width:24%; }} col.mac {{ width:16%; }} col.write {{ width:19%; }}
 thead {{ display:table-header-group; }} th {{ background:#eaf0f6; border-bottom:1px solid #b8c7d6; color:#35516d; font-size:6.8pt; letter-spacing:.3px; padding:3px 3px; text-align:left; }}
 td {{ border-bottom:1px solid #dce3e9; height:24px; padding:1px 3px; vertical-align:middle; }} tbody tr:nth-child(even) {{ background:#f8fafc; }}
 td.icon {{ padding:2px; text-align:center; }} td.icon svg {{ height:17px; width:17px; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.8; }}

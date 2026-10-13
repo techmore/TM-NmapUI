@@ -101,6 +101,7 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
     assert "YOUR DESCRIPTION / ROOM" in html
     assert "MAC OUI vendor: Example Vendor" in html
     assert "@page { size: Letter landscape" in html
+    assert "col.hostname { width:24%; }" in html
     assert "body.landscape td { height:22px; }" in html
     assert "1 scan responder" in html
 
@@ -126,6 +127,7 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
     assert "body.monochrome td.icon svg" in portrait_bw
     assert "PORTRAIT · LETTER" in portrait_bw
     assert "DEVICE NAME · ROOM" in portrait_bw
+    assert 'width:8%"><col style="width:19%"><col style="width:35%"><col style="width:38%"' in portrait_bw
     assert "SCAN DETAILS · MAC / OUI VENDOR" in portrait_bw
     assert "DRAFT" in portrait_bw
     assert "EXPECTED · NOT OBSERVED" in portrait_bw
