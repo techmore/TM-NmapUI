@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from nmapui.asset_inventory import render_asset_inventory_html
 import nmapui.reporting as reporting
 from nmapui.reporting import (
     _allow_report_pdf_resource,
@@ -76,6 +77,29 @@ def test_pdf_resource_policy_blocks_script_and_out_of_tree_requests(tmp_path):
     assert _allow_report_pdf_resource(
         "data:image/png;base64,AA==", "image", report_root
     )
+
+
+def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
+    html = render_asset_inventory_html(
+        [{
+            "ip": "192.168.1.12",
+            "hostname": '<script>alert("x")</script>',
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "vendor": "Example Vendor",
+            "ports": "631 (ipp), 9100 (jetdirect)",
+        }],
+        network="192.168.1.0/24",
+        scanned_at="2026-10-13 10:00",
+    )
+
+    assert "192.168.1.0/24" in html
+    assert "192.168.1.12" in html
+    assert "AA:BB:CC:DD:EE:FF" in html
+    assert "&lt;script&gt;" in html
+    assert "<script>alert" not in html
+    assert 'class="icon printer"' in html
+    assert "YOUR DESCRIPTION / ROOM" in html
+    assert "@page { size: Letter landscape" in html
 
 
 @pytest.mark.skipif(

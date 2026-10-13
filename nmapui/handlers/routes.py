@@ -1,5 +1,7 @@
 import os
 import ipaddress
+import tempfile
+from pathlib import Path
 from urllib.parse import urlsplit
 from datetime import datetime, timezone
 
@@ -26,8 +28,11 @@ from nmapui.handlers.scans import delete_scan_artifacts
 from nmapui.reporting import (
     _resolve_artifact_file_path,
     build_artifact_downloads,
+    convert_html_to_pdf,
+    parse_scan_xml_for_assets,
     report_content_security_policy,
 )
+from nmapui.asset_inventory import render_asset_inventory_html
 from nmapui.runtime_history import (
     backfill_runtime_history_artifacts,
     build_compare_result,
@@ -441,6 +446,60 @@ def register_core_routes(app, deps):
             download_name=download_name,
             as_attachment=True,
         )
+
+    @app.route("/api/runtime/reports/<path:scan_path>/inventory")
+    @require_auth
+    def runtime_report_inventory(scan_path):
+        artifact = _get_runtime_artifact(runtime_store, scan_path)
+        if artifact is None:
+            return "Report artifact not found", 404
+
+        scans_dir = deps.get("scans_dir")
+        xml_path = _resolve_artifact_file_path(
+            scans_dir=scans_dir,
+            scan_path=scan_path,
+            stored_path=artifact.get("xml_path"),
+            default_name="scan.xml",
+        )
+        if not xml_path.is_file():
+            return "Scan XML artifact not found", 404
+
+        temporary = tempfile.TemporaryDirectory(prefix="nmapui-inventory-")
+        try:
+            temp_dir = Path(temporary.name)
+            html_path = temp_dir / "asset_inventory.html"
+            pdf_path = temp_dir / "asset_inventory.pdf"
+            payload = dict(artifact.get("payload", {}) or {})
+            assets = parse_scan_xml_for_assets(xml_path)
+            scanned_at = payload.get("timestamp") or " ".join(
+                str(payload.get(key) or "").strip() for key in ("date", "time")
+            ).strip()
+            html_path.write_text(
+                render_asset_inventory_html(
+                    assets,
+                    network=payload.get("target", ""),
+                    title="Network device inventory",
+                    scanned_at=scanned_at or None,
+                ),
+                encoding="utf-8",
+            )
+            if not convert_html_to_pdf(html_path, pdf_path):
+                temporary.cleanup()
+                return jsonify({"success": False, "error": "Could not create the inventory PDF"}), 500
+
+            response = send_file(
+                pdf_path,
+                mimetype="application/pdf",
+                as_attachment=True,
+                download_name="NmapUI_Asset_Inventory.pdf",
+            )
+            response.headers["Cache-Control"] = "private, no-store"
+            response.call_on_close(temporary.cleanup)
+            return response
+        except Exception:
+            temporary.cleanup()
+            app.logger.exception("Failed to create asset inventory PDF")
+            return jsonify({"success": False, "error": "Could not create the inventory PDF"}), 500
 
     @app.route("/api/runtime/reports/<path:scan_path>/upload/google-drive", methods=["POST"])
     @require_auth

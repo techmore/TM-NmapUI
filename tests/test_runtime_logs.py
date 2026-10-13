@@ -175,7 +175,13 @@ def test_runtime_report_file_routes_serve_persisted_artifacts(monkeypatch, tmp_p
     scan_dir.mkdir(parents=True, exist_ok=True)
     (scan_dir / "runtime.html").write_text("<html><body>runtime report</body></html>")
     (scan_dir / "runtime.pdf").write_bytes(b"%PDF-1.4 runtime")
-    (scan_dir / "runtime.xml").write_text("<nmaprun><host /></nmaprun>")
+    (scan_dir / "runtime.xml").write_text(
+        '<nmaprun><host><status state="up"/><address addr="192.168.222.10" addrtype="ipv4"/>'
+        '<address addr="AA:BB:CC:DD:EE:FF" addrtype="mac" vendor="Example Vendor"/>'
+        '<hostnames><hostname name="print-node" type="PTR"/></hostnames><ports>'
+        '<port protocol="tcp" portid="631"><state state="open"/><service name="ipp"/></port>'
+        '</ports></host></nmaprun>'
+    )
 
     class RuntimeStoreStub:
         def get_report_artifact(self, scan_path):
@@ -247,6 +253,21 @@ def test_runtime_report_file_routes_serve_persisted_artifacts(monkeypatch, tmp_p
         environ_overrides=environ,
     )
 
+    from nmapui.handlers import routes as route_handlers
+    generated_html = []
+
+    def fake_inventory_pdf(html_path, pdf_path):
+        generated_html.append(html_path.read_text(encoding="utf-8"))
+        pdf_path.write_bytes(b"%PDF-1.4 inventory fixture")
+        return True
+
+    monkeypatch.setattr(route_handlers, "convert_html_to_pdf", fake_inventory_pdf)
+    inventory_response = client.get(
+        "/api/runtime/reports/Acme/2026-03-14/scan_120000_192.168.222.0_24/inventory",
+        headers=headers,
+        environ_overrides=environ,
+    )
+
     assert html_response.status_code == 200
     assert b"runtime report" in html_response.data
     assert pdf_response.status_code == 200
@@ -255,6 +276,13 @@ def test_runtime_report_file_routes_serve_persisted_artifacts(monkeypatch, tmp_p
     assert xml_response.status_code == 200
     assert "filename=" in xml_response.headers["Content-Disposition"]
     assert "Acme_HQ" in xml_response.headers["Content-Disposition"]
+    assert inventory_response.status_code == 200
+    assert inventory_response.mimetype == "application/pdf"
+    assert inventory_response.data.startswith(b"%PDF-")
+    assert "attachment" in inventory_response.headers["Content-Disposition"]
+    assert "192.168.222.10" in generated_html[0]
+    assert "print-node" in generated_html[0]
+    assert "YOUR DESCRIPTION / ROOM" in generated_html[0]
 
 
 def test_runtime_history_delete_route_removes_scan_and_runtime_artifact(monkeypatch, tmp_path):
