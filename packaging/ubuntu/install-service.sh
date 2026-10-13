@@ -410,7 +410,8 @@ install_service() {
   [[ -f /etc/os-release ]] || die "cannot identify Ubuntu host"
   # shellcheck disable=SC1091
   . /etc/os-release
-  [[ "${ID:-}" == "ubuntu" ]] || die "this installer supports Ubuntu only"
+  [[ "${ID:-}" == "ubuntu" || ( "${ID:-}" == "elementary" && " ${ID_LIKE:-} " == *" ubuntu "* ) ]] \
+    || die "this installer supports Ubuntu and Ubuntu-based elementary OS only"
   check_source
   command -v systemctl >/dev/null || die "systemd is required"
   verify_service_destination_parents
