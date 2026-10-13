@@ -106,10 +106,11 @@ def render_asset_inventory_html(
     items = []
     for asset in assets:
         is_expected = bool(asset.get("expected"))
-        has_proposed_ip = bool(asset.get("proposed_ip"))
-        ip = escape(str(asset.get("ip") or asset.get("proposed_ip") or "—"))
+        ip_display = asset.get("ip_display")
+        has_proposed_ip = bool(asset.get("proposed_ip") or ip_display)
+        ip = escape(str(ip_display or asset.get("ip") or asset.get("proposed_ip") or "—"))
         ip_markup = (
-            f'<span class="proposed-tag">DRAFT</span><br>{ip}'
+            f'<span class="proposed-tag">DRAFT</span><br><span class="ip-label">{ip}</span>'
             if has_proposed_ip else ip
         )
         hostname = escape(str(asset.get("hostname") or "Hostname not reported"))
@@ -201,7 +202,7 @@ thead {{ display:table-header-group; }} th {{ background:#eaf0f6; border-bottom:
 td {{ border-bottom:1px solid #dce3e9; height:24px; padding:1px 3px; vertical-align:middle; }} tbody tr:nth-child(even) {{ background:#f8fafc; }}
 td.icon {{ padding:2px; text-align:center; }} td.icon svg {{ height:17px; width:17px; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.8; }}
 .gateway {{ color:#2d72b8; }} .server {{ color:#7558a6; }} .desktop {{ color:#227e71; }} .network {{ color:#3974a8; }} .unknown {{ color:#758392; }} .laptop {{ color:#34878a; }} .conference {{ color:#bf7a21; }} .printer {{ color:#b6514a; }}
-td.ip {{ color:#163a5b; font: bold 8.2pt "DejaVu Sans Mono", monospace; white-space:nowrap; }} td.hostname {{ font-size:7.7pt; font-weight:bold; overflow-wrap:anywhere; }}
+td.ip {{ color:#163a5b; font: bold 8.2pt "DejaVu Sans Mono", monospace; white-space:nowrap; }} .ip-label {{ display:inline-block; }} td.hostname {{ font-size:7.7pt; font-weight:bold; overflow-wrap:anywhere; }}
 td.details {{ color:#47586a; font-size:7pt; line-height:1.18; overflow-wrap:anywhere; }} td.mac {{ color:#273444; font:bold 7.1pt "DejaVu Sans Mono",monospace; overflow-wrap:anywhere; }}
 td.write span {{ border-bottom:1px solid #c8d1db; display:block; height:8px; }} .empty {{ color:#667687; font-size:10pt; height:80px; text-align:center; }}
 .legend {{ align-items:center; color:#536477; display:flex; flex-wrap:wrap; font-size:6.6pt; gap:8px; margin-top:4px; }} .legend b {{ color:#23415f; }}
@@ -230,6 +231,7 @@ footer {{ border-top:1px solid #d7e0e8; color:#667687; display:flex; font-size:6
 body.landscape .sub {{ margin:4px 0 5px; }}
 body.landscape th {{ padding-bottom:2px; padding-top:2px; }}
 body.landscape td {{ height:22px; }}
+body.landscape .ip-label {{ font-size:7pt; white-space:normal; overflow-wrap:anywhere; }}
 body.landscape .legend {{ margin-top:2px; }}
 body.landscape footer {{ margin-top:1px; padding-top:1px; }}
 </style></head><body{body_class}>

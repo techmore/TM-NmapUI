@@ -104,6 +104,7 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
     assert "body.landscape td { height:22px; }" in html
     assert "1 scan responder" in html
 
+
     portrait_bw = render_asset_inventory_html(
         [
             {"ip": "192.168.1.12", "hostname": "printer-test", "ports": "631 (ipp)"},
@@ -132,6 +133,22 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
     assert "Zebra ZT410 · verify model" in portrait_bw
     assert "OUI vendor: Acme Label Systems" in portrait_bw
     assert "font-size:7.2pt" in portrait_bw
+
+
+def test_asset_inventory_html_can_show_an_unfinalized_static_ip_target():
+    html = render_asset_inventory_html(
+        [{
+            "ip": "10.20.0.109",
+            "ip_display": "TBD .50 / .52",
+            "hostname": "Packit",
+            "scan_summary": "Current .109; moving to static, target not selected",
+        }],
+        network="10.20.0.0/24",
+    )
+
+    assert 'class="proposed-tag">DRAFT</span>' in html
+    assert "TBD .50 / .52" in html
+    assert "Current .109; moving to static, target not selected" in html
 
 
 @pytest.mark.skipif(
