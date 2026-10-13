@@ -163,29 +163,29 @@ def test_asset_inventory_html_can_show_an_unfinalized_static_ip_target():
 def test_asset_inventory_supports_phone_kinds_and_expected_mac_randomization():
     assets = [
         {
-            "ip": "10.20.0.102",
+            "ip": "192.0.2.1",
             "device_type": "phone",
             "hostname": "Phone",
-            "mac": "8A:BF:E8:AC:67:5C",
+            "mac": "02:11:22:33:44:55",
             "scan_summary": "Phone; HTTPS open",
             "mac_randomization_expected": True,
         },
         {
-            "ip": "10.20.0.103",
+            "ip": "192.0.2.2",
             "device_type": "unknown",
             "hostname": "Hostname not reported",
-            "mac": "8A:BF:E8:AC:67:5D",
+            "mac": "02:11:22:33:44:66",
             "scan_summary": "HTTPS open",
         },
         {
-            "ip": "10.20.0.108",
+            "ip": "192.0.2.3",
             "device_type": "conference",
             "hostname": "Hostname not reported",
             "vendor": "Polycom",
             "scan_summary": "Polycom conference phone; HTTPS open",
         },
         {
-            "ip": "10.20.0.118",
+            "ip": "192.0.2.4",
             "device_type": "laptop",
             "hostname": "Hostname not reported",
             "scan_summary": "Managed THRIL laptop",
@@ -205,7 +205,7 @@ def test_asset_inventory_supports_phone_kinds_and_expected_mac_randomization():
         network="10.20.0.0/24",
         orientation="portrait",
     )
-    assert "MAC: 8A:BF:E8:AC:67:5C</span>" in portrait
+    assert "MAC: 02:11:22:33:44:55</span>" in portrait
     assert portrait.count("OUI vendor unavailable (randomized/private address)") == 1
 
 
