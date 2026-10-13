@@ -227,6 +227,11 @@ body.portrait .mac-inline {{ font-size:7.2pt; overflow-wrap:anywhere; }}
 body.portrait .expected-legend {{ padding-top:1px; }}
 {monochrome_css}
 footer {{ border-top:1px solid #d7e0e8; color:#667687; display:flex; font-size:6.5pt; justify-content:space-between; margin-top:3px; padding-top:2px; break-inside:avoid; page-break-inside:avoid; }}
+body.landscape .sub {{ margin:4px 0 5px; }}
+body.landscape th {{ padding-bottom:2px; padding-top:2px; }}
+body.landscape td {{ height:22px; }}
+body.landscape .legend {{ margin-top:2px; }}
+body.landscape footer {{ margin-top:1px; padding-top:1px; }}
 </style></head><body{body_class}>
 <header><div><div class="eyebrow">Network asset inventory · printable worksheet</div><h1>{title}</h1></div><div class="badge"><span>{network_label}</span><span class="orientation">{orientation.upper()} · LETTER</span></div></header>
 <p class="sub">Scan date: {escape(str(scanned_at))} &nbsp;·&nbsp; {count_label}. Hostnames appear when reported; MAC OUI vendors are matched locally from Nmap data. Private/randomized MACs are not attributed.</p>

@@ -101,7 +101,7 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
     assert "YOUR DESCRIPTION / ROOM" in html
     assert "MAC OUI vendor: Example Vendor" in html
     assert "@page { size: Letter landscape" in html
-    assert "height:24px" in html
+    assert "body.landscape td { height:22px; }" in html
     assert "1 scan responder" in html
 
     portrait_bw = render_asset_inventory_html(
