@@ -17,6 +17,7 @@ ICON_PATHS = {
     "network": '<circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="m10.8 7.2-4.5 9.5m6.9-9.5 4.5 9.5M7.5 19h9"/>',
     "unknown": '<path d="M12 3 21 8v8l-9 5-9-5V8z"/><path d="m3.5 8 8.5 5 8.5-5M12 13v8"/>',
     "laptop": '<rect x="5" y="4" width="14" height="12" rx="1.5"/><path d="M2.5 20h19l-1.5-4H4z"/>',
+    "phone": '<rect x="6" y="2.5" width="12" height="19" rx="2"/><path d="M10 5h4M11 18.5h2"/>',
     "linux": '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="m8 10 2 2-2 2m4 0h4"/>',
     "conference": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m10 9 5 3-5 3z"/>',
     "printer": '<path d="M7 8V3h10v5M6 17H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6zM18 11h.01"/>',
@@ -60,7 +61,12 @@ def _service_summary(asset, *, include_mac_vendor=True):
     details = []
     if include_mac_vendor and vendor and vendor.casefold() not in summary.casefold():
         details.append(f'MAC OUI vendor: {escape(vendor)}')
-    elif include_mac_vendor and not vendor and is_locally_administered_mac(mac):
+    elif (
+        include_mac_vendor
+        and not vendor
+        and is_locally_administered_mac(mac)
+        and not asset.get("mac_randomization_expected")
+    ):
         if "random" not in summary.casefold() and "private" not in summary.casefold():
             details.append("MAC OUI vendor unavailable: private/randomized address")
     if summary:
@@ -77,6 +83,8 @@ def _mac_vendor_line(asset, mac):
     if vendor:
         return f"MAC: {mac} · OUI vendor: {vendor}"
     if is_locally_administered_mac(mac):
+        if asset.get("mac_randomization_expected"):
+            return f"MAC: {mac}"
         return f"MAC: {mac} · OUI vendor unavailable (randomized/private address)"
     if not is_globally_administered_unicast_mac(mac):
         return f"MAC: {mac} · OUI vendor unavailable (not a unicast address)"
@@ -165,6 +173,7 @@ def render_asset_inventory_html(
         f'<span class="{kind}"><svg viewBox="0 0 24 24" aria-hidden="true">{ICON_PATHS[kind]}</svg>{label}</span>'
         for kind, label in (("gateway", "Gateway"), ("server", "Server"), ("desktop", "Desktop"),
                             ("network", "Network gear"), ("printer", "Printer"), ("laptop", "Computer"),
+                            ("phone", "Phone"),
                             ("unknown", "Unidentified"))
     )
     if expected_count:
@@ -204,7 +213,7 @@ col.icon {{ width:4%; }} col.ip {{ width:11%; }} col.hostname {{ width:21%; }} c
 thead {{ display:table-header-group; }} th {{ background:#eaf0f6; border-bottom:1px solid #b8c7d6; color:#35516d; font-size:6.8pt; letter-spacing:.3px; padding:3px 3px; text-align:left; }}
 td {{ border-bottom:1px solid #dce3e9; height:24px; padding:1px 3px; vertical-align:middle; }} tbody tr:nth-child(even) {{ background:#f8fafc; }}
 td.icon {{ padding:2px; text-align:center; }} td.icon svg {{ height:17px; width:17px; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.8; }}
-.gateway {{ color:#2d72b8; }} .server {{ color:#7558a6; }} .desktop {{ color:#227e71; }} .network {{ color:#3974a8; }} .unknown {{ color:#758392; }} .laptop {{ color:#34878a; }} .conference {{ color:#bf7a21; }} .printer {{ color:#b6514a; }}
+.gateway {{ color:#2d72b8; }} .server {{ color:#7558a6; }} .desktop {{ color:#227e71; }} .network {{ color:#3974a8; }} .unknown {{ color:#758392; }} .laptop {{ color:#34878a; }} .phone {{ color:#6779a0; }} .conference {{ color:#bf7a21; }} .printer {{ color:#b6514a; }}
 td.ip {{ color:#163a5b; font: bold 8.2pt "DejaVu Sans Mono", monospace; white-space:nowrap; }} .ip-label {{ display:inline-block; }} td.hostname {{ font-size:7.7pt; font-weight:bold; overflow-wrap:anywhere; }}
 td.details {{ color:#47586a; font-size:7pt; line-height:1.18; overflow-wrap:anywhere; }} td.mac {{ color:#273444; font:bold 7.1pt "DejaVu Sans Mono",monospace; overflow-wrap:anywhere; }} td.location {{ font-size:7.2pt; font-weight:bold; overflow-wrap:anywhere; }}
 td.write span {{ border-bottom:1px solid #c8d1db; display:block; height:8px; }} .empty {{ color:#667687; font-size:10pt; height:80px; text-align:center; }}

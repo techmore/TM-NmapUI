@@ -160,6 +160,55 @@ def test_asset_inventory_html_can_show_an_unfinalized_static_ip_target():
     assert "Current .109; moving to static, target not selected" in html
 
 
+def test_asset_inventory_supports_phone_kinds_and_expected_mac_randomization():
+    assets = [
+        {
+            "ip": "10.20.0.102",
+            "device_type": "phone",
+            "hostname": "Phone",
+            "mac": "8A:BF:E8:AC:67:5C",
+            "scan_summary": "Phone; HTTPS open",
+            "mac_randomization_expected": True,
+        },
+        {
+            "ip": "10.20.0.103",
+            "device_type": "unknown",
+            "hostname": "Hostname not reported",
+            "mac": "8A:BF:E8:AC:67:5D",
+            "scan_summary": "HTTPS open",
+        },
+        {
+            "ip": "10.20.0.108",
+            "device_type": "conference",
+            "hostname": "Hostname not reported",
+            "vendor": "Polycom",
+            "scan_summary": "Polycom conference phone; HTTPS open",
+        },
+        {
+            "ip": "10.20.0.118",
+            "device_type": "laptop",
+            "hostname": "Hostname not reported",
+            "scan_summary": "Managed THRIL laptop",
+        },
+    ]
+    html = render_asset_inventory_html(assets, network="10.20.0.0/24")
+
+    assert 'class="icon phone"' in html
+    assert 'class="icon conference"' in html
+    assert 'class="icon laptop"' in html
+    assert html.count("MAC OUI vendor unavailable: private/randomized address") == 1
+    assert "Polycom conference phone" in html
+    assert "Managed THRIL laptop" in html
+
+    portrait = render_asset_inventory_html(
+        assets,
+        network="10.20.0.0/24",
+        orientation="portrait",
+    )
+    assert "MAC: 8A:BF:E8:AC:67:5C</span>" in portrait
+    assert portrait.count("OUI vendor unavailable (randomized/private address)") == 1
+
+
 @pytest.mark.skipif(
     os.environ.get("NMAPUI_RUN_BROWSER_REGRESSION") != "1",
     reason="Set NMAPUI_RUN_BROWSER_REGRESSION=1 to run browser-backed PDF security coverage",
