@@ -282,7 +282,8 @@ def test_runtime_report_file_routes_serve_persisted_artifacts(monkeypatch, tmp_p
     assert "attachment" in inventory_response.headers["Content-Disposition"]
     assert "192.168.222.10" in generated_html[0]
     assert "print-node" in generated_html[0]
-    assert "DEVICE NAME · ROOM" in generated_html[0]
+    assert "DEVICE NAME" in generated_html[0]
+    assert "LOCATION" in generated_html[0]
     assert "@page { size: Letter portrait" in generated_html[0]
     assert '<body class="monochrome portrait">' in generated_html[0]
 

@@ -114,6 +114,7 @@ def render_asset_inventory_html(
             if has_proposed_ip else ip
         )
         hostname = escape(str(asset.get("hostname") or "Hostname not reported"))
+        location = escape(str(asset.get("location") or ""))
         mac = escape(str(asset.get("mac") or "—"))
         kind = _device_kind(asset)
         icon = ICON_PATHS[kind]
@@ -134,10 +135,11 @@ def render_asset_inventory_html(
             device_cell = (
                 f'<td class="hostname">{hostname}<span class="write"><i></i></span></td>'
             )
+            location_cell = f'<td class="location">{location}</td>'
             detail_cell = f'<td class="details">{"".join(detail_parts)}</td>'
             items.append(
                 f'<tr{row_class}>{icon_cell}<td class="ip">{ip_markup}</td>'
-                f'{device_cell}{detail_cell}</tr>'
+                f'{device_cell}{location_cell}{detail_cell}</tr>'
             )
         else:
             status = '<span class="record-status">EXPECTED · NOT OBSERVED<br></span>' if is_expected else ""
@@ -145,19 +147,20 @@ def render_asset_inventory_html(
                 f'<tr{row_class}>{icon_cell}'
                 f'<td class="ip">{ip_markup}</td><td class="hostname">{hostname}</td>'
                 f'<td class="details">{status}{_service_summary(asset)}</td>'
-                f'<td class="mac">{mac}</td><td class="write"><span></span><span></span></td></tr>'
+                f'<td class="mac">{mac}</td><td class="location">{location}</td>'
+                f'<td class="write"><span></span><span></span></td></tr>'
             )
-    column_count = 4 if orientation == "portrait" else 6
+    column_count = 5 if orientation == "portrait" else 7
     empty = "" if items else (
         f'<tr><td colspan="{column_count}" class="empty">'
         'No responding hosts were recorded in this scan.</td></tr>'
     )
     if orientation == "portrait":
-        colgroup = '<col style="width:8%"><col style="width:19%"><col style="width:35%"><col style="width:38%">'
-        headings = "<th>TYPE</th><th>IP / DRAFT</th><th>DEVICE NAME · ROOM</th><th>SCAN DETAILS · MAC / OUI VENDOR</th>"
+        colgroup = '<col style="width:7%"><col style="width:16%"><col style="width:27%"><col style="width:17%"><col style="width:33%">'
+        headings = "<th>TYPE</th><th>IP / DRAFT</th><th>DEVICE NAME</th><th>LOCATION</th><th>SCAN DETAILS · MAC / OUI VENDOR</th>"
     else:
-        colgroup = '<col class="icon"><col class="ip"><col class="hostname"><col class="details"><col class="mac"><col class="write">'
-        headings = "<th>TYPE</th><th>IP / DRAFT</th><th>HOSTNAME</th><th>SCAN IDENTIFICATION / MAC OUI VENDOR</th><th>MAC ADDRESS</th><th>YOUR DESCRIPTION / ROOM</th>"
+        colgroup = '<col class="icon"><col class="ip"><col class="hostname"><col class="details"><col class="mac"><col class="location"><col class="write">'
+        headings = "<th>TYPE</th><th>IP / DRAFT</th><th>HOSTNAME</th><th>SCAN IDENTIFICATION / MAC OUI VENDOR</th><th>MAC ADDRESS</th><th>LOCATION</th><th>DESCRIPTION / PURPOSE</th>"
     legend = " ".join(
         f'<span class="{kind}"><svg viewBox="0 0 24 24" aria-hidden="true">{ICON_PATHS[kind]}</svg>{label}</span>'
         for kind, label in (("gateway", "Gateway"), ("server", "Server"), ("desktop", "Desktop"),
@@ -197,13 +200,13 @@ h1 {{ color:#183557; font-size:18pt; letter-spacing:-.3px; margin:3px 0 0; }}
 .badge .orientation {{ font-size:6.4pt; letter-spacing:.5px; }}
 .sub {{ color:#536477; font-size:7.8pt; margin:6px 0 8px; }}
 table {{ border-collapse:collapse; table-layout:fixed; width:100%; }}
-col.icon {{ width:5%; }} col.ip {{ width:12%; }} col.hostname {{ width:24%; }} col.details {{ width:24%; }} col.mac {{ width:16%; }} col.write {{ width:19%; }}
+col.icon {{ width:4%; }} col.ip {{ width:11%; }} col.hostname {{ width:21%; }} col.details {{ width:22%; }} col.mac {{ width:15%; }} col.location {{ width:14%; }} col.write {{ width:13%; }}
 thead {{ display:table-header-group; }} th {{ background:#eaf0f6; border-bottom:1px solid #b8c7d6; color:#35516d; font-size:6.8pt; letter-spacing:.3px; padding:3px 3px; text-align:left; }}
 td {{ border-bottom:1px solid #dce3e9; height:24px; padding:1px 3px; vertical-align:middle; }} tbody tr:nth-child(even) {{ background:#f8fafc; }}
 td.icon {{ padding:2px; text-align:center; }} td.icon svg {{ height:17px; width:17px; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.8; }}
 .gateway {{ color:#2d72b8; }} .server {{ color:#7558a6; }} .desktop {{ color:#227e71; }} .network {{ color:#3974a8; }} .unknown {{ color:#758392; }} .laptop {{ color:#34878a; }} .conference {{ color:#bf7a21; }} .printer {{ color:#b6514a; }}
 td.ip {{ color:#163a5b; font: bold 8.2pt "DejaVu Sans Mono", monospace; white-space:nowrap; }} .ip-label {{ display:inline-block; }} td.hostname {{ font-size:7.7pt; font-weight:bold; overflow-wrap:anywhere; }}
-td.details {{ color:#47586a; font-size:7pt; line-height:1.18; overflow-wrap:anywhere; }} td.mac {{ color:#273444; font:bold 7.1pt "DejaVu Sans Mono",monospace; overflow-wrap:anywhere; }}
+td.details {{ color:#47586a; font-size:7pt; line-height:1.18; overflow-wrap:anywhere; }} td.mac {{ color:#273444; font:bold 7.1pt "DejaVu Sans Mono",monospace; overflow-wrap:anywhere; }} td.location {{ font-size:7.2pt; font-weight:bold; overflow-wrap:anywhere; }}
 td.write span {{ border-bottom:1px solid #c8d1db; display:block; height:8px; }} .empty {{ color:#667687; font-size:10pt; height:80px; text-align:center; }}
 .legend {{ align-items:center; color:#536477; display:flex; flex-wrap:wrap; font-size:6.6pt; gap:8px; margin-top:4px; }} .legend b {{ color:#23415f; }}
 .legend span {{ align-items:center; display:inline-flex; gap:3px; }} .legend svg {{ fill:none; height:13px; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.8; width:13px; }}
@@ -218,13 +221,14 @@ body.portrait .badge {{ max-width:36%; }}
 body.portrait .sub {{ font-size:7.5pt; margin:5px 0 6px; }}
 body.portrait table {{ font-size:7pt; }}
 body.portrait th {{ font-size:6.5pt; padding:3px 3px; }}
-body.portrait td {{ height:auto; padding:2px 3px; vertical-align:top; }}
+body.portrait td {{ height:auto; padding:1px 3px; vertical-align:top; }}
 body.portrait td.icon svg {{ height:18px; width:18px; }}
 body.portrait td.ip {{ font-size:7.3pt; line-height:1.1; white-space:normal; overflow-wrap:anywhere; }}
 body.portrait td.hostname {{ font-size:7.7pt; line-height:1.1; }}
-body.portrait td.details {{ font-size:7pt; line-height:1.08; }}
+body.portrait td.location {{ font-size:7.3pt; line-height:1.1; }}
+body.portrait td.details {{ font-size:6.8pt; line-height:1.02; }}
 body.portrait td.hostname .write i {{ height:9px; }}
-body.portrait .mac-inline {{ font-size:7.2pt; overflow-wrap:anywhere; }}
+body.portrait .mac-inline {{ font-size:6.8pt; margin-top:1px; overflow-wrap:anywhere; }}
 body.portrait .expected-legend {{ padding-top:1px; }}
 {monochrome_css}
 footer {{ border-top:1px solid #d7e0e8; color:#667687; display:flex; font-size:6.5pt; justify-content:space-between; margin-top:3px; padding-top:2px; break-inside:avoid; page-break-inside:avoid; }}

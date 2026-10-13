@@ -84,6 +84,7 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
         [{
             "ip": "192.168.1.12",
             "hostname": '<script>alert("x")</script>',
+            "location": "Network Closet & Office",
             "mac": "00:BB:CC:DD:EE:FF",
             "vendor": "Example Vendor",
             "ports": "631 (ipp), 9100 (jetdirect)",
@@ -98,10 +99,13 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
     assert "&lt;script&gt;" in html
     assert "<script>alert" not in html
     assert 'class="icon printer"' in html
-    assert "YOUR DESCRIPTION / ROOM" in html
+    assert "LOCATION" in html
+    assert "DESCRIPTION / PURPOSE" in html
+    assert "Network Closet &amp; Office" in html
+    assert "Network Closet & Office" not in html
     assert "MAC OUI vendor: Example Vendor" in html
     assert "@page { size: Letter landscape" in html
-    assert "col.hostname { width:24%; }" in html
+    assert "col.hostname { width:21%; }" in html
     assert "body.landscape td { height:22px; }" in html
     assert "1 scan responder" in html
 
@@ -117,6 +121,7 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
                 "mac": "00:11:22:33:44:55",
                 "vendor": "Acme Label Systems",
                 "scan_summary": "Zebra ZT410 · verify model",
+                "location": "Packit Station",
             },
         ],
         orientation="portrait",
@@ -126,15 +131,17 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
     assert '<body class="monochrome portrait">' in portrait_bw
     assert "body.monochrome td.icon svg" in portrait_bw
     assert "PORTRAIT · LETTER" in portrait_bw
-    assert "DEVICE NAME · ROOM" in portrait_bw
-    assert 'width:8%"><col style="width:19%"><col style="width:35%"><col style="width:38%"' in portrait_bw
+    assert "DEVICE NAME" in portrait_bw
+    assert "LOCATION" in portrait_bw
+    assert "Packit Station" in portrait_bw
+    assert 'width:7%"><col style="width:16%"><col style="width:27%"><col style="width:17%"><col style="width:33%"' in portrait_bw
     assert "SCAN DETAILS · MAC / OUI VENDOR" in portrait_bw
     assert "DRAFT" in portrait_bw
     assert "EXPECTED · NOT OBSERVED" in portrait_bw
     assert "1 scan responder · 1 expected device not observed" in portrait_bw
     assert "Zebra ZT410 · verify model" in portrait_bw
     assert "OUI vendor: Acme Label Systems" in portrait_bw
-    assert "font-size:7.2pt" in portrait_bw
+    assert "font-size:6.8pt" in portrait_bw
 
 
 def test_asset_inventory_html_can_show_an_unfinalized_static_ip_target():
