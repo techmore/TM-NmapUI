@@ -622,9 +622,23 @@
                 <h2 class="text-3xl font-display italic text-olive-950">Reports</h2>
                 <p class="mt-1 text-sm text-olive-600">Open saved reports or download a printable device inventory with IPs, hostnames, MAC addresses, icons, and blank description fields.</p>
             </div>
-            <button id="refresh-reports-btn" class="action-button action-button-primary action-button-compact" aria-label="Refresh available reports">
-                Refresh Reports
-            </button>
+            <div class="flex flex-wrap items-end gap-2">
+                <label class="text-[10px] font-bold uppercase tracking-wide text-olive-700" for="inventory-orientation">Inventory page
+                    <select id="inventory-orientation" class="mt-1 block rounded-lg border border-olive-300 bg-white px-2 py-1.5 text-xs font-medium normal-case tracking-normal text-olive-900">
+                        <option value="landscape">Landscape</option>
+                        <option value="portrait">Portrait</option>
+                    </select>
+                </label>
+                <label class="text-[10px] font-bold uppercase tracking-wide text-olive-700" for="inventory-color-mode">Print mode
+                    <select id="inventory-color-mode" class="mt-1 block rounded-lg border border-olive-300 bg-white px-2 py-1.5 text-xs font-medium normal-case tracking-normal text-olive-900">
+                        <option value="color">Color</option>
+                        <option value="bw">Black &amp; white</option>
+                    </select>
+                </label>
+                <button id="refresh-reports-btn" class="action-button action-button-primary action-button-compact" aria-label="Refresh available reports">
+                    Refresh Reports
+                </button>
+            </div>
         </div>
         {% if management_history_url %}
         <p class="mt-4 text-sm text-olive-700">Uploaded scans and hosted PDFs are kept in Daedalus.

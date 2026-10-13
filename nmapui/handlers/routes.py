@@ -466,6 +466,14 @@ def register_core_routes(app, deps):
 
         temporary = tempfile.TemporaryDirectory(prefix="nmapui-inventory-")
         try:
+            orientation = (request.args.get("orientation") or "landscape").strip().lower()
+            color_mode = (request.args.get("color") or "color").strip().lower()
+            if orientation not in {"portrait", "landscape"}:
+                temporary.cleanup()
+                return jsonify({"success": False, "error": "Invalid page orientation"}), 400
+            if color_mode not in {"color", "bw"}:
+                temporary.cleanup()
+                return jsonify({"success": False, "error": "Invalid print color mode"}), 400
             temp_dir = Path(temporary.name)
             html_path = temp_dir / "asset_inventory.html"
             pdf_path = temp_dir / "asset_inventory.pdf"
@@ -480,6 +488,8 @@ def register_core_routes(app, deps):
                     network=payload.get("target", ""),
                     title="Network device inventory",
                     scanned_at=scanned_at or None,
+                    orientation=orientation,
+                    monochrome=color_mode == "bw",
                 ),
                 encoding="utf-8",
             )

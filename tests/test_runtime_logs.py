@@ -263,7 +263,7 @@ def test_runtime_report_file_routes_serve_persisted_artifacts(monkeypatch, tmp_p
 
     monkeypatch.setattr(route_handlers, "convert_html_to_pdf", fake_inventory_pdf)
     inventory_response = client.get(
-        "/api/runtime/reports/Acme/2026-03-14/scan_120000_192.168.222.0_24/inventory",
+        "/api/runtime/reports/Acme/2026-03-14/scan_120000_192.168.222.0_24/inventory?orientation=portrait&color=bw",
         headers=headers,
         environ_overrides=environ,
     )
@@ -283,6 +283,8 @@ def test_runtime_report_file_routes_serve_persisted_artifacts(monkeypatch, tmp_p
     assert "192.168.222.10" in generated_html[0]
     assert "print-node" in generated_html[0]
     assert "YOUR DESCRIPTION / ROOM" in generated_html[0]
+    assert "@page { size: Letter portrait" in generated_html[0]
+    assert '<body class="monochrome portrait">' in generated_html[0]
 
 
 def test_runtime_history_delete_route_removes_scan_and_runtime_artifact(monkeypatch, tmp_path):

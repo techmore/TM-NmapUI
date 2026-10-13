@@ -142,12 +142,30 @@ function openScreenshotPreview(imageUrl, title) {
     overlay.classList.add('flex');
 }
 
-function reportActionLink({ href, title, icon, download = false, disabled = false }) {
+function reportActionLink({ href, title, icon, download = false, disabled = false, inventoryExport = false }) {
     const safeHref = window.safeHttpHref?.(String(href ?? ''));
     if (disabled || !safeHref) {
         return `<span title="${escapeHTML(title)}" class="inline-flex size-8 items-center justify-center rounded-lg border border-zinc-200 bg-zinc-50 text-zinc-400"><i data-lucide="${icon}" class="size-4"></i></span>`;
     }
-    return `<a href="${escapeHTML(safeHref)}" ${download ? 'download' : 'target="_blank" rel="noopener noreferrer"'} title="${escapeHTML(title)}" aria-label="${escapeHTML(title)}" class="inline-flex size-8 items-center justify-center rounded-lg border border-olive-200 bg-white text-olive-700 transition-colors hover:border-olive-300 hover:bg-olive-50 hover:text-olive-950"><i data-lucide="${icon}" class="size-4"></i></a>`;
+    const inventoryAttrs = inventoryExport ? `data-inventory-export="true" data-inventory-base-href="${escapeHTML(safeHref)}"` : '';
+    return `<a href="${escapeHTML(safeHref)}" ${inventoryAttrs} ${download ? 'download' : 'target="_blank" rel="noopener noreferrer"'} title="${escapeHTML(title)}" aria-label="${escapeHTML(title)}" class="inline-flex size-8 items-center justify-center rounded-lg border border-olive-200 bg-white text-olive-700 transition-colors hover:border-olive-300 hover:bg-olive-50 hover:text-olive-950"><i data-lucide="${icon}" class="size-4"></i></a>`;
+}
+
+function syncInventoryExportLinks() {
+    const orientation = document.getElementById('inventory-orientation')?.value || 'landscape';
+    const color = document.getElementById('inventory-color-mode')?.value || 'color';
+    document.querySelectorAll('a[data-inventory-export="true"]').forEach((link) => {
+        const url = new URL(link.dataset.inventoryBaseHref, window.location.href);
+        url.searchParams.set('orientation', orientation);
+        url.searchParams.set('color', color);
+        link.href = `${url.pathname}${url.search}`;
+    });
+}
+
+function initializeInventoryExportOptions() {
+    document.getElementById('inventory-orientation')?.addEventListener('change', syncInventoryExportLinks);
+    document.getElementById('inventory-color-mode')?.addEventListener('change', syncInventoryExportLinks);
+    syncInventoryExportLinks();
 }
 
 function refreshLucideIcons() {
@@ -323,6 +341,7 @@ function highlightActiveScanHost(data) {
 let appVersion = null;
 
 function initializeScanRuntime(socket) {
+    initializeInventoryExportOptions();
     socket.on('job_status', (job = {}) => {
         if (job.job_type !== 'scan') return;
         if (job.status === 'running' || job.status === 'cancelling') {
@@ -554,7 +573,7 @@ function initializeScanRuntime(socket) {
                 const actions = [
                     reportActionLink({ href: report.url, title: 'Open HTML report', icon: 'file-code-2' }),
                     reportActionLink({ href: report.pdfUrl, title: 'Open PDF report', icon: 'file-text', disabled: !report.pdfUrl }),
-                    reportActionLink({ href: report.has_xml ? buildRuntimeReportArtifactUrl(report.path, 'inventory') : '', title: 'Download printable asset inventory PDF', icon: 'clipboard-list', download: true, disabled: !report.has_xml }),
+                    reportActionLink({ href: report.has_xml ? buildRuntimeReportArtifactUrl(report.path, 'inventory') : '', title: 'Download printable asset inventory PDF', icon: 'clipboard-list', download: true, disabled: !report.has_xml, inventoryExport: true }),
                     reportActionLink({ href: report.xmlUrl, title: 'Open XML report', icon: 'braces', disabled: !report.xmlUrl }),
                     reportActionLink({ href: report.pdfUrl, title: 'Download PDF', icon: 'download', download: true, disabled: !report.pdfUrl }),
                     reportActionLink({ href: report.drivePdfUrl || report.driveHtmlUrl, title: 'Open PDF in Google Drive', icon: 'cloud', disabled: !(report.drivePdfUrl || report.driveHtmlUrl) })
@@ -581,6 +600,7 @@ function initializeScanRuntime(socket) {
                 `;
             }).join('');
             refreshLucideIcons();
+            syncInventoryExportLinks();
         }
     });
 

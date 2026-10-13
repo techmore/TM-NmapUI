@@ -100,6 +100,17 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
     assert 'class="icon printer"' in html
     assert "YOUR DESCRIPTION / ROOM" in html
     assert "@page { size: Letter landscape" in html
+    assert "height:28px" in html
+
+    portrait_bw = render_asset_inventory_html(
+        [{"ip": "192.168.1.12", "hostname": "printer-test", "ports": "631 (ipp)"}],
+        orientation="portrait",
+        monochrome=True,
+    )
+    assert "@page { size: Letter portrait" in portrait_bw
+    assert '<body class="monochrome portrait">' in portrait_bw
+    assert "body.monochrome td.icon svg" in portrait_bw
+    assert "height:34px" in portrait_bw
 
 
 @pytest.mark.skipif(
