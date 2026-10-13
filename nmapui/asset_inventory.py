@@ -61,6 +61,7 @@ def render_asset_inventory_html(
     scanned_at=None,
     orientation="landscape",
     monochrome=False,
+    notes="",
 ):
     """Render a self-contained print layout with vector icons and blank write-in fields."""
     orientation = "portrait" if str(orientation).lower() == "portrait" else "landscape"
@@ -69,26 +70,71 @@ def render_asset_inventory_html(
     scanned_at = scanned_at or datetime.now().astimezone().strftime("%B %d, %Y %H:%M %Z")
     network_label = escape(str(network or "Network not recorded"))
     title = escape(str(title or "Network device inventory"))
+    assets = list(assets or [])
+    expected_count = sum(bool(asset.get("expected")) for asset in assets)
+    responding_count = len(assets) - expected_count
     items = []
-    for asset in assets or []:
-        ip = escape(str(asset.get("ip") or "—"))
+    for asset in assets:
+        is_expected = bool(asset.get("expected"))
+        has_proposed_ip = bool(asset.get("proposed_ip"))
+        ip = escape(str(asset.get("ip") or asset.get("proposed_ip") or "—"))
+        ip_markup = (
+            f'<span class="proposed-tag">DRAFT</span><br>{ip}'
+            if has_proposed_ip else ip
+        )
         hostname = escape(str(asset.get("hostname") or "Hostname not reported"))
         mac = escape(str(asset.get("mac") or "—"))
         kind = _device_kind(asset)
         icon = ICON_PATHS[kind]
-        items.append(
-            f'<tr><td class="icon {kind}"><svg viewBox="0 0 24 24" aria-hidden="true">{icon}</svg></td>'
-            f'<td class="ip">{ip}</td><td class="hostname">{hostname}</td>'
-            f'<td class="details">{_service_summary(asset)}</td><td class="mac">{mac}</td>'
-            '<td class="write"><span></span><span></span></td></tr>'
+        row_class = ' class="expected"' if is_expected else ""
+        icon_cell = (
+            f'<td class="icon {kind}"><svg viewBox="0 0 24 24" aria-hidden="true">{icon}</svg></td>'
         )
-    empty = "" if items else '<tr><td colspan="6" class="empty">No responding hosts were recorded in this scan.</td></tr>'
+        if orientation == "portrait":
+            detail_parts = []
+            if is_expected:
+                detail_parts.append('<span class="record-status">EXPECTED · NOT OBSERVED</span>')
+            detail_parts.append(f'<span class="details-copy">{_service_summary(asset)}</span>')
+            detail_parts.append(f'<span class="mac-inline">MAC: {mac}</span>')
+            device_cell = (
+                f'<td class="hostname">{hostname}<span class="write"><i></i></span></td>'
+            )
+            detail_cell = f'<td class="details">{"".join(detail_parts)}</td>'
+            items.append(
+                f'<tr{row_class}>{icon_cell}<td class="ip">{ip_markup}</td>'
+                f'{device_cell}{detail_cell}</tr>'
+            )
+        else:
+            status = '<span class="record-status">EXPECTED · NOT OBSERVED<br></span>' if is_expected else ""
+            items.append(
+                f'<tr{row_class}>{icon_cell}'
+                f'<td class="ip">{ip_markup}</td><td class="hostname">{hostname}</td>'
+                f'<td class="details">{status}{_service_summary(asset)}</td>'
+                f'<td class="mac">{mac}</td><td class="write"><span></span><span></span></td></tr>'
+            )
+    column_count = 4 if orientation == "portrait" else 6
+    empty = "" if items else (
+        f'<tr><td colspan="{column_count}" class="empty">'
+        'No responding hosts were recorded in this scan.</td></tr>'
+    )
+    if orientation == "portrait":
+        colgroup = '<col style="width:8%"><col style="width:19%"><col style="width:31%"><col style="width:42%">'
+        headings = "<th>TYPE</th><th>IP / DRAFT</th><th>DEVICE NAME · ROOM</th><th>SCAN IDENTIFICATION · MAC</th>"
+    else:
+        colgroup = '<col class="icon"><col class="ip"><col class="hostname"><col class="details"><col class="mac"><col class="write">'
+        headings = "<th>TYPE</th><th>IP / DRAFT</th><th>HOSTNAME</th><th>SCAN IDENTIFICATION</th><th>MAC ADDRESS</th><th>YOUR DESCRIPTION / ROOM</th>"
     legend = " ".join(
         f'<span class="{kind}"><svg viewBox="0 0 24 24" aria-hidden="true">{ICON_PATHS[kind]}</svg>{label}</span>'
         for kind, label in (("gateway", "Gateway"), ("server", "Server"), ("desktop", "Desktop"),
                             ("network", "Network gear"), ("printer", "Printer"), ("laptop", "Computer"),
                             ("unknown", "Unidentified"))
     )
+    if expected_count:
+        legend += '<span class="expected-legend"><b>Expected · not observed · draft IPs require DHCP check</b></span>'
+    count_label = f'{responding_count} scan responder' + ("s" if responding_count != 1 else "")
+    if expected_count:
+        count_label += f' · {expected_count} expected device' + ("s" if expected_count != 1 else "") + " not observed"
+    notes_html = f'<aside class="notes">{escape(str(notes))}</aside>' if notes else ""
     monochrome_css = """body.monochrome { color:#111; }
 body.monochrome header { border-color:#222; }
 body.monochrome h1, body.monochrome .eyebrow, body.monochrome td.ip { color:#111; }
@@ -102,36 +148,58 @@ body.monochrome td.icon svg, body.monochrome .legend svg { color:#111 !important
 body.monochrome .legend span { color:#111; }
 body.monochrome td.write span { border-color:#888; }
 body.monochrome .legend b { color:#111; }
+body.monochrome .record-status, body.monochrome .proposed-tag { background:#e8e8e8; color:#111; }
+body.monochrome .notes { background:#f3f3f3; border-color:#555; color:#111; }
 """ if monochrome else ""
     return f'''<!doctype html><html><head><meta charset="utf-8"><title>{title}</title><style>
-@page {{ size: Letter {orientation}; margin: 7mm; }}
+@page {{ size: Letter {orientation}; margin: 5mm 6mm; }}
 * {{ box-sizing:border-box; }}
 body {{ color:#182434; font:10pt Arial, sans-serif; margin:0; -webkit-print-color-adjust:exact; print-color-adjust:exact; }}
 header {{ display:flex; align-items:flex-end; justify-content:space-between; border-bottom:1.5px solid #244c78; padding:0 0 5px; }}
 .eyebrow {{ color:#52708f; font-size:8pt; font-weight:bold; letter-spacing:1.4px; text-transform:uppercase; }}
 h1 {{ color:#183557; font-size:18pt; letter-spacing:-.3px; margin:3px 0 0; }}
-.badge {{ background:#edf4fa; border-radius:4px; color:#244c78; font-size:8pt; font-weight:bold; padding:5px 7px; }}
+.badge {{ align-items:flex-end; background:#edf4fa; border-radius:4px; color:#244c78; display:flex; flex-direction:column; font-size:7.4pt; font-weight:bold; gap:2px; padding:5px 7px; text-align:right; }}
+.badge .orientation {{ font-size:6.4pt; letter-spacing:.5px; }}
 .sub {{ color:#536477; font-size:7.8pt; margin:6px 0 8px; }}
 table {{ border-collapse:collapse; table-layout:fixed; width:100%; }}
 col.icon {{ width:5%; }} col.ip {{ width:12%; }} col.hostname {{ width:19%; }} col.details {{ width:27%; }} col.mac {{ width:17%; }} col.write {{ width:20%; }}
-thead {{ display:table-header-group; }} th {{ background:#eaf0f6; border-bottom:1px solid #b8c7d6; color:#35516d; font-size:6.8pt; letter-spacing:.3px; padding:4px 4px; text-align:left; }}
-td {{ border-bottom:1px solid #dce3e9; height:28px; padding:2px 4px; vertical-align:middle; }} tbody tr:nth-child(even) {{ background:#f8fafc; }}
-body.portrait td {{ height:34px; }}
+thead {{ display:table-header-group; }} th {{ background:#eaf0f6; border-bottom:1px solid #b8c7d6; color:#35516d; font-size:6.8pt; letter-spacing:.3px; padding:3px 3px; text-align:left; }}
+td {{ border-bottom:1px solid #dce3e9; height:24px; padding:1px 3px; vertical-align:middle; }} tbody tr:nth-child(even) {{ background:#f8fafc; }}
 td.icon {{ padding:2px; text-align:center; }} td.icon svg {{ height:17px; width:17px; fill:none; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.8; }}
 .gateway {{ color:#2d72b8; }} .server {{ color:#7558a6; }} .desktop {{ color:#227e71; }} .network {{ color:#3974a8; }} .unknown {{ color:#758392; }} .laptop {{ color:#34878a; }} .conference {{ color:#bf7a21; }} .printer {{ color:#b6514a; }}
 td.ip {{ color:#163a5b; font: bold 8.2pt "DejaVu Sans Mono", monospace; white-space:nowrap; }} td.hostname {{ font-size:7.7pt; font-weight:bold; overflow-wrap:anywhere; }}
 td.details {{ color:#47586a; font-size:7pt; line-height:1.18; overflow-wrap:anywhere; }} td.mac {{ color:#566475; font:6.5pt "DejaVu Sans Mono",monospace; overflow-wrap:anywhere; }}
-td.write span {{ border-bottom:1px solid #c8d1db; display:block; height:12px; }} .empty {{ color:#667687; font-size:10pt; height:80px; text-align:center; }}
+td.write span {{ border-bottom:1px solid #c8d1db; display:block; height:8px; }} .empty {{ color:#667687; font-size:10pt; height:80px; text-align:center; }}
 .legend {{ align-items:center; color:#536477; display:flex; flex-wrap:wrap; font-size:6.6pt; gap:8px; margin-top:4px; }} .legend b {{ color:#23415f; }}
 .legend span {{ align-items:center; display:inline-flex; gap:3px; }} .legend svg {{ fill:none; height:13px; stroke:currentColor; stroke-linecap:round; stroke-linejoin:round; stroke-width:1.8; width:13px; }}
+.proposed-tag, .record-status {{ background:#edf4fa; border-radius:2px; color:#35516d; display:inline-block; font: bold 5.8pt Arial,sans-serif; letter-spacing:.2px; margin-bottom:2px; padding:1px 3px; }}
+tr.expected {{ background:#f4f7fa; }}
+td.hostname .write {{ display:block; margin-top:3px; }} td.hostname .write i {{ border-bottom:1px solid #c8d1db; display:block; height:10px; }}
+.details-copy {{ display:block; }} .mac-inline {{ color:#566475; display:block; font:6.2pt "DejaVu Sans Mono",monospace; margin-top:2px; }}
+.notes {{ background:#f3f7fa; border-left:2px solid #8a9bad; color:#47586a; font-size:6.5pt; line-height:1.15; margin-top:3px; padding:3px 5px; }}
+body.portrait header {{ align-items:flex-end; }}
+body.portrait h1 {{ font-size:17pt; }}
+body.portrait .badge {{ max-width:36%; }}
+body.portrait .sub {{ font-size:7.5pt; margin:5px 0 6px; }}
+body.portrait table {{ font-size:7pt; }}
+body.portrait th {{ font-size:6.5pt; padding:3px 3px; }}
+body.portrait td {{ height:auto; padding:2px 3px; vertical-align:top; }}
+body.portrait td.icon svg {{ height:18px; width:18px; }}
+body.portrait td.ip {{ font-size:7.3pt; line-height:1.1; white-space:normal; overflow-wrap:anywhere; }}
+body.portrait td.hostname {{ font-size:7.7pt; line-height:1.1; }}
+body.portrait td.details {{ font-size:7pt; line-height:1.08; }}
+body.portrait td.hostname .write i {{ height:9px; }}
+body.portrait .mac-inline {{ font-size:5.8pt; overflow-wrap:anywhere; }}
+body.portrait .expected-legend {{ padding-top:1px; }}
 {monochrome_css}
 footer {{ border-top:1px solid #d7e0e8; color:#667687; display:flex; font-size:6.5pt; justify-content:space-between; margin-top:3px; padding-top:2px; break-inside:avoid; page-break-inside:avoid; }}
 </style></head><body{body_class}>
-<header><div><div class="eyebrow">Network asset inventory · printable worksheet</div><h1>{title}</h1></div><div class="badge">{network_label}</div></header>
-<p class="sub">Scan date: {escape(str(scanned_at))} &nbsp;·&nbsp; {len(items)} responding device(s). Hostnames and vendors are shown only when the scan reported them.</p>
-<table><colgroup><col class="icon"><col class="ip"><col class="hostname"><col class="details"><col class="mac"><col class="write"></colgroup>
-<thead><tr><th>TYPE</th><th>IP ADDRESS</th><th>HOSTNAME</th><th>SCAN IDENTIFICATION</th><th>MAC ADDRESS</th><th>YOUR DESCRIPTION / ROOM</th></tr></thead>
+<header><div><div class="eyebrow">Network asset inventory · printable worksheet</div><h1>{title}</h1></div><div class="badge"><span>{network_label}</span><span class="orientation">{orientation.upper()} · LETTER</span></div></header>
+<p class="sub">Scan date: {escape(str(scanned_at))} &nbsp;·&nbsp; {count_label}. Hostnames and vendors are shown only when the scan reported them.</p>
+<table><colgroup>{colgroup}</colgroup>
+<thead><tr>{headings}</tr></thead>
 <tbody>{''.join(items)}{empty}</tbody></table>
 <div class="legend"><b>ICON KEY</b>{legend}</div>
+{notes_html}
 <footer><span>Blank lines are for device name, owner, location, or purpose.</span><span>Private network information · keep this report secure</span></footer>
 </body></html>'''

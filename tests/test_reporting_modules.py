@@ -100,17 +100,33 @@ def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
     assert 'class="icon printer"' in html
     assert "YOUR DESCRIPTION / ROOM" in html
     assert "@page { size: Letter landscape" in html
-    assert "height:28px" in html
+    assert "height:24px" in html
+    assert "1 scan responder" in html
 
     portrait_bw = render_asset_inventory_html(
-        [{"ip": "192.168.1.12", "hostname": "printer-test", "ports": "631 (ipp)"}],
+        [
+            {"ip": "192.168.1.12", "hostname": "printer-test", "ports": "631 (ipp)"},
+            {
+                "expected": True,
+                "device_type": "printer",
+                "proposed_ip": "192.168.1.50",
+                "hostname": "Label_Printer",
+                "scan_summary": "Zebra ZT410 · verify model",
+            },
+        ],
         orientation="portrait",
         monochrome=True,
     )
     assert "@page { size: Letter portrait" in portrait_bw
     assert '<body class="monochrome portrait">' in portrait_bw
     assert "body.monochrome td.icon svg" in portrait_bw
-    assert "height:34px" in portrait_bw
+    assert "PORTRAIT · LETTER" in portrait_bw
+    assert "DEVICE NAME · ROOM" in portrait_bw
+    assert "SCAN IDENTIFICATION · MAC" in portrait_bw
+    assert "DRAFT" in portrait_bw
+    assert "EXPECTED · NOT OBSERVED" in portrait_bw
+    assert "1 scan responder · 1 expected device not observed" in portrait_bw
+    assert "Zebra ZT410 · verify model" in portrait_bw
 
 
 @pytest.mark.skipif(
