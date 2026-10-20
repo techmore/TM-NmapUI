@@ -293,6 +293,19 @@ function initializeMonitoringHub(socket) {
         }
     });
 
+    // The server answers a rejected scan request (invalid target, rate limit,
+    // another job already running, scheduling failure) with a plain-string
+    // `scan_error`. Without this listener those rejections were silent.
+    socket.on('scan_error', (data) => {
+        const message = typeof data === 'string' ? data : (data?.error || data?.message || 'Scan request failed');
+        if (typeof window.showReportStatus === 'function') {
+            window.showReportStatus(message, 'error');
+        }
+        if (typeof window._appendLog === 'function') {
+            window._appendLog('error', message);
+        }
+    });
+
     document.getElementById('open-reports-tab-btn')?.addEventListener('click', () => {
         if (typeof switchAppTab === 'function') switchAppTab('reports');
     });

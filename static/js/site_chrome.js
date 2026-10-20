@@ -1,17 +1,43 @@
+const APP_TABS = ['dashboard', 'history', 'reports', 'customers', 'logs', 'settings'];
+
+// Arrow keys, Home and End move between tabs and select them (WAI-ARIA tabs
+// pattern); Tab itself leaves the tab strip because only the selected tab has
+// tabindex="0" (see setTabButtonState).
+function initializeTabListKeyboard() {
+    const tablist = document.querySelector('[role="tablist"]');
+    if (!tablist || tablist.dataset.keyboardWired === 'true') return;
+    tablist.dataset.keyboardWired = 'true';
+
+    tablist.addEventListener('keydown', (event) => {
+        const tabs = APP_TABS
+            .map(tab => document.getElementById(`tab-${tab}-btn`))
+            .filter(Boolean);
+        const currentIndex = tabs.indexOf(document.activeElement);
+        if (currentIndex === -1) return;
+
+        let nextIndex = null;
+        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % tabs.length;
+        else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+        else if (event.key === 'Home') nextIndex = 0;
+        else if (event.key === 'End') nextIndex = tabs.length - 1;
+        if (nextIndex === null) return;
+
+        event.preventDefault();
+        const next = tabs[nextIndex];
+        next.focus();
+        switchAppTab(next.id.replace(/^tab-/, '').replace(/-btn$/, ''));
+    });
+}
+
 function initializeSiteChrome() {
-    const dateTimeEl = document.getElementById('current-date-time');
-    const updateDateTime = () => {
-        const now = new Date();
-        if (dateTimeEl) dateTimeEl.textContent = now.toLocaleDateString() + ' ' + now.toLocaleTimeString();
-    };
-    updateDateTime();
-    setInterval(updateDateTime, 1000);
+    // The header clock is driven by startPreciseClock() in layout_runtime.js.
+    // A second 1 s clock here used to overwrite it with a different format,
+    // so the text flipped between two layouts every minute.
 
     ensureTabPanelsAreSiblings();
 
     // Tab switching logic
-    const tabs = ['dashboard', 'history', 'reports', 'customers', 'logs', 'settings'];
-    tabs.forEach(tab => {
+    APP_TABS.forEach(tab => {
         const btn = document.getElementById(`tab-${tab}-btn`);
         if (btn) {
             btn.addEventListener('click', () => {
@@ -19,6 +45,7 @@ function initializeSiteChrome() {
             });
         }
     });
+    initializeTabListKeyboard();
 
     document.getElementById('refresh-history-tab-btn')?.addEventListener('click', () => {
         window.socket?.emit('get_history');
@@ -60,6 +87,8 @@ function setTabButtonState(button, active) {
     button.classList.toggle('action-button-primary', active);
     button.classList.toggle('text-olive-700', !active);
     button.classList.toggle('hover:bg-olive-100', !active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.setAttribute('tabindex', active ? '0' : '-1');
 }
 
 function setTabStatus(elementId, message, isError = false) {

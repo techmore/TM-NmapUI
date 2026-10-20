@@ -80,6 +80,8 @@ function showReportActions(path) {
     actions.classList.remove('hidden');
 }
 
+let reportStatusHideTimer = null;
+
 function showReportStatus(message, type) {
     const statusDiv = document.getElementById('report-status');
     const statusText = document.getElementById('report-status-text');
@@ -91,6 +93,10 @@ function showReportStatus(message, type) {
         type === 'success' ? 'text-olive-900' :
         'text-olive-800'
     );
+    // Errors interrupt assistive technology; progress and success are polite.
+    statusDiv.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    statusDiv.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+    statusDiv.dataset.statusType = type || 'info';
 
     statusText.textContent = message;
 
@@ -98,8 +104,17 @@ function showReportStatus(message, type) {
         clearReportStatusActions();
     }
 
+    if (reportStatusHideTimer) {
+        clearTimeout(reportStatusHideTimer);
+        reportStatusHideTimer = null;
+    }
     if (type === 'success' || type === 'error') {
-        setTimeout(() => statusDiv.classList.add('hidden'), 5000);
+        // Give errors long enough to be read before they clear.
+        const hideAfter = type === 'error' ? 12000 : 5000;
+        reportStatusHideTimer = setTimeout(() => {
+            statusDiv.classList.add('hidden');
+            reportStatusHideTimer = null;
+        }, hideAfter);
     }
 }
 

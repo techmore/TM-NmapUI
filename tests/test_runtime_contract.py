@@ -822,7 +822,8 @@ def test_frontend_layout_guide_and_page_shell_exist():
     assert ".action-button-compact {" in template
     assert template.count('class="page-shell"') >= 2
     assert 'class="results-band"' in template
-    assert 'class="table-fixed min-w-[2400px]"' in template
+    # The table starts hidden behind #discovery-empty-state until rows exist.
+    assert 'class="table-fixed min-w-[2400px] hidden"' in template
     assert template.count("modal-overlay") >= 6
     assert template.count("modal-panel") >= 6
     assert template.count("form-control form-control-md") >= 10
