@@ -18,7 +18,7 @@ from gi.repository import Adw, Gio, GLib, Gtk, WebKit  # noqa: E402
 
 APP_ID = "io.github.techmore.NmapUI"
 URL = os.environ.get("NMAPUI_URL", "http://127.0.0.1:9000/")
-SERVICE = os.environ.get("NMAPUI_SERVICE", "nmapui-dev.service")
+SERVICE = os.environ.get("NMAPUI_SERVICE", "nmapui.service")
 
 
 def ensure_service():
