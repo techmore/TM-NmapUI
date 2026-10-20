@@ -61,6 +61,16 @@ class Window(Adw.ApplicationWindow):
         self.set_content(view)
         self.web.load_uri(URL)
 
+    def show_tab(self, name):
+        if name.isalpha():
+            self.web.evaluate_javascript(f"location.hash = '#{name}';", -1, None, None, None, None, None)
+
+    def quick_scan(self):
+        self.show_tab("dashboard")
+        self.web.evaluate_javascript(
+            "const b = document.getElementById('start-scan-btn'); if (b && !b.disabled) b.click();",
+            -1, None, None, None, None, None)
+
     def on_title(self, *_):
         title = self.web.get_title() or "Network Scanner"
         self.title_widget.set_subtitle("" if title == "Network Scanner GUI" else title)
@@ -75,18 +85,32 @@ class Window(Adw.ApplicationWindow):
 
 
 class App(Adw.Application):
+    """Single instance; dock quicklist actions arrive as command lines in the running copy."""
+
     def __init__(self):
-        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
         self.window = None
 
     def do_startup(self):
         Adw.Application.do_startup(self)
         ensure_service()
 
-    def do_activate(self):
-        if not self.window:
+    def do_command_line(self, command_line):
+        args = command_line.get_arguments()[1:]
+        fresh = self.window is None
+        if fresh:
             self.window = Window(self)
         self.window.present()
+        pending = []
+        if "--tab" in args and args.index("--tab") + 1 < len(args):
+            pending.append(lambda: self.window.show_tab(args[args.index("--tab") + 1]))
+        if "--quick-scan" in args:
+            pending.append(self.window.quick_scan)
+        # A fresh window needs its page loaded before scripts can touch it.
+        delay = 2500 if fresh else 0
+        for action in pending:
+            GLib.timeout_add(delay, lambda a=action: (a(), False)[1])
+        return 0
 
 
 if __name__ == "__main__":

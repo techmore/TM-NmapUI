@@ -38,6 +38,8 @@ namespace MSeries {
         private bool in_flight = false;
         private uint poll_source = 0;
         private string last_json = "";
+        private DBusConnection? bus = null;
+        private const string LAUNCHER_URI = "application://io.github.techmore.NmapUI.desktop";
 
         public NmapUIIndicator () {
             GLib.Object (code_name: "nmapui");
@@ -143,6 +145,11 @@ namespace MSeries {
             dock.append (refresh_button);
             menu.append (dock);
 
+            try {
+                bus = Bus.get_sync (BusType.SESSION);
+            } catch (Error e) {
+                bus = null;
+            }
             refresh ();
             poll_source = Timeout.add_seconds (POLL_SECONDS, () => { refresh (); return Source.CONTINUE; });
         }
@@ -228,6 +235,22 @@ namespace MSeries {
             }
         }
 
+        /* Dock badge and progress through the Unity LauncherEntry protocol the elementary dock reads. */
+        private void update_launcher (bool scanning, double fraction, int64 alerts) {
+            if (bus == null) return;
+            var props = new VariantBuilder (new VariantType ("a{sv}"));
+            props.add ("{sv}", "progress-visible", new Variant.boolean (scanning));
+            props.add ("{sv}", "progress", new Variant.double (fraction));
+            props.add ("{sv}", "count-visible", new Variant.boolean (!scanning && alerts > 0));
+            props.add ("{sv}", "count", new Variant.int64 (alerts));
+            try {
+                bus.emit_signal (null, "/com/canonical/unity/launcherentry/nmapui", "com.canonical.Unity.LauncherEntry",
+                                 "Update", new Variant ("(sa{sv})", LAUNCHER_URI, props));
+            } catch (Error e) {
+                warning ("Could not update the dock entry: %s", e.message);
+            }
+        }
+
         private void open_app () {
             try {
                 var info = new DesktopAppInfo ("io.github.techmore.NmapUI.desktop");
@@ -299,6 +322,7 @@ namespace MSeries {
                 panel_dot.visible = true;
                 panel_dot.add_css_class ("dot-off");
                 panel.set_tooltip_text ("Network Scanner · summary unavailable");
+                update_launcher (false, 0.0, 0);
                 return;
             }
 
@@ -383,6 +407,8 @@ namespace MSeries {
             monitor_label.visible = data.has_member ("monitor") && !data.get_null_member ("monitor");
             if (monitor_label.visible) monitor_label.label = "Auto-monitor: " + data.get_string_member ("monitor");
 
+            int64 alert_count = data.has_member ("alerts") ? (int64) data.get_array_member ("alerts").get_length () : 0;
+            update_launcher (scanning, progress.visible ? progress.fraction : 0.0, alert_count);
             panel.set_tooltip_text ("Network Scanner · " + label + (hosts_known ? " · %s hosts".printf (hosts_value.label) : ""));
         }
 
