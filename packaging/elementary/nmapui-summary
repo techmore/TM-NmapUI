@@ -4,8 +4,11 @@
 Reads only the scanner's loopback HTTP API. Anything it cannot read stays null so
 the panel shows "unknown" rather than inventing a value.
 """
+import datetime
 import json
 import os
+import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -21,17 +24,53 @@ def get(path):
         return None
 
 
+def run_json(command):
+    try:
+        out = subprocess.run(command, capture_output=True, text=True, timeout=3, check=True).stdout
+        return json.loads(out)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def network_info(default_interface):
+    """Local network facts from the kernel; nothing is fetched from the internet."""
+    info = {"interface": None, "address": None, "cidr": None, "gateway": None, "ssid": None}
+    routes = run_json(["ip", "-j", "route", "show", "default"]) or []
+    route = next((r for r in routes if not default_interface or r.get("dev") == default_interface), routes[0] if routes else None)
+    interface = (route or {}).get("dev") or default_interface
+    if not interface:
+        return info
+    info["interface"] = interface
+    info["gateway"] = (route or {}).get("gateway")
+    for entry in run_json(["ip", "-j", "-4", "addr", "show", "dev", interface]) or []:
+        for addr in entry.get("addr_info", []):
+            if addr.get("family") == "inet":
+                info["address"] = addr.get("local")
+                prefix = addr.get("prefixlen")
+                if info["address"] and isinstance(prefix, int):
+                    import ipaddress
+                    info["cidr"] = str(ipaddress.ip_interface(f"{info['address']}/{prefix}").network)
+                break
+    try:
+        ssid = subprocess.run(["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"], capture_output=True, text=True, timeout=3).stdout
+        info["ssid"] = next((line.split(":", 1)[1] for line in ssid.splitlines() if line.startswith("yes:")), None) or None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return info
+
+
 def number(value):
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def summarize(health, runtime, history, auto):
+def summarize(health, runtime, history, auto, live=None):
     out = {"state": "offline", "label": "Scanner service is not running", "version": None, "progress": None,
            "message": None, "hosts": None, "changes": None, "critical": None, "last_scan": None,
-           "last_customer": None, "monitor": None, "alerts": [], "tools_missing": []}
+           "last_customer": None, "monitor": None, "alerts": [], "tools_missing": [], "network": None, "scan": None, "devices": []}
     if not isinstance(health, dict):
         return out
     out["version"] = health.get("app_version")
+    out["network"] = network_info(health.get("default_interface"))
     tools = health.get("tool_versions") or {}
     out["tools_missing"] = sorted(name for name in ("nmap",) if str(tools.get(name, "")).lower().startswith("not installed"))
     out["state"], out["label"] = "idle", "Idle"
@@ -44,6 +83,18 @@ def summarize(health, runtime, history, auto):
         out["progress"] = number(details.get("progress")) if number(details.get("progress")) is not None else None
         out["message"] = details.get("message")
         out["hosts"] = number(details.get("host_count"))
+        step = re.search(r"(\d+)/(\d+)(?::\s*(\S+))?", str(details.get("message") or ""))
+        out["scan"] = {"target": details.get("target"), "phase": details.get("phase"),
+                       "customer": details.get("customer_name"), "started_at": scan.get("started_at"),
+                       "index": int(step[1]) if step else None, "total": int(step[2]) if step else None,
+                       "current": step[3] if step and step[3] else None}
+        try:
+            started = datetime.datetime.fromisoformat(str(scan.get("started_at")))
+            out["scan"]["elapsed_seconds"] = max(0, int((datetime.datetime.now() - started).total_seconds()))
+        except ValueError:
+            out["scan"]["elapsed_seconds"] = None
+        if out["hosts"] is None and out["scan"]["total"]:
+            out["hosts"] = out["scan"]["total"]
     rows = (history or {}).get("history") if isinstance(history, dict) else None
     if rows:
         last = rows[0]
@@ -58,6 +109,15 @@ def summarize(health, runtime, history, auto):
         out["critical"] = number(last.get("critical_cves", last.get("critical_count")))
         if out["critical"]:
             out["alerts"].append(f"{out['critical']} critical CVE" + ("s" if out["critical"] != 1 else ""))
+    devices = []
+    for host in ((live or {}).get("hosts") or [])[:200] if isinstance(live, dict) else []:
+        if isinstance(host, dict) and host.get("ip"):
+            devices.append({"ip": host["ip"], "name": host.get("hostname") or "", "vendor": host.get("vendor") or "",
+                            "open_ports": number(host.get("open_ports"))})
+    devices.sort(key=lambda d: [int(part) if part.isdigit() else 0 for part in str(d["ip"]).split(".")])
+    out["devices"] = devices
+    if out["hosts"] is None and devices:
+        out["hosts"] = len(devices)
     if isinstance(auto, dict) and auto.get("enabled"):
         out["monitor"] = auto.get("next_run") or "Enabled"
     if out["tools_missing"]:
@@ -69,7 +129,7 @@ def summarize(health, runtime, history, auto):
 
 def main():
     print(json.dumps(summarize(get("/api/health"), get("/api/runtime/status"), get("/api/runtime/history"),
-                               get("/api/auto_scan/status"))))
+                               get("/api/auto_scan/status"), get("/api/runtime/live-hosts"))))
     return 0
 
 

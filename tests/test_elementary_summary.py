@@ -44,3 +44,27 @@ def test_missing_nmap_is_flagged_not_hidden():
 def test_clean_idle_has_no_alerts_and_unknown_counts_stay_none():
     out = summary.summarize(HEALTH, {"active_jobs": []}, {"history": []}, None)
     assert out["state"] == "idle" and out["hosts"] is None and out["critical"] is None
+
+
+def test_scan_details_parse_step_total_and_elapsed(monkeypatch):
+    monkeypatch.setattr(summary, "network_info", lambda iface: {"interface": iface})
+    runtime = {"active_jobs": [{"job_type": "scan", "status": "running", "started_at": "2026-10-19T21:34:17",
+                                "details": {"target": "10.0.0.0/24", "phase": "service_scan", "progress": 60,
+                                            "message": "Service scan 2/30: 10.0.0.8"}}]}
+    out = summary.summarize({"default_interface": "wld0", "tool_versions": {"nmap": "7"}}, runtime, None, None)
+    assert out["hosts"] == 30 and out["network"] == {"interface": "wld0"}
+    assert out["scan"]["index"] == 2 and out["scan"]["total"] == 30 and out["scan"]["current"] == "10.0.0.8"
+    assert out["scan"]["target"] == "10.0.0.0/24" and out["scan"]["elapsed_seconds"] >= 0
+
+
+def test_network_info_without_interface_is_all_unknown(monkeypatch):
+    monkeypatch.setattr(summary, "run_json", lambda command: None)
+    assert summary.network_info(None)["address"] is None
+
+
+def test_devices_are_sorted_numerically_and_fill_host_count():
+    live = {"hosts": [{"ip": "10.0.0.20", "hostname": "b", "vendor": "V", "open_ports": 1},
+                      {"ip": "10.0.0.3", "hostname": "", "vendor": "W", "open_ports": None}, {"hostname": "no-ip"}]}
+    out = summary.summarize(HEALTH, {"active_jobs": []}, {"history": []}, None, live)
+    assert [d["ip"] for d in out["devices"]] == ["10.0.0.3", "10.0.0.20"]
+    assert out["hosts"] == 2 and out["devices"][1]["open_ports"] == 1
