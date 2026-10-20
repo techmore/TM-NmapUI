@@ -1,0 +1,1 @@
+{"state":"attention","label":"Needs attention","progress":null,"message":null,"hosts":24,"changes":3,"critical":2,"last_scan":"2026-10-20T00:49:27Z","last_customer":"Penn Office","monitor":null,"alerts":["Changes since the previous scan","2 critical CVEs"],"tools_missing":[]}

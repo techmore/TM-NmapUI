@@ -73,6 +73,27 @@ export NMAPUI_PASSWORD='choose-something-strong'
 ./start.sh
 ```
 
+## elementary OS (native desktop)
+
+On elementary OS the scanner runs as a per-user loopback service and gets a native
+window, a dock icon and a Wingpanel scan-summary indicator. From the repository root:
+
+```bash
+packaging/elementary/install-all.sh      # packages, venv, Chromium, service, window, dock pin, indicator
+packaging/elementary/install-deps.sh --check   # report missing system packages only
+```
+
+- `install-deps.sh` installs nmap, arp-scan, xsltproc, traceroute, Python build tools and
+  the GTK4/WebKitGTK/Wingpanel toolchain (apt; safe to re-run).
+- The service is `nmapui.service` (user unit, `127.0.0.1:9000`, data in `~/.local/share/nmapui`).
+- **Network Scanner** (`io.github.techmore.NmapUI`) is the native window; it starts the service if needed.
+- The indicator (`libnmapui.so`) loads at next login; the installer never restarts Wingpanel.
+- Unprivileged scans use connect mode. For SYN/OS/ARP scans run the root service from
+  `packaging/ubuntu/install-service.sh` instead (see the Ubuntu setup guide); the installer does not grant
+  nmap raw-socket capabilities.
+- `--no-indicator` and `--no-service` skip those steps. Render probe for the indicator:
+  `packaging/elementary/wingpanel/probe/run-probe.sh BUILD_DIR OUT_DIR`.
+
 ## Tech Stack
 
 | Layer | Technology |
