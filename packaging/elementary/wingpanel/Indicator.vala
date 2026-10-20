@@ -17,6 +17,12 @@ namespace MSeries {
         private Gtk.Label state_title;
         private Gtk.Label state_detail;
         private Gtk.ProgressBar progress;
+        private Gtk.Label scan_target_label;
+        private Gtk.Label scan_step_label;
+        private Gtk.Label scan_time_label;
+        private Gtk.Label net_link_label;
+        private Gtk.Label net_addr_label;
+        private Gtk.Label net_gw_label;
         private Gtk.Label hosts_value;
         private Gtk.Label changes_value;
         private Gtk.Label critical_value;
@@ -65,7 +71,31 @@ namespace MSeries {
             card.append (state_title);
             card.append (state_detail);
             card.append (progress);
+            scan_target_label = new Gtk.Label ("") { xalign = 0, visible = false };
+            scan_step_label = new Gtk.Label ("") { xalign = 0, visible = false };
+            scan_time_label = new Gtk.Label ("") { xalign = 0, visible = false };
+            foreach (var l in new Gtk.Label[] { scan_target_label, scan_step_label, scan_time_label }) {
+                l.add_css_class ("caption");
+                l.add_css_class ("numeric");
+                card.append (l);
+            }
             menu.append (card);
+
+            // Network card: where this machine sits, from the kernel (no internet lookups).
+            var net = new Gtk.Box (Gtk.Orientation.VERTICAL, 2);
+            net.add_css_class ("card");
+            var net_title = new Gtk.Label ("Network") { xalign = 0 };
+            net_title.add_css_class ("state-title");
+            net_link_label = new Gtk.Label ("") { xalign = 0 };
+            net_addr_label = new Gtk.Label ("") { xalign = 0 };
+            net_gw_label = new Gtk.Label ("") { xalign = 0 };
+            net.append (net_title);
+            foreach (var l in new Gtk.Label[] { net_link_label, net_addr_label, net_gw_label }) {
+                l.add_css_class ("caption");
+                l.add_css_class ("numeric");
+                net.append (l);
+            }
+            menu.append (net);
 
             // Three headline numbers.
             var metrics = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 6) { homogeneous = true };
@@ -223,6 +253,43 @@ namespace MSeries {
             progress.visible = scanning && data.has_member ("progress") && !data.get_null_member ("progress");
             if (progress.visible) progress.fraction = (double) data.get_int_member ("progress") / 100.0;
 
+            // Ongoing scan details.
+            scan_target_label.visible = scan_step_label.visible = scan_time_label.visible = false;
+            if (scanning && data.has_member ("scan") && !data.get_null_member ("scan")) {
+                var scan = data.get_object_member ("scan");
+                string target = scan.has_member ("target") && !scan.get_null_member ("target") ? scan.get_string_member ("target") : "";
+                scan_target_label.visible = target != "";
+                scan_target_label.label = "Target %s".printf (target);
+                if (scan.has_member ("index") && !scan.get_null_member ("index") && scan.has_member ("total") && !scan.get_null_member ("total")) {
+                    string current = scan.has_member ("current") && !scan.get_null_member ("current") ? " · " + scan.get_string_member ("current") : "";
+                    scan_step_label.visible = true;
+                    scan_step_label.label = "Host %lld of %lld%s".printf (scan.get_int_member ("index"), scan.get_int_member ("total"), current);
+                }
+                if (scan.has_member ("elapsed_seconds") && !scan.get_null_member ("elapsed_seconds")) {
+                    int64 sec = scan.get_int_member ("elapsed_seconds");
+                    scan_time_label.visible = true;
+                    scan_time_label.label = sec >= 3600 ? "Running %lldh %lldm".printf (sec / 3600, (sec % 3600) / 60) : "Running %lldm %llds".printf (sec / 60, sec % 60);
+                }
+            }
+
+            // Network facts.
+            net_link_label.label = "Link unknown";
+            net_addr_label.label = "";
+            net_gw_label.label = "";
+            if (data.has_member ("network") && !data.get_null_member ("network")) {
+                var net = data.get_object_member ("network");
+                string iface = net.has_member ("interface") && !net.get_null_member ("interface") ? net.get_string_member ("interface") : "";
+                string ssid = net.has_member ("ssid") && !net.get_null_member ("ssid") ? net.get_string_member ("ssid") : "";
+                string addr = net.has_member ("address") && !net.get_null_member ("address") ? net.get_string_member ("address") : "";
+                string cidr = net.has_member ("cidr") && !net.get_null_member ("cidr") ? net.get_string_member ("cidr") : "";
+                string gw = net.has_member ("gateway") && !net.get_null_member ("gateway") ? net.get_string_member ("gateway") : "";
+                net_link_label.label = iface == "" ? "Offline" : (ssid != "" ? "%s · %s".printf (ssid, iface) : iface);
+                net_addr_label.label = addr == "" ? "" : "Address %s%s".printf (addr, cidr != "" ? " (" + cidr + ")" : "");
+                net_gw_label.label = gw == "" ? "" : "Gateway %s".printf (gw);
+            }
+            net_addr_label.visible = net_addr_label.label != "";
+            net_gw_label.visible = net_gw_label.label != "";
+
             hosts_value.label = number_or_dash (data, "hosts");
             changes_value.label = number_or_dash (data, "changes");
             critical_value.label = number_or_dash (data, "critical");
@@ -250,6 +317,7 @@ namespace MSeries {
 
             string last = data.has_member ("last_scan") && !data.get_null_member ("last_scan") ? data.get_string_member ("last_scan") : "";
             string customer = data.has_member ("last_customer") && !data.get_null_member ("last_customer") ? data.get_string_member ("last_customer") : "";
+            last_scan_label.visible = !scanning;
             last_scan_label.label = last == "" ? "No saved scans yet" : "Last scan %s%s".printf (relative (last), customer != "" ? " · " + customer : "");
             monitor_label.visible = data.has_member ("monitor") && !data.get_null_member ("monitor");
             if (monitor_label.visible) monitor_label.label = "Auto-monitor: " + data.get_string_member ("monitor");
