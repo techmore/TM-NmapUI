@@ -143,3 +143,10 @@ html #check-app-updates, html #scanner-header button.rounded-full { background: 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) #scanner-header img { filter: invert(1) brightness(1.1); }
 }
+
+/* Inline .form-control rules in the template out-rank bare input selectors */
+html .form-control, html #logs-search-input, html .form-control-md, html .form-control-sm {
+  background: var(--e-surface); color: var(--e-text); border: 1px solid var(--e-border); border-radius: 6px;
+}
+html .form-control:focus { border-color: var(--e-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--e-accent) 35%, transparent); }
+html #logs-search-input::placeholder { color: var(--e-text-3); }
