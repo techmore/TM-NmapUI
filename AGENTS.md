@@ -14,7 +14,9 @@ auth test used strict-auth configuration rather than the default posture.
 Hosted CI passed all four jobs on candidate `17fa8ad1`, including installed
 Ubuntu systemd lifecycle and Mac packaging. Physical-host interface discovery
 and unattended soak remain open, so do not claim Ubuntu production support yet. Native SwiftUI work is on
-the unmerged `swift-native` branch. Read
+the unmerged `swift-native` branch. The native elementary OS app (Granite/GTK 4 window,
+Wingpanel indicator, per-user service) is the separate repository
+`techmore/TM-NmapUI-elementary`; `packaging/elementary/` here is only a pointer. Read
 `docs/notes/PROJECT_STATUS.md` first.
 
 - Scanning: `nmapui/scanning.py`, `nmapui/workflows.py`, `nmapui/privileged.py`.

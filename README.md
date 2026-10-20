@@ -10,6 +10,18 @@ also a target scanner host; an installer and systemd service candidate now
 exist, but live privileged-host validation is still required. See
 [deployment status](#cross-platform-deployment).
 
+## Branches and platforms
+
+One scanner engine, three front ends. The engine (Flask + Socket.IO, `app.py` and `nmapui/`) is
+shared; the native shells only wrap it.
+
+| Where | Platform | What it is |
+|---|---|---|
+| `main` (this branch) | Web UI on macOS and Ubuntu scanner hosts | The product: Flask engine, browser UI, reports, scheduler, the Swift menu-bar launcher and the LaunchDaemon/systemd installers. CI-gated. Also the engine that Daedalus packages into its scanner kit. |
+| [`swift-native`](https://github.com/techmore/TM-NmapUI/tree/swift-native) | Native macOS (SwiftUI) | Separate native app with its own scan, report and privilege-helper code; no loopback server. Preserved and unmerged: diverged from `main` (conflicts in six files), last changed 2026-08-23. Reconcile against the shared engine before integrating. |
+| [TM-NmapUI-elementary](https://github.com/techmore/TM-NmapUI-elementary) | Native elementary OS (Granite/GTK 4) | Native window, Wingpanel indicator and per-user service around this engine. Separate repository. |
+| [TM-NMapUI-www](https://github.com/techmore/TM-NMapUI-www) | Marketing site | Static pages and screenshots. |
+
 ## macOS appliance candidate
 
 The unattended installer is fail-closed until its host prerequisites pass.
@@ -75,24 +87,20 @@ export NMAPUI_PASSWORD='choose-something-strong'
 
 ## elementary OS (native desktop)
 
-On elementary OS the scanner runs as a per-user loopback service and gets a native
-window, a dock icon and a Wingpanel scan-summary indicator. From the repository root:
+The native elementary OS app lives in its own repository,
+[TM-NmapUI-elementary](https://github.com/techmore/TM-NmapUI-elementary): a Granite/GTK 4
+**Network Scanner** window, a Wingpanel indicator with a scan summary and device list, and a
+per-user `nmapui.service` that runs this engine with Gunicorn on `127.0.0.1:9000`.
 
 ```bash
-packaging/elementary/install-all.sh      # packages, venv, Chromium, service, window, dock pin, indicator
-packaging/elementary/install-deps.sh --check   # report missing system packages only
+git clone https://github.com/techmore/TM-NmapUI-elementary.git
+cd TM-NmapUI-elementary
+scripts/install.sh      # app, indicator, dock pin, then clones this repo and enables the user service
 ```
 
-- `install-deps.sh` installs nmap, arp-scan, xsltproc, traceroute, Python build tools and
-  the GTK4/WebKitGTK/Wingpanel toolchain (apt; safe to re-run).
-- The service is `nmapui.service` (user unit, `127.0.0.1:9000`, data in `~/.local/share/nmapui`).
-- **Network Scanner** (`io.github.techmore.NmapUI`) is the native window; it starts the service if needed.
-- The indicator (`libnmapui.so`) loads at next login; the installer never restarts Wingpanel.
-- Unprivileged scans use connect mode. For SYN/OS/ARP scans run the root service from
-  `packaging/ubuntu/install-service.sh` instead (see the Ubuntu setup guide); the installer does not grant
-  nmap raw-socket capabilities.
-- `--no-indicator` and `--no-service` skip those steps. Render probe for the indicator:
-  `packaging/elementary/wingpanel/probe/run-probe.sh BUILD_DIR OUT_DIR`.
+Unprivileged scans use connect mode. For SYN/OS/ARP scans run the root service from
+`packaging/ubuntu/install-service.sh` instead (see the Ubuntu setup guide). The two services share
+port 9000, so run one or the other.
 
 ## Tech Stack
 
