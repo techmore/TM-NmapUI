@@ -23,6 +23,10 @@ namespace MSeries {
         private Gtk.Label net_link_label;
         private Gtk.Label net_addr_label;
         private Gtk.Label net_gw_label;
+        private Gtk.Label devices_title;
+        private Gtk.ListBox device_list;
+        private Gtk.ScrolledWindow device_scroll;
+        private string last_devices_key = "";
         private Gtk.Label hosts_value;
         private Gtk.Label changes_value;
         private Gtk.Label critical_value;
@@ -107,6 +111,16 @@ namespace MSeries {
             alert_box = new Gtk.Box (Gtk.Orientation.VERTICAL, 4);
             menu.append (alert_box);
 
+            // Devices from the latest scan: name or vendor, address and open-port count.
+            devices_title = new Gtk.Label ("Devices") { xalign = 0, visible = false };
+            devices_title.add_css_class ("state-title");
+            device_list = new Gtk.ListBox () { selection_mode = Gtk.SelectionMode.NONE };
+            device_list.add_css_class ("device-list");
+            device_scroll = new Gtk.ScrolledWindow () { child = device_list, min_content_height = 60, max_content_height = 200,
+                                                        propagate_natural_height = true, hscrollbar_policy = Gtk.PolicyType.NEVER, visible = false };
+            menu.append (devices_title);
+            menu.append (device_scroll);
+
             last_scan_label = new Gtk.Label ("") { xalign = 0, wrap = true };
             last_scan_label.add_css_class ("caption");
             last_scan_label.add_css_class ("dim-label");
@@ -161,12 +175,57 @@ namespace MSeries {
                 ".mseries-nmapui .metric-value { font-weight: 700; font-size: 14pt; font-feature-settings: \"tnum\"; } " +
                 ".mseries-nmapui .alert-row { padding: 5px 8px; border-radius: 8px; background: alpha(@warning_color, 0.18); } " +
                 ".mseries-nmapui .alert-row.bad { background: alpha(@error_color, 0.18); } " +
+                ".mseries-nmapui .device-list { background: transparent; } " +
+                ".mseries-nmapui .device-row { padding: 4px 8px; border-radius: 8px; background: alpha(currentColor, 0.05); margin: 1px 0; } " +
+                ".mseries-nmapui .device-name { font-weight: 600; } " +
+                ".mseries-nmapui .chip { padding: 0 7px; border-radius: 99px; font-size: 7.5pt; font-weight: 700; background: alpha(@accent_color, 0.2); color: @accent_color; } " +
                 ".mseries-nmapui .mseries-dock { margin-top: 2px; } " +
                 ".mseries-nmapui-bar .seg-value { font-size: 7pt; font-weight: 700; } " +
                 ".mseries-nmapui-bar .dot-scan { color: @accent_color; font-size: 7pt; } " +
                 ".mseries-nmapui-bar .dot-warn { color: @warning_color; font-size: 7pt; } " +
                 ".mseries-nmapui-bar .dot-off { opacity: 0.45; font-size: 7pt; } ");
             Gtk.StyleContext.add_provider_for_display (display, style, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+
+        private void update_devices (Json.Object data) {
+            Json.Array? devices = data.has_member ("devices") && !data.get_null_member ("devices") ? data.get_array_member ("devices") : null;
+            uint count = devices != null ? devices.get_length () : 0;
+            devices_title.visible = device_scroll.visible = count > 0;
+            devices_title.label = "Devices · %u".printf (count);
+            var key = new StringBuilder ();
+            for (uint i = 0; i < count; i++) {
+                var d = devices.get_object_element (i);
+                key.append (d.get_string_member_with_default ("ip", "")).append (d.get_string_member_with_default ("name", ""));
+                key.append (d.has_member ("open_ports") && !d.get_null_member ("open_ports") ? d.get_int_member ("open_ports").to_string () : "-");
+            }
+            if (key.str == last_devices_key) return;
+            last_devices_key = key.str;
+            Gtk.Widget? child;
+            while ((child = device_list.get_first_child ()) != null) device_list.remove (child);
+            for (uint i = 0; i < count; i++) {
+                var d = devices.get_object_element (i);
+                string name = d.get_string_member_with_default ("name", "");
+                string vendor = d.get_string_member_with_default ("vendor", "");
+                if (name == "") name = vendor.has_prefix ("(") ? "Unknown device" : (vendor != "" ? vendor : "Unknown device");
+                var row = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 8);
+                row.add_css_class ("device-row");
+                var text = new Gtk.Box (Gtk.Orientation.VERTICAL, 0) { hexpand = true };
+                var title = new Gtk.Label (name) { xalign = 0, ellipsize = Pango.EllipsizeMode.END };
+                title.add_css_class ("device-name");
+                var sub = new Gtk.Label (d.get_string_member_with_default ("ip", "") + (vendor != "" && vendor != name ? " · " + vendor : "")) { xalign = 0, ellipsize = Pango.EllipsizeMode.END };
+                sub.add_css_class ("caption");
+                sub.add_css_class ("dim-label");
+                sub.add_css_class ("numeric");
+                text.append (title);
+                text.append (sub);
+                row.append (text);
+                if (d.has_member ("open_ports") && !d.get_null_member ("open_ports")) {
+                    var chip = new Gtk.Label ("%lld open".printf (d.get_int_member ("open_ports"))) { valign = Gtk.Align.CENTER };
+                    chip.add_css_class ("chip");
+                    row.append (chip);
+                }
+                device_list.append (row);
+            }
         }
 
         private void open_app () {
@@ -289,6 +348,8 @@ namespace MSeries {
             }
             net_addr_label.visible = net_addr_label.label != "";
             net_gw_label.visible = net_gw_label.label != "";
+
+            update_devices (data);
 
             hosts_value.label = number_or_dash (data, "hosts");
             changes_value.label = number_or_dash (data, "changes");

@@ -63,10 +63,10 @@ def number(value):
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def summarize(health, runtime, history, auto):
+def summarize(health, runtime, history, auto, live=None):
     out = {"state": "offline", "label": "Scanner service is not running", "version": None, "progress": None,
            "message": None, "hosts": None, "changes": None, "critical": None, "last_scan": None,
-           "last_customer": None, "monitor": None, "alerts": [], "tools_missing": [], "network": None, "scan": None}
+           "last_customer": None, "monitor": None, "alerts": [], "tools_missing": [], "network": None, "scan": None, "devices": []}
     if not isinstance(health, dict):
         return out
     out["version"] = health.get("app_version")
@@ -109,6 +109,15 @@ def summarize(health, runtime, history, auto):
         out["critical"] = number(last.get("critical_cves", last.get("critical_count")))
         if out["critical"]:
             out["alerts"].append(f"{out['critical']} critical CVE" + ("s" if out["critical"] != 1 else ""))
+    devices = []
+    for host in ((live or {}).get("hosts") or [])[:200] if isinstance(live, dict) else []:
+        if isinstance(host, dict) and host.get("ip"):
+            devices.append({"ip": host["ip"], "name": host.get("hostname") or "", "vendor": host.get("vendor") or "",
+                            "open_ports": number(host.get("open_ports"))})
+    devices.sort(key=lambda d: [int(part) if part.isdigit() else 0 for part in str(d["ip"]).split(".")])
+    out["devices"] = devices
+    if out["hosts"] is None and devices:
+        out["hosts"] = len(devices)
     if isinstance(auto, dict) and auto.get("enabled"):
         out["monitor"] = auto.get("next_run") or "Enabled"
     if out["tools_missing"]:
@@ -120,7 +129,7 @@ def summarize(health, runtime, history, auto):
 
 def main():
     print(json.dumps(summarize(get("/api/health"), get("/api/runtime/status"), get("/api/runtime/history"),
-                               get("/api/auto_scan/status"))))
+                               get("/api/auto_scan/status"), get("/api/runtime/live-hosts"))))
     return 0
 
 

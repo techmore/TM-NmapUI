@@ -60,3 +60,11 @@ def test_scan_details_parse_step_total_and_elapsed(monkeypatch):
 def test_network_info_without_interface_is_all_unknown(monkeypatch):
     monkeypatch.setattr(summary, "run_json", lambda command: None)
     assert summary.network_info(None)["address"] is None
+
+
+def test_devices_are_sorted_numerically_and_fill_host_count():
+    live = {"hosts": [{"ip": "10.0.0.20", "hostname": "b", "vendor": "V", "open_ports": 1},
+                      {"ip": "10.0.0.3", "hostname": "", "vendor": "W", "open_ports": None}, {"hostname": "no-ip"}]}
+    out = summary.summarize(HEALTH, {"active_jobs": []}, {"history": []}, None, live)
+    assert [d["ip"] for d in out["devices"]] == ["10.0.0.3", "10.0.0.20"]
+    assert out["hosts"] == 2 and out["devices"][1]["open_ports"] == 1
