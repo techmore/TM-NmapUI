@@ -1,6 +1,7 @@
 """Opt-in smoke test for the supervised single-worker Socket.IO server."""
 
 import os
+import re
 from pathlib import Path
 import runpy
 import signal
@@ -111,7 +112,7 @@ def _assert_authenticated_browser_flow(base_url, username, password):
                 f"Origin={login_response.value.request.headers.get('origin')!r}; "
                 f"{login_response.value.text()}"
             )
-            page.wait_for_url(f"{base_url}/", wait_until="domcontentloaded", timeout=20_000)
+            page.wait_for_url(re.compile(rf"^{re.escape(base_url)}/(#.*)?$"), wait_until="domcontentloaded", timeout=20_000)
             wait_for_socket_connection(page)
             session_status = page.evaluate(
                 """async () => {
@@ -130,7 +131,7 @@ def _assert_authenticated_browser_flow(base_url, username, password):
             }
 
             page.reload(wait_until="domcontentloaded", timeout=30_000)
-            page.wait_for_url(f"{base_url}/", wait_until="domcontentloaded", timeout=20_000)
+            page.wait_for_url(re.compile(rf"^{re.escape(base_url)}/(#.*)?$"), wait_until="domcontentloaded", timeout=20_000)
             wait_for_socket_connection(page)
             reloaded_status = page.evaluate(
                 """async () => {
