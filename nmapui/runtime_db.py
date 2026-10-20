@@ -555,6 +555,16 @@ class RuntimeStateStore:
                 """,
                 (job_id, owner_sid, job_type, event_name, _json_dumps(stored_payload), now),
             )
+            if event_name == "scan_results" and isinstance(payload, list):
+                # Long scans prune their early events; keep the discovered-host list for the summary views.
+                conn.execute(
+                    """
+                    INSERT INTO runtime_snapshots(key, payload_json, updated_at)
+                    VALUES ('latest_scan_hosts', ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at
+                    """,
+                    (_json_dumps({"job_id": job_id, "hosts": payload[:512]}), now),
+                )
             conn.execute(
                 """
                 DELETE FROM job_events

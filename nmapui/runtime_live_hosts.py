@@ -28,6 +28,10 @@ def latest_scan_hosts(store):
     for event in store.list_job_events(job_id=job["job_id"], limit=2000):
         if event.get("event_name") == "scan_results" and isinstance(event.get("payload"), list):
             discovered = event["payload"]
+    if not discovered and hasattr(store, "get_runtime_snapshot"):
+        saved = store.get_runtime_snapshot("latest_scan_hosts") or {}
+        if saved.get("job_id") == job["job_id"] and isinstance(saved.get("hosts"), list):
+            discovered = saved["hosts"]
     open_ports = {}
     run = scan_run_details(store, public_scan_id(job["job_id"])) or {}
     for host in run.get("hosts", []):
