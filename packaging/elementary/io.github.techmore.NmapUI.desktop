@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Network Scanner
+Comment=Scan and monitor your networks with Nmap
+Exec=nmapui-elementary
+Icon=io.github.techmore.NmapUI
+Terminal=false
+Type=Application
+Categories=Network;System;Security;
+Keywords=nmap;scan;network;security;daedalus;
+StartupWMClass=io.github.techmore.NmapUI
+StartupNotify=true
