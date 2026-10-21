@@ -143,15 +143,15 @@ def test_rejected_scan_requests_are_surfaced_to_the_user():
     assert "showReportStatus(message, 'error')" in handler[:600]
 
 
-def test_pause_and_resume_controls_are_inert_until_backed_by_a_job_model():
-    """Issue #10: the buttons exist, but nothing implements them yet."""
+def test_pause_and_resume_start_disabled_and_carry_their_job_state():
+    """Pause/resume are backed by a job model now; before a scan they are disabled (exposed to assistive tech
+    through the native `disabled` attribute) and the page drives them through data-pause-state."""
     elements = _elements()
     for button_id in ("suspend-scan-btn", "resume-scan-btn"):
         tag, attrs = _by_id(elements, button_id)
         assert tag == "button"
         assert "disabled" in attrs
-        assert attrs.get("aria-disabled") == "true"
-        assert "#10" in attrs.get("title", "")
+        assert attrs.get("data-pause-state") == "idle"
 
 
 def test_target_format_help_is_a_keyboard_reachable_button():
