@@ -5,10 +5,22 @@ from collections import defaultdict
 import re
 import xml.etree.ElementTree as ET
 
-VERSION = 1
+from nmapui.segmentation import analyze_segmentation, segmentation_html
+
+VERSION = 2
 
 
-def recommendation_html(xml_documents):
+def _vlan_status_note(analysis):
+    """State only what the segmentation analysis supports about VLANs."""
+    summary = (analysis or {}).get('summary') or {}
+    if summary.get('detected'):
+        return 'VLAN evidence is listed under Segmentation &amp; VLAN observations; cabling and switch-port mapping remain unverified.'
+    if summary.get('likely'):
+        return 'Segment boundaries look likely in places (see Segmentation &amp; VLAN observations), but VLAN assignment, cabling and switch ports are unverified.'
+    return 'Cabling, switch ports and VLAN relationships are unverified.'
+
+
+def recommendation_html(xml_documents, analysis=None):
     """Describe observations separately from an illustrative /24 address plan.
 
     No address is declared free, no device role is inferred from its address,
@@ -55,7 +67,7 @@ def recommendation_html(xml_documents):
         <h3>{escape(network)} — illustrative address grouping</h3>
         <p><strong>Observed:</strong> {len(ordered)} responding addresses in this /24 grouping; {high} are .100 or higher. This distribution does not establish DHCP use, device roles, subnet mask, or physical connections.</p>
         <div class="topology-pair">
-          <div class="topology-box"><strong>BEFORE · observed address inventory</strong><p>[ Existing network ]<br/>└ [ {escape(observed)} ]</p><p>Unclassified devices remain unclassified. Cabling, switch ports and VLAN relationships are unverified.</p></div>
+          <div class="topology-box"><strong>BEFORE · observed address inventory</strong><p>[ Existing network ]<br/>└ [ {escape(observed)} ]</p><p>Unclassified devices remain unclassified. {_vlan_status_note(analysis)}</p></div>
           <div class="topology-box"><strong>AFTER · proposed logical grouping</strong><p>[ Existing gateway / subnet ]<br/>├ [ Servers · retain .10 where applicable ]<br/>├ [ Network equipment · .30–49 ]<br/>├ [ Printers · .50–69 ]<br/>├ [ Fixed stations · .70–89 ]<br/>└ [ Dynamic clients · .100+ ]</p><p>Planning diagram only; these groups are not separate VLANs or a verified physical topology.</p></div>
         </div>
         <table><thead><tr><th>Device group</th><th>Example addresses</th><th>Recommendation</th></tr></thead><tbody>{table}</tbody></table>''')
@@ -75,11 +87,12 @@ def recommendation_html(xml_documents):
     </ol><p><strong>Scope:</strong> conceptual before/after addressing view based on available scan evidence, not a verified physical topology. Confirm all proposals with the network administrator.</p></section>'''
 
 
-def append_recommendations(html, xml_documents, network_plan=None):
-    panel = recommendation_html(xml_documents) + network_plan_html(network_plan)
+def append_recommendations(html, xml_documents, network_plan=None, supplied_evidence=None):
+    analysis = analyze_segmentation(xml_documents, supplied_evidence)
+    panel = recommendation_html(xml_documents, analysis) + segmentation_html(analysis) + network_plan_html(network_plan)
     if not panel:
         return html
-    html = re.sub(r'<section id="(?:topology-recommendations|customer-network-plan)".*?</section>', '', html, flags=re.DOTALL)
+    html = re.sub(r'<section id="(?:topology-recommendations|segmentation-analysis|customer-network-plan)".*?</section>', '', html, flags=re.DOTALL)
     return re.sub(r'</body\s*>', lambda match: panel + match.group(0), html, count=1, flags=re.IGNORECASE)
 
 def network_plan_html(plan):

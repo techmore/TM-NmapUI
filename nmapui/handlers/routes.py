@@ -33,6 +33,7 @@ from nmapui.reporting import (
     report_content_security_policy,
 )
 from nmapui.asset_inventory import render_asset_inventory_html
+from nmapui.segmentation import analyze_segmentation, load_supplied_evidence, segmentation_page
 from nmapui.runtime_history import (
     backfill_runtime_history_artifacts,
     build_compare_result,
@@ -518,6 +519,31 @@ def register_core_routes(app, deps):
             temporary.cleanup()
             app.logger.exception("Failed to create asset inventory PDF")
             return jsonify({"success": False, "error": "Could not create the inventory PDF"}), 500
+
+    @app.route("/api/runtime/reports/<path:scan_path>/segmentation")
+    @require_auth
+    def runtime_report_segmentation(scan_path):
+        """Passive VLAN/segmentation findings for one saved scan (JSON, or HTML with ?format=html)."""
+        artifact = _get_runtime_artifact(runtime_store, scan_path)
+        if artifact is None:
+            return "Report artifact not found", 404
+        xml_path = _resolve_artifact_file_path(
+            scans_dir=deps.get("scans_dir"),
+            scan_path=scan_path,
+            stored_path=artifact.get("xml_path"),
+            default_name="scan.xml",
+        )
+        if not xml_path.is_file():
+            return "Scan XML artifact not found", 404
+        analysis = analyze_segmentation([xml_path.read_bytes()], load_supplied_evidence(xml_path.parent))
+        if (request.args.get("format") or "json").strip().lower() == "html":
+            response = make_response(segmentation_page(analysis))
+            response.headers["Content-Type"] = "text/html; charset=utf-8"
+            response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+        else:
+            response = jsonify(analysis)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
 
     @app.route("/api/runtime/reports/<path:scan_path>/upload/google-drive", methods=["POST"])
     @require_auth
