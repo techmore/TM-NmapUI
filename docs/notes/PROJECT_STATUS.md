@@ -385,6 +385,59 @@ crash, power-loss and multi-process behavior still need verification.
 - No other local or remote feature branch is both merged and disposable. Keep
   the active unattended branch, alpha rollback, and unique native/Claude work.
 
+## Scan pause and resume (#10)
+
+Pause/Resume on the shared Flask backend (`nmapui/jobs.py`,
+`pause_job` / `resume_job` in `nmapui/handlers/history.py`,
+`static/js/scan_runtime.js`). There is no checkpoint file and no cross-restart
+resume: a scan is a chain of short nmap/arp-scan subprocesses, and the only
+resumable unit that exists today is the live process.
+
+- A paused job keeps `status: "running"` (so it still holds its capacity slot,
+  blocks maintenance/updates and can be cancelled) and carries `paused`,
+  `pause_requested`, `pause_mode`, `paused_at`, `paused_seconds` and
+  `pause_supported`. `pause_requested && !paused` is the transient "pausing".
+- `pause_mode: "process"`: the scan's process group is SIGSTOPped/SIGCONTed
+  (POSIX only). Time spent paused is excluded from the command timeout.
+- `pause_mode: "checkpoint"`: used when no stoppable process exists, notably
+  privileged `sudo` scans (root-owned nmap cannot be stopped by the unprivileged
+  server, and stopping only sudo would be fake). The workflow parks in
+  `ensure_job_not_cancelled`, so the in-flight command finishes and the next
+  step does not start until resume.
+- State flows through the normal `job_status` broadcast, so every open tab, and
+  tabs opened later, render the same state. Cancel while paused wakes the group
+  (SIGCONT) then terminates it; shutdown does the same.
+- Limits: nmap's own `--host-timeout`/`-T` timers use wall-clock time, so a
+  host can report "host timeout" after a long pause (the scan marks it
+  incomplete). A restart marks a paused job `interrupted` (never resumable); if
+  the server is SIGKILLed, a stopped nmap is orphaned and needs a manual kill.
+  Only scan jobs have UI controls; report jobs share the backend support.
+
+## VLAN detection and segmentation (#31)
+
+Passive, evidence-based analysis on the shared Flask backend:
+`nmapui/segmentation.py` builds findings with `detected` / `likely` /
+`unverified` confidence and cited evidence from existing Nmap XML (script
+output, traceroute, MACs, hostnames) plus an optional operator-supplied
+`l2_evidence.json` / `switch_config.txt` beside the scan. Recommendations
+(segmentation, native VLAN, trunk hygiene) inherit the confidence of the
+finding behind them. Surfaces: `/api/runtime/reports/<scan>/segmentation`
+(JSON, or HTML with `?format=html`), a Reports-tab link, and a section in the
+existing opt-in topology appendix of HTML/PDF reports. Details:
+`docs/guides/VLAN_SEGMENTATION.md`.
+
+- Verified: `tests/test_segmentation.py` (a fixture per confidence level, the
+  no-evidence case, supplied Meraki/IOS configs, escaping, route) and the full
+  suite (756 passed / 29 skipped on Python 3.14 locally; CI uses 3.11).
+- Not verified: rendering of the new Reports-tab icon in a real browser, and
+  analysis against a real LLDP/CDP capture or a production switch export: the
+  fixtures are synthetic. Stock `-A -sC` scans do not emit LLDP/CDP VLAN IDs,
+  so `detected` results normally need a supplied configuration or custom script
+  output.
+- Out of scope (would be separate, explicitly approved work): active LLDP/CDP
+  listening, SNMP bridge-MIB reads, switch/Meraki API queries, any VLAN-hopping
+  or tagged-frame probing. The analysis is not added to scan `metadata.json`.
+
 ## Cleanup completed
 - Removed local and remote `fix/zombie-jobs-disable-scan-buttons` after verifying
   its tip is an ancestor of main (merged PR #238).
@@ -480,9 +533,12 @@ in draft pending the remaining platform checks and hosted candidate CI.
    installed Mac rollback, and host-level disk-growth behavior remain open.
    Remote Mac management through DigitalOcean is recorded in the preserved
    release notes, but is not verified implemented.
-6. **Later features.** #4 remote sync, #10 pause/resume, #14 GoWitness and #31 VLAN
+6. **Later features.** #4 remote sync and #14 GoWitness
    should be evaluated against the shared backend before being declared done;
    an implementation in a legacy/native branch is insufficient.
+   #10 pause/resume landed on the shared backend (see "Scan pause and resume");
+   #31 passive VLAN/segmentation analysis landed too (see "VLAN detection and
+   segmentation").
 
 ## Documentation to reconcile
 

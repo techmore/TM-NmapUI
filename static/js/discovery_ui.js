@@ -552,10 +552,62 @@ function initializeDiscoveryUI(socket) {
 
     requestLocalRuntimeInfo();
 
-    document.getElementById('info-icon').addEventListener('click', () => {
-        document.getElementById('tooltip').classList.toggle('hidden');
+    initializeTargetFormatHelp();
+    initializeDiscoveryEmptyState();
+}
+
+// The "i" button next to the target input toggles the valid-format popover.
+// It is a real button so it is reachable by keyboard; Escape and clicking
+// elsewhere close it, and aria-expanded tracks its state.
+function initializeTargetFormatHelp() {
+    const trigger = document.getElementById('info-icon');
+    const tooltip = document.getElementById('tooltip');
+    if (!trigger || !tooltip || trigger.dataset.helpWired === 'true') return;
+    trigger.dataset.helpWired = 'true';
+
+    const setOpen = (open) => {
+        tooltip.classList.toggle('hidden', !open);
+        trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+
+    trigger.addEventListener('click', () => {
+        setOpen(tooltip.classList.contains('hidden'));
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !tooltip.classList.contains('hidden')) {
+            setOpen(false);
+            trigger.focus();
+        }
+    });
+    document.addEventListener('click', (event) => {
+        if (tooltip.classList.contains('hidden')) return;
+        if (trigger.contains(event.target) || tooltip.contains(event.target)) return;
+        setOpen(false);
     });
 }
+
+// Show an explanatory empty state instead of a bare 2400px-wide header row
+// until the first host row exists; every code path that fills the table
+// writes into the same tbody, so a childList observer covers them all.
+function syncDiscoveryEmptyState() {
+    const table = document.getElementById('discovery-table');
+    const emptyState = document.getElementById('discovery-empty-state');
+    if (!table || !emptyState) return;
+    const tbody = table.querySelector('tbody');
+    const hasRows = !!(tbody && tbody.rows.length > 0);
+    table.classList.toggle('hidden', !hasRows);
+    emptyState.classList.toggle('hidden', hasRows);
+}
+
+function initializeDiscoveryEmptyState() {
+    const tbody = document.querySelector('#discovery-table tbody');
+    if (!tbody || tbody.dataset.emptyStateWired === 'true') return;
+    tbody.dataset.emptyStateWired = 'true';
+    syncDiscoveryEmptyState();
+    new MutationObserver(syncDiscoveryEmptyState).observe(tbody, { childList: true });
+}
+
+window.syncDiscoveryEmptyState = syncDiscoveryEmptyState;
 
 function formatReportCompleteMessage(data) {
     const scanDir = data?.scan_dir || 'saved scan folder';

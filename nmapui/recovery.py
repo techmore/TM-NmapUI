@@ -75,6 +75,9 @@ def reconcile_interrupted_jobs(*, runtime_store, logger=logger, status=None) -> 
                     "recovery_note": "Process restarted while this job was running",
                     "finished_at": finished_at,
                     "interrupted_at": finished_at,
+                    # Restart kills the scan; a paused scan cannot resume.
+                    "paused": False,
+                    "pause_requested": False,
                 }
             )
             try:

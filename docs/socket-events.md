@@ -110,10 +110,14 @@ Historical resume path:
 | Event | Direction | Payload |
 |---|---|---|
 | `get_job_status` | `C -> S` | none |
-| `job_status` | `S -> C` | `{ job_type, status, started_at?, details? }` |
+| `job_status` | `S -> C` | `{ job_type, status, started_at?, details?, paused?, pause_requested?, pause_mode?, paused_at?, paused_seconds?, pause_supported? }` |
 | `job_progress` | `S -> C` | `{ job_type, phase, message, progress, details? }` |
 | `cancel_job` | `C -> S` | `{ job_type: "scan" | "report" }` |
 | `job_cancelled` | `S -> C` | `{ job_type, message }` |
+| `pause_job` | `C -> S` | `{ job_type: "scan" | "report", source_job_id? }` |
+| `resume_job` | `C -> S` | `{ job_type: "scan" | "report", source_job_id? }` |
+
+A paused job keeps `status: "running"`. `pause_requested && !paused` means the pause is pending ("pausing"); `pause_mode` is `"process"` (nmap suspended with SIGSTOP) or `"checkpoint"` (workflow parks before its next step). Any tab may pause or resume the active scan; pass `source_job_id` to guard against acting on a newer run. The current state is always re-broadcast as `job_status`; invalid requests (nothing running, already paused, not paused, finished or cancelled scan) are explained with a `scan_feedback` message to the requester only. `sync_state` carries `isPaused` / `pauseRequested` for late-joining tabs.
 
 ## Auto-scan and idle/update state
 

@@ -636,6 +636,7 @@ def test_runtime_logs_route_and_ui_hydration_exist():
     assert '@app.route("/api/runtime/reports/<path:scan_path>/html")' in routes_source
     assert '@app.route("/api/runtime/reports/<path:scan_path>/pdf")' in routes_source
     assert '@app.route("/api/runtime/reports/<path:scan_path>/inventory")' in routes_source
+    assert '@app.route("/api/runtime/reports/<path:scan_path>/segmentation")' in routes_source
     assert '@app.route("/api/runtime/reports/<path:scan_path>/xml")' in routes_source
     assert '@app.route("/api/runtime/history")' in routes_source
     assert '@app.route("/api/runtime/history/<path:scan_path>", methods=["DELETE"])' in routes_source
@@ -667,6 +668,7 @@ def test_runtime_logs_route_and_ui_hydration_exist():
     assert "async function fetchReportsForTab()" in reports_tab_source
     assert "fetch('/api/runtime/reports')" in reports_tab_source
     assert "Download printable asset inventory PDF" in (ROOT / "static" / "js" / "scan_runtime.js").read_text()
+    assert "Open segmentation and VLAN observations" in (ROOT / "static" / "js" / "scan_runtime.js").read_text()
     assert 'id="inventory-orientation"' in (ROOT / "templates" / "index.html").read_text()
     assert 'id="inventory-color-mode"' in (ROOT / "templates" / "index.html").read_text()
     assert "fetch('/api/runtime/history')" in reports_tab_source
@@ -822,7 +824,8 @@ def test_frontend_layout_guide_and_page_shell_exist():
     assert ".action-button-compact {" in template
     assert template.count('class="page-shell"') >= 2
     assert 'class="results-band"' in template
-    assert 'class="table-fixed min-w-[2400px]"' in template
+    # The table starts hidden behind #discovery-empty-state until rows exist.
+    assert 'class="table-fixed min-w-[2400px] hidden"' in template
     assert template.count("modal-overlay") >= 6
     assert template.count("modal-panel") >= 6
     assert template.count("form-control form-control-md") >= 10

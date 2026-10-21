@@ -1150,6 +1150,102 @@ def test_second_tab_replays_active_scan_state(browser_server, playwright_browser
         context.close()
 
 
+def _scan_pause_ui(page):
+    return page.evaluate(
+        "() => ({"
+        "pauseDisabled: document.getElementById('suspend-scan-btn').disabled,"
+        "resumeDisabled: document.getElementById('resume-scan-btn').disabled,"
+        "pauseText: document.getElementById('suspend-scan-btn').textContent.trim(),"
+        "state: document.getElementById('resume-scan-btn').dataset.pauseState,"
+        "status: document.getElementById('scan-pause-status').textContent"
+        "})"
+    )
+
+
+def test_pause_and_resume_scan_state_is_shared_by_every_open_tab(browser_server, playwright_browser):
+    app_module = browser_server["app_module"]
+    context = playwright_browser.new_context()
+    first_page = context.new_page()
+    second_page = context.new_page()
+    late_page = None
+    owner_client = None
+
+    try:
+        for page in (first_page, second_page):
+            page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+            page.locator("#suspend-scan-btn").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
+            # Idle: nothing to pause or resume.
+            assert page.locator("#suspend-scan-btn").is_disabled()
+            assert page.locator("#resume-scan-btn").is_disabled()
+
+        owner_client = _connect_socket(browser_server)
+        owner_sid = _get_socket_sid(owner_client)
+        app_module.set_last_scan_target_state(value="198.51.100.0/24", sid=owner_sid)
+        app_module.job_registry.start(
+            owner_sid, "scan", {"message": "Running quick scan", "target": "198.51.100.0/24"}
+        )
+        app_module.broadcaster.start_job(owner_sid, job_type="scan")
+        app_module.emit_job_status(owner_sid, "scan")
+
+        for page in (first_page, second_page):
+            page.wait_for_function("() => document.getElementById('suspend-scan-btn').dataset.pauseState === 'running'")
+            assert page.locator("#suspend-scan-btn").is_enabled()
+            assert page.locator("#resume-scan-btn").is_disabled()
+
+        # Pausing from one tab pauses the scan for all of them.
+        first_page.locator("#suspend-scan-btn").click()
+        for page in (first_page, second_page):
+            page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState !== 'running'")
+        job = app_module.job_registry.get(owner_sid, "scan")
+        assert job["pause_requested"] is True and job["status"] == "running"
+        # No scan process is attached; the workflow reaches its next checkpoint.
+        parked = threading.Thread(target=app_module.ensure_job_not_cancelled, args=(owner_sid, "scan"))
+        parked.start()
+        for page in (first_page, second_page):
+            page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState === 'paused'")
+            ui = _scan_pause_ui(page)
+            assert ui["pauseDisabled"] is True and ui["resumeDisabled"] is False
+            assert "paused" in ui["status"].lower()
+            assert page.locator("#scan-pause-status").is_visible()
+
+        # A tab opened while the scan is paused starts out showing it as paused.
+        late_page = context.new_page()
+        late_page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        late_page.wait_for_function("() => window.socket && window.socket.connected")
+        late_page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState === 'paused'")
+        assert late_page.locator("#resume-scan-btn").is_enabled()
+        assert late_page.locator("#suspend-scan-btn").is_disabled()
+
+        # Resuming from a different tab resumes it everywhere.
+        second_page.locator("#resume-scan-btn").click()
+        parked.join(timeout=5)
+        assert not parked.is_alive()
+        for page in (first_page, second_page, late_page):
+            page.wait_for_function("() => document.getElementById('suspend-scan-btn').dataset.pauseState === 'running'")
+            assert page.locator("#suspend-scan-btn").is_enabled()
+            assert page.locator("#resume-scan-btn").is_disabled()
+        job = app_module.job_registry.get(owner_sid, "scan")
+        assert job["paused"] is False and job["pause_requested"] is False
+
+        # Stopping a paused scan cancels it instead of leaving it stuck paused.
+        first_page.locator("#suspend-scan-btn").click()
+        first_page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState !== 'running'")
+        first_page.locator("#stop-scan-btn").click()
+        first_page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState === 'cancelling'")
+        job = app_module.job_registry.get(owner_sid, "scan")
+        assert job["status"] == "cancelling" and job["paused"] is False and job["pause_requested"] is False
+        assert first_page.locator("#suspend-scan-btn").is_disabled()
+        assert first_page.locator("#resume-scan-btn").is_disabled()
+    finally:
+        if owner_client is not None:
+            if app_module.job_registry.get(owner_sid, "scan"):
+                app_module.job_registry.complete(owner_sid, "scan", status="cancelled")
+            app_module.broadcaster.end_job(owner_sid, job_type="scan")
+            owner_client.disconnect()
+        context.close()
+
+
 def test_existing_open_tabs_receive_live_report_state(browser_server, playwright_browser):
     app_module = browser_server["app_module"]
     browser = playwright_browser
@@ -1324,5 +1420,137 @@ def test_release_metadata_is_checked_only_after_explicit_user_action(browser_ser
             "() => document.getElementById('update-check-status').textContent.includes('Up to date')"
         )
         assert browser_server["external_lookups"] == [release_url]
+    finally:
+        context.close()
+
+
+def _open_dashboard(page, browser_server):
+    page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+    page.locator("#scan-target").wait_for()
+    page.wait_for_function("() => window.socket && window.socket.connected")
+    page.wait_for_function(
+        "() => document.getElementById('view-history-btn')?.dataset.historyWired === 'true'"
+    )
+
+
+def test_rejected_scan_target_is_reported_in_the_status_region(browser_server, playwright_browser):
+    """`scan_error` used to have no listener: a bad target produced no feedback at all."""
+    app_module = browser_server["app_module"]
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    sid = None
+
+    try:
+        _open_dashboard(page, browser_server)
+        sid = page.evaluate("window.socket.id")
+        # Send the request over the live socket rather than through the input:
+        # the connect-time `sync_state`/`local_ip` replies can overwrite the
+        # target field a moment after a fill, and a valid prefilled target
+        # would start a real scan. The handler under test is the listener.
+        page.evaluate(
+            "() => window.socket.emit('start_quick_scan', { target: 'not a target; rm -rf /' })"
+        )
+        page.wait_for_function(
+            "() => document.getElementById('report-status-text').textContent.includes('Invalid target')",
+            timeout=5_000,
+        )
+        status = page.locator("#report-status")
+        assert "hidden" not in status.get_attribute("class")
+        assert status.get_attribute("role") == "alert"
+        assert status.get_attribute("aria-live") == "assertive"
+        # Nothing started, so the controls stay usable.
+        assert app_module.job_registry.get(sid, "scan") is None
+        assert page.locator("#start-scan-btn").is_enabled()
+    finally:
+        if sid and app_module.job_registry.get(sid, "scan"):
+            app_module.job_registry.complete(sid, "scan", status="cancelled")
+        context.close()
+
+
+def test_escape_closes_history_dialog_and_restores_focus(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        _open_dashboard(page, browser_server)
+        history_modal = page.locator("#history-modal")
+        assert history_modal.get_attribute("role") == "dialog"
+
+        page.locator("#view-history-btn").focus()
+        page.keyboard.press("Enter")
+        page.get_by_role("heading", name="Scan History").wait_for(state="visible")
+        page.wait_for_function(
+            "() => document.getElementById('history-modal').contains(document.activeElement)"
+        )
+
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.getElementById('history-modal').classList.contains('hidden')"
+        )
+        page.wait_for_function("() => document.activeElement?.id === 'view-history-btn'")
+    finally:
+        context.close()
+
+
+def test_tab_strip_supports_arrow_key_navigation(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        _open_dashboard(page, browser_server)
+        page.wait_for_function(
+            "() => document.querySelector('[role=\"tablist\"]')?.dataset.keyboardWired === 'true'"
+        )
+        page.locator("#tab-dashboard-btn").focus()
+        page.keyboard.press("ArrowRight")
+        page.wait_for_function(
+            "() => document.getElementById('tab-history-btn').getAttribute('aria-selected') === 'true'"
+        )
+        assert page.evaluate("() => document.activeElement.id") == "tab-history-btn"
+        assert "hidden" not in page.locator("#history-tab-panel").get_attribute("class")
+        assert "hidden" in page.locator("#dashboard-tab-panel").get_attribute("class")
+        assert page.locator("#tab-dashboard-btn").get_attribute("aria-selected") == "false"
+        assert page.locator("#tab-dashboard-btn").get_attribute("tabindex") == "-1"
+
+        page.keyboard.press("End")
+        page.wait_for_function(
+            "() => document.getElementById('tab-settings-btn').getAttribute('aria-selected') === 'true'"
+        )
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            "() => document.getElementById('tab-dashboard-btn').getAttribute('aria-selected') === 'true'"
+        )
+        assert "hidden" not in page.locator("#dashboard-tab-panel").get_attribute("class")
+    finally:
+        context.close()
+
+
+def test_results_table_shows_empty_state_until_hosts_arrive(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        _open_dashboard(page, browser_server)
+        page.wait_for_function(
+            "() => document.querySelector('#discovery-table tbody')?.dataset.emptyStateWired === 'true'"
+        )
+        assert page.locator("#discovery-empty-state").is_visible()
+        assert "hidden" in page.locator("#discovery-table").get_attribute("class")
+
+        page.evaluate(
+            "() => { const row = document.createElement('tr');"
+            " const cell = document.createElement('td'); cell.textContent = '198.51.100.1';"
+            " row.appendChild(cell); document.querySelector('#discovery-table tbody').appendChild(row); }"
+        )
+        page.wait_for_function(
+            "() => !document.getElementById('discovery-table').classList.contains('hidden')"
+        )
+        assert not page.locator("#discovery-empty-state").is_visible()
+
+        page.evaluate("() => { document.querySelector('#discovery-table tbody').replaceChildren(); }")
+        page.wait_for_function(
+            "() => document.getElementById('discovery-table').classList.contains('hidden')"
+        )
+        assert page.locator("#discovery-empty-state").is_visible()
     finally:
         context.close()
