@@ -132,7 +132,9 @@ prepared before running its service installer; see the setup guide.
 
 Reports include host/IP/MAC/vendor, open ports and service versions, detected CVEs
 with CVSS scores, and a network topology fingerprint. HTML and PDF are written
-under the data directory.
+under the data directory. Saved reports also offer a passive VLAN/segmentation
+view with confidence levels and cited evidence
+(`docs/guides/VLAN_SEGMENTATION.md`).
 
 ### Vulnerability enrichment and data egress
 

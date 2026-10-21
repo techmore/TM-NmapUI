@@ -633,6 +633,7 @@ function initializeScanRuntime(socket) {
                     reportActionLink({ href: report.url, title: 'Open HTML report', icon: 'file-code-2' }),
                     reportActionLink({ href: report.pdfUrl, title: 'Open PDF report', icon: 'file-text', disabled: !report.pdfUrl }),
                     reportActionLink({ href: report.has_xml ? buildRuntimeReportArtifactUrl(report.path, 'inventory') : '', title: 'Download printable asset inventory PDF', icon: 'clipboard-list', download: true, disabled: !report.has_xml, inventoryExport: true }),
+                    reportActionLink({ href: report.has_xml ? buildRuntimeReportArtifactUrl(report.path, 'segmentation') + '?format=html' : '', title: 'Open segmentation and VLAN observations', icon: 'network', disabled: !report.has_xml }),
                     reportActionLink({ href: report.xmlUrl, title: 'Open XML report', icon: 'braces', disabled: !report.xmlUrl }),
                     reportActionLink({ href: report.pdfUrl, title: 'Download PDF', icon: 'download', download: true, disabled: !report.pdfUrl }),
                     reportActionLink({ href: report.drivePdfUrl || report.driveHtmlUrl, title: 'Open PDF in Google Drive', icon: 'cloud', disabled: !(report.drivePdfUrl || report.driveHtmlUrl) })

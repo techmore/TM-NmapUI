@@ -680,9 +680,11 @@ def convert_xml_to_html(
         )
         _embed_report_assets(html_path)
         if include_topology_recommendations:
+            from nmapui.segmentation import load_supplied_evidence
             from nmapui.topology_recommendations import append_recommendations
             html_path.write_text(append_recommendations(
-                html_path.read_text(encoding="utf-8"), [xml_path.read_bytes()], network_plan=network_plan
+                html_path.read_text(encoding="utf-8"), [xml_path.read_bytes()], network_plan=network_plan,
+                supplied_evidence=load_supplied_evidence(xml_path.parent),
             ), encoding="utf-8")
         return True
     except subprocess.TimeoutExpired:
