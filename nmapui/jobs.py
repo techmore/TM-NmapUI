@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 def _signal_scan_process(process: subprocess.Popen, sig: int) -> None:
     """Signal a scan's whole process group, including sudo/helper children."""
+    if sig in (signal.SIGTERM, signal.SIGKILL) and getattr(process, "_nmapui_process_group", False) and os.name == "posix":
+        # A paused (SIGSTOPped) group only acts on SIGTERM after it is resumed.
+        # Waking it first makes cancellation, shutdown and timeouts clean for
+        # paused scans; for a running group SIGCONT is a harmless no-op.
+        _send_scan_signal(process, signal.SIGCONT)
     if getattr(process, "_nmapui_process_group", False) and os.name == "posix":
         try:
             os.killpg(process.pid, sig)
@@ -28,6 +33,39 @@ def _signal_scan_process(process: subprocess.Popen, sig: int) -> None:
             process.kill()
         else:
             process.terminate()
+
+
+def _send_scan_signal(process: subprocess.Popen, sig: int) -> bool:
+    """Send ``sig`` to the scan's group (or leader) without any fallback."""
+    pid = getattr(process, "pid", None)
+    if pid is None:
+        return False
+    try:
+        if getattr(process, "_nmapui_process_group", False):
+            os.killpg(process.pid, sig)
+        else:
+            os.kill(process.pid, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        logger.debug("Could not send signal %s to scan process %s", sig, process.pid)
+        return False
+
+
+def _process_is_pausable(process: subprocess.Popen) -> bool:
+    """Whether this process can be suspended with SIGSTOP by this user.
+
+    Privileged scans run as ``sudo -n [helper] nmap``. The scanner itself is
+    root-owned, so an unprivileged server cannot stop it; stopping only sudo
+    would pretend to pause while nmap keeps scanning. Those scans pause at the
+    next workflow checkpoint instead.
+    """
+    if os.name != "posix":
+        return False
+    argv = getattr(process, "args", None)
+    first = argv[0] if isinstance(argv, (list, tuple)) and argv else argv
+    return os.path.basename(str(first or "")) != "sudo"
 
 
 def _scan_process_group_alive(process: subprocess.Popen) -> bool:
@@ -259,7 +297,11 @@ class ClientJobRegistry:
     def __init__(self, runtime_store=None, max_active_jobs=None):
         self._jobs = {}
         self._lock = threading.Lock()
+        # Wakes workflow threads parked at a pause checkpoint on resume,
+        # cancel and shutdown.
+        self._pause_cond = threading.Condition(self._lock)
         self._processes = {}
+        self._stopped_processes = set()
         self._shutting_down = False
         self._maintenance_token = None
         self._runtime_store = runtime_store
@@ -294,6 +336,11 @@ class ClientJobRegistry:
                 "finished_at": job.get("finished_at"),
                 "cancel_requested_at": job.get("cancel_requested_at"),
                 "disconnected": bool(job.get("disconnected")),
+                "paused": bool(job.get("paused")),
+                "pause_requested": bool(job.get("pause_requested")),
+                "pause_mode": job.get("pause_mode"),
+                "paused_at": job.get("paused_at"),
+                "paused_seconds": job.get("paused_seconds", 0),
             },
         )
 
@@ -355,8 +402,15 @@ class ClientJobRegistry:
                 "status": "running",
                 "started_at": datetime.now().isoformat(),
                 "cancel_requested": False,
+                "pause_supported": os.name == "posix",
+                "pause_requested": False,
+                "paused": False,
+                "pause_mode": None,
+                "paused_at": None,
+                "paused_seconds": 0,
                 "details": details or {},
             }
+            self._stopped_processes.discard(key)
             self._persist_job(sid, job_type)
             return True
 
@@ -372,6 +426,7 @@ class ClientJobRegistry:
         with self._lock:
             key = (sid, job_type)
             current = self._jobs.get(key, {})
+            self._leave_pause_locked(key, current)
             current.update({"status": status, "finished_at": datetime.now().isoformat()})
             if details:
                 merged = dict(current.get("details", {}))
@@ -409,6 +464,9 @@ class ClientJobRegistry:
                 return False
             if expected_source_job_id is not None and current.get("source_job_id") != expected_source_job_id:
                 return False
+            # Cancel always wins over pause. The signal helper wakes a stopped
+            # group (SIGCONT) before SIGTERM so it can exit cleanly.
+            self._leave_pause_locked(key, current)
             current["cancel_requested"] = True
             current["status"] = "cancelling"
             current["cancel_requested_at"] = datetime.now().isoformat()
@@ -421,6 +479,7 @@ class ClientJobRegistry:
                 except Exception:
                     logger.exception("Failed to terminate subprocess for %s", key)
             self._persist_job(sid, job_type)
+            self._pause_cond.notify_all()
             return True
 
     def is_cancelled(self, sid: str, job_type: str) -> bool:
@@ -428,15 +487,151 @@ class ClientJobRegistry:
             job = self._jobs.get((sid, job_type))
             return bool(job and job.get("cancel_requested"))
 
+    # -- pause / resume -------------------------------------------------
+    #
+    # A paused job keeps ``status == "running"`` (it still owns its capacity
+    # slot, blocks maintenance and can be cancelled) and carries these fields:
+    #   pause_requested  a pause was asked for and has not been undone
+    #   paused           the pause is in effect
+    #   pause_mode       "process"    the scan's process group is SIGSTOPped
+    #                    "checkpoint" the workflow parks before its next step
+    #                                 (used when no process can be stopped,
+    #                                 e.g. privileged sudo scans)
+    # ``pause_requested and not paused`` is the transient "pausing" state.
+
+    def _leave_pause_locked(self, key, job) -> None:
+        """Clear pause state, waking any stopped process. Caller holds the lock."""
+        if not job or not (job.get("paused") or job.get("pause_requested")):
+            return
+        process = self._processes.get(key)
+        if process is not None and key in self._stopped_processes:
+            _send_scan_signal(process, signal.SIGCONT)
+        self._stopped_processes.discard(key)
+        if job.get("paused") and job.get("paused_at"):
+            try:
+                elapsed = (datetime.now() - datetime.fromisoformat(job["paused_at"])).total_seconds()
+            except ValueError:
+                elapsed = 0
+            job["paused_seconds"] = round(float(job.get("paused_seconds") or 0) + max(0.0, elapsed), 3)
+        job.update(paused=False, pause_requested=False, pause_mode=None, paused_at=None)
+        self._pause_cond.notify_all()
+
+    def _enter_pause_locked(self, job, mode: str) -> None:
+        job.update(paused=True, pause_mode=mode, paused_at=datetime.now().isoformat())
+
+    def pause(self, sid: str, job_type: str, expected_source_job_id=None) -> tuple[bool, str]:
+        """Pause a running job. Returns ``(ok, reason)``; reason is a stable code."""
+        with self._lock:
+            key = (sid, job_type)
+            job = self._jobs.get(key)
+            if not job:
+                return False, "no_job"
+            if expected_source_job_id is not None and job.get("source_job_id") != expected_source_job_id:
+                return False, "stale_job"
+            if job.get("status") != "running" or job.get("cancel_requested"):
+                return False, "not_running"
+            if job.get("paused") or job.get("pause_requested"):
+                return False, "already_paused"
+            if not job.get("pause_supported", os.name == "posix"):
+                return False, "unsupported"
+            job["pause_requested"] = True
+            job["pause_requested_at"] = datetime.now().isoformat()
+            process = self._processes.get(key)
+            if process is not None and _process_is_pausable(process) and _send_scan_signal(process, signal.SIGSTOP):
+                self._stopped_processes.add(key)
+                self._enter_pause_locked(job, "process")
+            else:
+                # Nothing stoppable is running right now (between workflow steps,
+                # or a privileged scan): park at the next checkpoint instead.
+                job["pause_mode"] = "checkpoint"
+            self._persist_job(sid, job_type)
+            self._pause_cond.notify_all()
+            return True, "paused" if job.get("paused") else "pausing"
+
+    def resume(self, sid: str, job_type: str, expected_source_job_id=None) -> tuple[bool, str]:
+        """Resume a paused (or pausing) job. Returns ``(ok, reason)``."""
+        with self._lock:
+            key = (sid, job_type)
+            job = self._jobs.get(key)
+            if not job:
+                return False, "no_job"
+            if expected_source_job_id is not None and job.get("source_job_id") != expected_source_job_id:
+                return False, "stale_job"
+            if job.get("status") != "running" or job.get("cancel_requested"):
+                return False, "not_running"
+            if not (job.get("paused") or job.get("pause_requested")):
+                return False, "not_paused"
+            self._leave_pause_locked(key, job)
+            job["resumed_at"] = datetime.now().isoformat()
+            self._persist_job(sid, job_type)
+            return True, "resumed"
+
+    def is_paused(self, sid: str, job_type: str) -> bool:
+        with self._lock:
+            job = self._jobs.get((sid, job_type))
+            return bool(job and (job.get("paused") or job.get("pause_requested")))
+
+    def is_process_stopped(self, sid: str, job_type: str) -> bool:
+        """True while the job's subprocess is actually suspended."""
+        with self._lock:
+            return (sid, job_type) in self._stopped_processes
+
+    def wait_if_paused(self, sid: str, job_type: str, on_pause=None) -> None:
+        """Block a workflow at a checkpoint while its job is paused.
+
+        Returns when the job is resumed, cancelled, finished or the scanner is
+        shutting down. ``on_pause`` is called (outside the lock) when a pending
+        pause first takes effect here, so listeners can publish ``paused``.
+        """
+        key = (sid, job_type)
+
+        def should_wait(job):
+            return bool(
+                job
+                and job.get("status") == "running"
+                and not job.get("cancel_requested")
+                and not self._shutting_down
+                and (job.get("paused") or job.get("pause_requested"))
+            )
+
+        announce = False
+        with self._pause_cond:
+            job = self._jobs.get(key)
+            if should_wait(job) and not job.get("paused"):
+                self._enter_pause_locked(job, "checkpoint")
+                self._persist_job(sid, job_type)
+                announce = True
+        if announce and on_pause is not None:
+            try:
+                on_pause()
+            except Exception:
+                logger.exception("Could not publish the paused job state")
+        with self._pause_cond:
+            while should_wait(self._jobs.get(key)):
+                self._pause_cond.wait(timeout=1.0)
+
     def attach_process(self, sid: str, job_type: str, process: subprocess.Popen):
         with self._lock:
             if self._shutting_down:
                 raise RuntimeError("Scanner is shutting down")
-            self._processes[(sid, job_type)] = process
+            key = (sid, job_type)
+            self._processes[key] = process
+            job = self._jobs.get(key)
+            # A pause that arrived just before this process was registered
+            # must not let it run.
+            if job and job.get("pause_requested") and job.get("status") == "running" and _process_is_pausable(process):
+                if _send_scan_signal(process, signal.SIGSTOP):
+                    self._stopped_processes.add(key)
+                    if not job.get("paused"):
+                        self._enter_pause_locked(job, "process")
+                    else:
+                        job["pause_mode"] = "process"
+                    self._persist_job(sid, job_type)
 
     def clear_process(self, sid: str, job_type: str):
         with self._lock:
             self._processes.pop((sid, job_type), None)
+            self._stopped_processes.discard((sid, job_type))
 
     def terminate_all(self, *, grace_seconds: float = 2.0) -> int:
         """Terminate every tracked child process. Returns the count signalled.
@@ -448,6 +643,8 @@ class ClientJobRegistry:
             self._shutting_down = True
             processes = list(self._processes.items())
             self._processes.clear()
+            self._stopped_processes.clear()
+            self._pause_cond.notify_all()
 
         signalled = []
         for key, process in processes:
@@ -490,6 +687,9 @@ class ClientJobRegistry:
                         "details": dict(job.get("details", {})),
                         "cancel_requested": bool(job.get("cancel_requested")),
                         "disconnected": bool(job.get("disconnected")),
+                        "paused": bool(job.get("paused")),
+                        "pause_requested": bool(job.get("pause_requested")),
+                        "pause_mode": job.get("pause_mode"),
                     }
                 )
 
@@ -525,12 +725,23 @@ class ClientJobRegistry:
             if job and job.get("disconnected"):
                 self._jobs.pop(key, None)
             self._processes.pop(key, None)
+            self._stopped_processes.discard(key)
 
 
-def ensure_job_not_cancelled(job_registry, sid: str, job_type: str):
-    """Stop the current workflow if cancellation was requested."""
+def ensure_job_not_cancelled(job_registry, sid: str, job_type: str, on_pause=None):
+    """Stop the current workflow if cancellation was requested.
+
+    This is also the workflow's pause checkpoint: while the job is paused the
+    call blocks, then re-checks cancellation, so cancelling a paused job
+    unblocks and terminates it.
+    """
     if job_registry.is_cancelled(sid, job_type):
         raise RuntimeError(f"{job_type} cancelled")
+    wait_if_paused = getattr(job_registry, "wait_if_paused", None)
+    if callable(wait_if_paused):
+        wait_if_paused(sid, job_type, on_pause=on_pause)
+        if job_registry.is_cancelled(sid, job_type):
+            raise RuntimeError(f"{job_type} cancelled")
 
 
 def run_cancellable_command(
@@ -541,7 +752,11 @@ def run_cancellable_command(
     timeout=None,
 ):
     """Run a subprocess that can be cancelled via the job registry."""
-    start = datetime.now()
+    # Time spent paused does not count against the command's timeout.
+    started = time.monotonic()
+    paused_total = 0.0
+    last_tick = started
+    process_stopped = getattr(job_registry, "is_process_stopped", None) if sid and job_type else None
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -560,7 +775,11 @@ def run_cancellable_command(
                     raise RuntimeError(f"{job_type} cancelled")
                 break
             except subprocess.TimeoutExpired:
-                if timeout is not None and (datetime.now() - start).total_seconds() > timeout:
+                now = time.monotonic()
+                if callable(process_stopped) and process_stopped(sid, job_type):
+                    paused_total += now - last_tick
+                last_tick = now
+                if timeout is not None and (now - started - paused_total) > timeout:
                     _signal_scan_process(process, signal.SIGTERM)
                     try:
                         stdout, stderr = process.communicate(timeout=2)

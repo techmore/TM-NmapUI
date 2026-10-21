@@ -1150,6 +1150,102 @@ def test_second_tab_replays_active_scan_state(browser_server, playwright_browser
         context.close()
 
 
+def _scan_pause_ui(page):
+    return page.evaluate(
+        "() => ({"
+        "pauseDisabled: document.getElementById('suspend-scan-btn').disabled,"
+        "resumeDisabled: document.getElementById('resume-scan-btn').disabled,"
+        "pauseText: document.getElementById('suspend-scan-btn').textContent.trim(),"
+        "state: document.getElementById('resume-scan-btn').dataset.pauseState,"
+        "status: document.getElementById('scan-pause-status').textContent"
+        "})"
+    )
+
+
+def test_pause_and_resume_scan_state_is_shared_by_every_open_tab(browser_server, playwright_browser):
+    app_module = browser_server["app_module"]
+    context = playwright_browser.new_context()
+    first_page = context.new_page()
+    second_page = context.new_page()
+    late_page = None
+    owner_client = None
+
+    try:
+        for page in (first_page, second_page):
+            page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+            page.locator("#suspend-scan-btn").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
+            # Idle: nothing to pause or resume.
+            assert page.locator("#suspend-scan-btn").is_disabled()
+            assert page.locator("#resume-scan-btn").is_disabled()
+
+        owner_client = _connect_socket(browser_server)
+        owner_sid = _get_socket_sid(owner_client)
+        app_module.set_last_scan_target_state(value="198.51.100.0/24", sid=owner_sid)
+        app_module.job_registry.start(
+            owner_sid, "scan", {"message": "Running quick scan", "target": "198.51.100.0/24"}
+        )
+        app_module.broadcaster.start_job(owner_sid, job_type="scan")
+        app_module.emit_job_status(owner_sid, "scan")
+
+        for page in (first_page, second_page):
+            page.wait_for_function("() => document.getElementById('suspend-scan-btn').dataset.pauseState === 'running'")
+            assert page.locator("#suspend-scan-btn").is_enabled()
+            assert page.locator("#resume-scan-btn").is_disabled()
+
+        # Pausing from one tab pauses the scan for all of them.
+        first_page.locator("#suspend-scan-btn").click()
+        for page in (first_page, second_page):
+            page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState !== 'running'")
+        job = app_module.job_registry.get(owner_sid, "scan")
+        assert job["pause_requested"] is True and job["status"] == "running"
+        # No scan process is attached; the workflow reaches its next checkpoint.
+        parked = threading.Thread(target=app_module.ensure_job_not_cancelled, args=(owner_sid, "scan"))
+        parked.start()
+        for page in (first_page, second_page):
+            page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState === 'paused'")
+            ui = _scan_pause_ui(page)
+            assert ui["pauseDisabled"] is True and ui["resumeDisabled"] is False
+            assert "paused" in ui["status"].lower()
+            assert page.locator("#scan-pause-status").is_visible()
+
+        # A tab opened while the scan is paused starts out showing it as paused.
+        late_page = context.new_page()
+        late_page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        late_page.wait_for_function("() => window.socket && window.socket.connected")
+        late_page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState === 'paused'")
+        assert late_page.locator("#resume-scan-btn").is_enabled()
+        assert late_page.locator("#suspend-scan-btn").is_disabled()
+
+        # Resuming from a different tab resumes it everywhere.
+        second_page.locator("#resume-scan-btn").click()
+        parked.join(timeout=5)
+        assert not parked.is_alive()
+        for page in (first_page, second_page, late_page):
+            page.wait_for_function("() => document.getElementById('suspend-scan-btn').dataset.pauseState === 'running'")
+            assert page.locator("#suspend-scan-btn").is_enabled()
+            assert page.locator("#resume-scan-btn").is_disabled()
+        job = app_module.job_registry.get(owner_sid, "scan")
+        assert job["paused"] is False and job["pause_requested"] is False
+
+        # Stopping a paused scan cancels it instead of leaving it stuck paused.
+        first_page.locator("#suspend-scan-btn").click()
+        first_page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState !== 'running'")
+        first_page.locator("#stop-scan-btn").click()
+        first_page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState === 'cancelling'")
+        job = app_module.job_registry.get(owner_sid, "scan")
+        assert job["status"] == "cancelling" and job["paused"] is False and job["pause_requested"] is False
+        assert first_page.locator("#suspend-scan-btn").is_disabled()
+        assert first_page.locator("#resume-scan-btn").is_disabled()
+    finally:
+        if owner_client is not None:
+            if app_module.job_registry.get(owner_sid, "scan"):
+                app_module.job_registry.complete(owner_sid, "scan", status="cancelled")
+            app_module.broadcaster.end_job(owner_sid, job_type="scan")
+            owner_client.disconnect()
+        context.close()
+
+
 def test_existing_open_tabs_receive_live_report_state(browser_server, playwright_browser):
     app_module = browser_server["app_module"]
     browser = playwright_browser

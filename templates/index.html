@@ -11,6 +11,7 @@
     <script src="/static/js/session_gate.js"></script>
     <script src="/static/vendor/lucide.min.js"></script>
 <style>
+    #suspend-scan-btn:disabled, #resume-scan-btn:disabled { opacity: .4; cursor: not-allowed; }
     body {
         font-family: 'Inter', system-ui, sans-serif;
         background-color: oklch(91% 0.012 106.5);
@@ -1398,13 +1399,13 @@
                     Stop Report
                 </button>
                 <div class="h-4 w-px bg-olive-200 mx-1"></div>
-                <!-- Pause/resume has no backend yet (issue #10); keep the controls visible but inert. -->
-                <button id="suspend-scan-btn" type="button" disabled aria-disabled="true" title="Pause and resume are not available yet (issue #10)" class="control-unavailable px-5 py-2 rounded-full text-olive-500 font-bold text-xs uppercase tracking-widest transition-all" aria-label="Pause scan (not available yet)">
+                <button id="suspend-scan-btn" type="button" disabled data-pause-state="idle" class="px-5 py-2 rounded-full text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-all" aria-label="Pause scan">
                     Pause
                 </button>
-                <button id="resume-scan-btn" type="button" disabled aria-disabled="true" title="Pause and resume are not available yet (issue #10)" class="control-unavailable px-5 py-2 rounded-full text-olive-500 font-bold text-xs uppercase tracking-widest transition-all" aria-label="Resume scan (not available yet)">
+                <button id="resume-scan-btn" type="button" disabled data-pause-state="idle" class="px-5 py-2 rounded-full text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-all" aria-label="Resume scan">
                     Resume
                 </button>
+                <span id="scan-pause-status" class="hidden text-xs font-bold uppercase tracking-widest text-amber-700" role="status" aria-live="polite"></span>
             </div>
 
             <div class="flex items-center gap-4">

@@ -40,6 +40,7 @@ from nmapui.runtime_history import (
     normalize_runtime_report_row,
 )
 from nmapui.runtime_scan_history import scan_run_details, compare_scan_runs
+from nmapui.runtime_live_hosts import latest_scan_hosts
 from nmapui.runtime_log import append_runtime_log
 from nmapui.runtime_db import (
     DEFAULT_CUSTOMER_SCAN_HISTORY_RETENTION,
@@ -274,6 +275,13 @@ def register_core_routes(app, deps):
                 "active_jobs": active_jobs,
             }
         )
+
+    @app.route("/api/runtime/live-hosts")
+    @require_auth
+    def runtime_live_hosts():
+        response = jsonify(latest_scan_hosts(runtime_store))
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.route("/api/runtime/settings-summary")
     @require_auth

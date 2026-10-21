@@ -131,6 +131,9 @@ def build_event_helpers(*, socketio, job_registry, broadcaster=None, runtime_sto
             job_registry=job_registry,
             sid=sid,
             job_type=job_type,
+            # A pause that takes effect at this checkpoint is published to every
+            # open tab so they stop showing the scan as actively running.
+            on_pause=lambda: emit_job_status(sid, job_type),
         )
 
     def run_cancellable_command(cmd, sid=None, job_type=None, timeout=None):

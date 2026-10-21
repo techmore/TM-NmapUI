@@ -11,6 +11,10 @@ let activePhaseStartedAt = null;
 let activePhaseTimer = null;
 let activeScanKind = null;
 let activeScanSourceJobId = null;
+// Pause state mirrored from the backend job (job_status). Seconds already spent
+// paused, and when the current pause began (ms epoch) while paused.
+let activeScanPausedSeconds = 0;
+let activeScanPausedSince = null;
 
 function setText(id, value) {
     const el = document.getElementById(id);
@@ -43,7 +47,11 @@ function startPhaseTimer(phase, startedAt) {
     if (activePhaseTimer) clearInterval(activePhaseTimer);
 
     const targetId = phase === 1 ? 'quick-time' : 'deep-time';
-    const tick = () => setText(targetId, formatDurationSeconds((Date.now() - activePhaseStartedAt) / 1000));
+    const tick = () => {
+        const now = Date.now();
+        const pausedNow = activeScanPausedSince ? Math.max(0, now - activeScanPausedSince) / 1000 : 0;
+        setText(targetId, formatDurationSeconds((now - activePhaseStartedAt) / 1000 - activeScanPausedSeconds - pausedNow));
+    };
     tick();
     activePhaseTimer = setInterval(tick, 1000);
 }
@@ -353,10 +361,53 @@ function highlightActiveScanHost(data) {
 
 let appVersion = null;
 
+// Derive the pause control state from a backend job: idle, running, pausing,
+// paused or cancelling. The backend job is the single source of truth, so every
+// open tab renders the same state from the same job_status.
+function getScanPauseState(job) {
+    if (!job || (job.status !== 'running' && job.status !== 'cancelling')) return 'idle';
+    if (job.status === 'cancelling' || job.cancel_requested) return 'cancelling';
+    if (job.paused) return 'paused';
+    if (job.pause_requested) return 'pausing';
+    return 'running';
+}
+
+function applyScanPauseState(job) {
+    const pauseBtn = document.getElementById('suspend-scan-btn');
+    const resumeBtn = document.getElementById('resume-scan-btn');
+    const state = getScanPauseState(job);
+    const supported = !job || job.pause_supported !== false;
+
+    activeScanPausedSeconds = state === 'idle' ? 0 : Number(job?.paused_seconds) || 0;
+    const pausedAt = state === 'paused' ? Date.parse(job.paused_at || '') : NaN;
+    activeScanPausedSince = Number.isFinite(pausedAt) ? pausedAt : (state === 'paused' ? Date.now() : null);
+
+    if (pauseBtn) {
+        pauseBtn.dataset.pauseState = state;
+        pauseBtn.disabled = state !== 'running' || !supported;
+        pauseBtn.textContent = state === 'pausing' ? 'Pausing\u2026' : 'Pause';
+        pauseBtn.title = supported ? '' : 'Pausing is not supported on this platform; use Stop to cancel.';
+    }
+    if (resumeBtn) {
+        resumeBtn.dataset.pauseState = state;
+        resumeBtn.disabled = state !== 'paused' && state !== 'pausing';
+        resumeBtn.classList.toggle('text-amber-700', state === 'paused');
+    }
+    const pauseStatus = document.getElementById('scan-pause-status');
+    if (pauseStatus) {
+        pauseStatus.classList.toggle('hidden', state !== 'paused' && state !== 'pausing');
+        pauseStatus.textContent = state === 'paused'
+            ? (job.pause_mode === 'process' ? 'Scan paused (nmap suspended)' : 'Scan paused')
+            : (state === 'pausing' ? 'Pausing at the next safe point\u2026' : '');
+    }
+    return state;
+}
+
 function initializeScanRuntime(socket) {
     initializeInventoryExportOptions();
     socket.on('job_status', (job = {}) => {
         if (job.job_type !== 'scan') return;
+        const pauseState = applyScanPauseState(job);
         if (job.status === 'running' || job.status === 'cancelling') {
             activeScanSourceJobId = job.source_job_id || null;
             setScanUIActive(1, 'quick');
@@ -366,7 +417,7 @@ function initializeScanRuntime(socket) {
             const startedAt = Date.parse(job.started_at || '');
             const finishedAt = Date.parse(job.finished_at || '');
             if (Number.isFinite(startedAt) && Number.isFinite(finishedAt)) {
-                duration = Math.max(0, finishedAt - startedAt) / 1000;
+                duration = Math.max(0, finishedAt - startedAt) / 1000 - (Number(job.paused_seconds) || 0);
             }
             stopPhaseTimer(1, duration);
             if (job.status === 'completed') showLastScanDuration(duration);
@@ -398,6 +449,14 @@ function initializeScanRuntime(socket) {
             document.getElementById('scan-target').value = state.target;
             setScanUIActive(state.phase, state.scanKind);
             startPhaseTimer(state.phase, state.startTime);
+            if (state.isPaused || state.pauseRequested) {
+                applyScanPauseState({
+                    status: 'running',
+                    paused: !!state.isPaused,
+                    pause_requested: !!state.pauseRequested,
+                    paused_at: new Date().toISOString(),
+                });
+            }
         } else if (state.target) {
             // Prefill with the last known scan target when idle (#230 protocol bridge).
             document.getElementById('scan-target').value = state.target;
@@ -689,6 +748,7 @@ function setScanUIActive(phase, scanKind = activeScanKind || 'quick') {
 
 function resetScanUI() {
     activeScanKind = null;
+    applyScanPauseState(null);
     [
         document.getElementById('start-scan-btn'),
         document.getElementById('generate-report-btn'),
@@ -809,6 +869,13 @@ function initializeScanButtonWiring(socket) {
             socket.emit('cancel_job', { job_type: 'scan', ...(activeScanSourceJobId ? { source_job_id: activeScanSourceJobId } : {}) });
         });
     }
+    const sourceJobPayload = () => ({ job_type: 'scan', ...(activeScanSourceJobId ? { source_job_id: activeScanSourceJobId } : {}) });
+    document.getElementById('suspend-scan-btn')?.addEventListener('click', () => {
+        socket.emit('pause_job', sourceJobPayload());
+    });
+    document.getElementById('resume-scan-btn')?.addEventListener('click', () => {
+        socket.emit('resume_job', sourceJobPayload());
+    });
     document.getElementById('discovery-table')?.addEventListener('click', event => {
         const link = event.target.closest('[data-screenshot-url]');
         if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;

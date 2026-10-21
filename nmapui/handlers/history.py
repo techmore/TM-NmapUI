@@ -222,6 +222,50 @@ def register_history_handlers(socketio, deps):
         # Preserve the original UI event for cached clients during upgrades.
         request_job_cancellation("scan")
 
+    pause_failure_messages = {
+        "no_job": "No scan is running, so there is nothing to {action}.",
+        "not_running": "That scan is no longer running, so it cannot be {action}d.",
+        "stale_job": "This scan is no longer active; refresh its status.",
+        "already_paused": "The scan is already paused.",
+        "not_paused": "The scan is not paused.",
+        "unsupported": "Pausing scans is not supported on this platform; use Stop to cancel.",
+    }
+
+    def request_job_pause_change(job_type, *, resume, source_job_id=None):
+        """Pause or resume a job on behalf of any connected tab.
+
+        The job registry is the source of truth. Whatever the outcome, the
+        current status is re-broadcast so every open tab (and a tab that raced
+        another) converges on the real state.
+        """
+        action = "resume" if resume else "pause"
+        if job_type not in {"scan", "report"} or (source_job_id is not None and not isinstance(source_job_id, str)):
+            emit("scan_error", "Invalid job type")
+            return
+        owner_sid = request.sid
+        current = job_registry.get(owner_sid, job_type)
+        if not current or current.get("status") != "running":
+            observed_owner = broadcaster.find_active_owner(job_type) if broadcaster else None
+            if observed_owner and job_registry.get(observed_owner, job_type):
+                owner_sid = observed_owner
+        change = job_registry.resume if resume else job_registry.pause
+        ok, reason = change(owner_sid, job_type, expected_source_job_id=source_job_id)
+        emit_job_status(owner_sid, job_type)
+        if not ok:
+            emit_to_client(request.sid, "scan_feedback", pause_failure_messages.get(reason, f"Could not {action} the scan.").format(action=action))
+
+    @socketio.on("pause_job")
+    @require_socket_auth()
+    def pause_job_event(data=None):
+        data = data if isinstance(data, dict) else {}
+        request_job_pause_change(data.get("job_type", "scan"), resume=False, source_job_id=data.get("source_job_id"))
+
+    @socketio.on("resume_job")
+    @require_socket_auth()
+    def resume_job_event(data=None):
+        data = data if isinstance(data, dict) else {}
+        request_job_pause_change(data.get("job_type", "scan"), resume=True, source_job_id=data.get("source_job_id"))
+
     @socketio.on("disconnect")
     def disconnect_event():
         logger.info("Client disconnected: %s", request.sid)
