@@ -55,7 +55,13 @@ def register_scan_job_handlers(socketio, deps):
         is_valid, error_msg = validate_target(target)
         if not is_valid:
             fail_command("The scan target was rejected.")
-            emit("scan_error", f"Invalid target: {error_msg}")
+            # validate_target already prefixes most messages with "Invalid
+            # target:"; do not repeat it (the UI showed "Invalid target:
+            # Invalid target: ...").
+            message = str(error_msg or "").strip() or "The scan target was rejected."
+            if not message.lower().startswith("invalid target"):
+                message = f"Invalid target: {message}"
+            emit("scan_error", message)
             return
 
         try:

@@ -87,6 +87,10 @@ html .mb-6.rounded-2xl.border.p-2 {
   padding: 8px; margin-bottom: 20px;
 }
 html .mb-6.rounded-2xl.border.p-2 > div { gap: 0; flex-wrap: nowrap; background: var(--e-surface); border: 1px solid var(--e-border); border-radius: 6px; padding: 2px; overflow-x: auto; }
+@media (max-width: 640px) {
+  /* Six tabs do not fit a phone width; wrap instead of clipping the last ones. */
+  html .mb-6.rounded-2xl.border.p-2 > div { flex-wrap: wrap; justify-content: center; }
+}
 html [id^="tab-"][id$="-btn"] {
   border-radius: 4px; padding: 4px 18px; font-size: 13px; font-weight: 600;
   color: var(--e-text-2); background: transparent; box-shadow: none;
@@ -143,6 +147,15 @@ html #check-app-updates, html #scanner-header button.rounded-full { background: 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) #scanner-header img { filter: invert(1) brightness(1.1); }
 }
+
+/* Dialogs, the target-format popover and the results empty state follow the
+ * surface colours so dark mode does not leave light text on a white panel. */
+html .modal-panel { background: var(--e-surface); color: var(--e-text); }
+html #tooltip { background: var(--o-bg-900); color: var(--e-on-accent); border-color: var(--e-border); }
+html .results-empty-state { color: var(--e-text-2); }
+html .results-empty-state h3 { color: var(--e-text); }
+html .skip-link { background: var(--e-accent); color: var(--e-on-accent); border-radius: 6px; }
+html .control-unavailable:hover { background: transparent; color: var(--e-text-3); }
 
 /* Inline .form-control rules in the template out-rank bare input selectors */
 html .form-control, html #logs-search-input, html .form-control-md, html .form-control-sm {

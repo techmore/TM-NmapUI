@@ -1422,3 +1422,135 @@ def test_release_metadata_is_checked_only_after_explicit_user_action(browser_ser
         assert browser_server["external_lookups"] == [release_url]
     finally:
         context.close()
+
+
+def _open_dashboard(page, browser_server):
+    page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+    page.locator("#scan-target").wait_for()
+    page.wait_for_function("() => window.socket && window.socket.connected")
+    page.wait_for_function(
+        "() => document.getElementById('view-history-btn')?.dataset.historyWired === 'true'"
+    )
+
+
+def test_rejected_scan_target_is_reported_in_the_status_region(browser_server, playwright_browser):
+    """`scan_error` used to have no listener: a bad target produced no feedback at all."""
+    app_module = browser_server["app_module"]
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    sid = None
+
+    try:
+        _open_dashboard(page, browser_server)
+        sid = page.evaluate("window.socket.id")
+        # Send the request over the live socket rather than through the input:
+        # the connect-time `sync_state`/`local_ip` replies can overwrite the
+        # target field a moment after a fill, and a valid prefilled target
+        # would start a real scan. The handler under test is the listener.
+        page.evaluate(
+            "() => window.socket.emit('start_quick_scan', { target: 'not a target; rm -rf /' })"
+        )
+        page.wait_for_function(
+            "() => document.getElementById('report-status-text').textContent.includes('Invalid target')",
+            timeout=5_000,
+        )
+        status = page.locator("#report-status")
+        assert "hidden" not in status.get_attribute("class")
+        assert status.get_attribute("role") == "alert"
+        assert status.get_attribute("aria-live") == "assertive"
+        # Nothing started, so the controls stay usable.
+        assert app_module.job_registry.get(sid, "scan") is None
+        assert page.locator("#start-scan-btn").is_enabled()
+    finally:
+        if sid and app_module.job_registry.get(sid, "scan"):
+            app_module.job_registry.complete(sid, "scan", status="cancelled")
+        context.close()
+
+
+def test_escape_closes_history_dialog_and_restores_focus(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        _open_dashboard(page, browser_server)
+        history_modal = page.locator("#history-modal")
+        assert history_modal.get_attribute("role") == "dialog"
+
+        page.locator("#view-history-btn").focus()
+        page.keyboard.press("Enter")
+        page.get_by_role("heading", name="Scan History").wait_for(state="visible")
+        page.wait_for_function(
+            "() => document.getElementById('history-modal').contains(document.activeElement)"
+        )
+
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.getElementById('history-modal').classList.contains('hidden')"
+        )
+        page.wait_for_function("() => document.activeElement?.id === 'view-history-btn'")
+    finally:
+        context.close()
+
+
+def test_tab_strip_supports_arrow_key_navigation(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        _open_dashboard(page, browser_server)
+        page.wait_for_function(
+            "() => document.querySelector('[role=\"tablist\"]')?.dataset.keyboardWired === 'true'"
+        )
+        page.locator("#tab-dashboard-btn").focus()
+        page.keyboard.press("ArrowRight")
+        page.wait_for_function(
+            "() => document.getElementById('tab-history-btn').getAttribute('aria-selected') === 'true'"
+        )
+        assert page.evaluate("() => document.activeElement.id") == "tab-history-btn"
+        assert "hidden" not in page.locator("#history-tab-panel").get_attribute("class")
+        assert "hidden" in page.locator("#dashboard-tab-panel").get_attribute("class")
+        assert page.locator("#tab-dashboard-btn").get_attribute("aria-selected") == "false"
+        assert page.locator("#tab-dashboard-btn").get_attribute("tabindex") == "-1"
+
+        page.keyboard.press("End")
+        page.wait_for_function(
+            "() => document.getElementById('tab-settings-btn').getAttribute('aria-selected') === 'true'"
+        )
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            "() => document.getElementById('tab-dashboard-btn').getAttribute('aria-selected') === 'true'"
+        )
+        assert "hidden" not in page.locator("#dashboard-tab-panel").get_attribute("class")
+    finally:
+        context.close()
+
+
+def test_results_table_shows_empty_state_until_hosts_arrive(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        _open_dashboard(page, browser_server)
+        page.wait_for_function(
+            "() => document.querySelector('#discovery-table tbody')?.dataset.emptyStateWired === 'true'"
+        )
+        assert page.locator("#discovery-empty-state").is_visible()
+        assert "hidden" in page.locator("#discovery-table").get_attribute("class")
+
+        page.evaluate(
+            "() => { const row = document.createElement('tr');"
+            " const cell = document.createElement('td'); cell.textContent = '198.51.100.1';"
+            " row.appendChild(cell); document.querySelector('#discovery-table tbody').appendChild(row); }"
+        )
+        page.wait_for_function(
+            "() => !document.getElementById('discovery-table').classList.contains('hidden')"
+        )
+        assert not page.locator("#discovery-empty-state").is_visible()
+
+        page.evaluate("() => { document.querySelector('#discovery-table tbody').replaceChildren(); }")
+        page.wait_for_function(
+            "() => document.getElementById('discovery-table').classList.contains('hidden')"
+        )
+        assert page.locator("#discovery-empty-state").is_visible()
+    finally:
+        context.close()

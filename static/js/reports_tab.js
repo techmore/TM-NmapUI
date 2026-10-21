@@ -757,6 +757,10 @@ function setTabButtonState(button, active) {
     button.classList.toggle('action-button-primary', active);
     button.classList.toggle('text-olive-700', !active);
     button.classList.toggle('hover:bg-olive-100', !active);
+    // Roving tabindex: only the selected tab is in the Tab order; arrow keys
+    // move between tabs (see initializeSiteChrome).
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.setAttribute('tabindex', active ? '0' : '-1');
 }
 
 function switchAppTab(tabName) {
