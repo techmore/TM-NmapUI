@@ -45,8 +45,8 @@ def update_job_progress(
     )
 
 
-def ensure_job_not_cancelled(*, job_registry, sid, job_type):
-    return nmapui_ensure_job_not_cancelled(job_registry, sid, job_type)
+def ensure_job_not_cancelled(*, job_registry, sid, job_type, on_pause=None):
+    return nmapui_ensure_job_not_cancelled(job_registry, sid, job_type, on_pause=on_pause)
 
 
 def run_cancellable_command(
