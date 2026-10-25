@@ -13,7 +13,7 @@ import signal
 import sys
 import tempfile
 
-PIN = "46a18a27bbc9df5fec061f6df226159b18f788e5"
+PIN = "911f83d837c6ea992f2592b4633c59e4a5c1ee29"
 source = Path(os.environ["NMAPUI_SHARED_ENGINE_SOURCE"]).resolve(strict=True)
 assert subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip() == PIN
 assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True).strip()

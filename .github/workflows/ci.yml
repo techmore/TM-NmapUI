@@ -124,7 +124,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: techmore/TM-NmapUI
-          ref: 46a18a27bbc9df5fec061f6df226159b18f788e5
+          ref: 911f83d837c6ea992f2592b4633c59e4a5c1ee29
           path: .shared-engine-fixture
       - uses: actions/setup-python@v6
         with:
