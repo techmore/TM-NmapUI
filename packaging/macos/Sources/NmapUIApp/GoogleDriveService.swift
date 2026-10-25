@@ -144,7 +144,7 @@ enum GoogleDriveService {
                 error: json["error"] as? String,
                 authURL: nil,
                 configured: json["configured"] as? Bool,
-                connected: true
+                connected: json["connected"] as? Bool ?? ((json["success"] as? Bool) == true)
             )
         } catch {
             return CommandResult(success: false, status: nil, error: error.localizedDescription, authURL: nil, configured: nil, connected: nil)

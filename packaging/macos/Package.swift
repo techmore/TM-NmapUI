@@ -25,13 +25,15 @@ let package = Package(
         )
     ],
     targets: [
+        .target(name: "GoogleDriveCore", path: "Sources/GoogleDriveCore"),
+        .testTarget(name: "GoogleDriveCoreTests", dependencies: ["GoogleDriveCore"], path: "Tests/GoogleDriveCoreTests"),
         .target(
             name: "RuntimeContracts",
             path: "Sources/RuntimeContracts"
         ),
         .executableTarget(
             name: "NmapUIApp",
-            dependencies: ["RuntimeContracts"],
+            dependencies: ["RuntimeContracts", "GoogleDriveCore"],
             path: "Sources/NmapUIApp",
             exclude: [
                 "Resources/Info.plist"
@@ -47,6 +49,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "GoogleDriveHelper",
+            dependencies: ["GoogleDriveCore"],
             path: "Sources/GoogleDriveHelper"
         ),
         .executableTarget(
