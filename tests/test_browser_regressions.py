@@ -19,6 +19,65 @@ from persistence import remove_scan_metadata_index_entry, upsert_scan_metadata_i
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_drive_credentials_import_sends_json_and_reports_parse_errors(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    imported = []
+
+    def receive_credentials(route):
+        imported.append(route.request.post_data_json)
+        route.fulfill(json={"success": True, "status": "Credentials imported for test"})
+
+    context.route("**/api/settings/google-drive/credentials", receive_credentials)
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        credentials = {"installed": {"client_id": "test-client", "client_secret": "synthetic-secret"}}
+        field = page.locator("#settings-google-drive-credentials-file")
+        field.set_input_files({"name": "credentials.json", "mimeType": "application/json", "buffer": json.dumps(credentials).encode()})
+        page.get_by_text("Credentials imported for test", exact=True).wait_for()
+        assert imported == [{"credentials": credentials}]
+        field.set_input_files({"name": "bad.json", "mimeType": "application/json", "buffer": b"not json"})
+        page.wait_for_function("() => document.getElementById('settings-google-drive-status').textContent.includes('Unable to import')")
+        assert len(imported) == 1
+    finally:
+        context.close()
+
+
+def test_drive_signin_opens_system_browser_target_without_opener(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    context.route("**/api/settings/google-drive/auth-url", lambda route: route.fulfill(json={
+        "success": True, "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?state=synthetic",
+    }))
+    # Keep this regression entirely local: no real Google account or consent.
+    context.route("https://accounts.google.com/**", lambda route: route.fulfill(body="<html><body>Simulated Google consent</body></html>", content_type="text/html"))
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        with page.expect_popup() as opened:
+            page.locator("#settings-google-drive-connect-btn").click()
+        popup = opened.value
+        popup.wait_for_url("https://accounts.google.com/**")
+        assert popup.evaluate("window.opener === null")
+        page.get_by_text("Complete sign-in in the browser window that opened.", exact=True).wait_for()
+    finally:
+        context.close()
+
+
+def test_drive_popup_blocking_is_a_visible_recoverable_error(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        page.evaluate("window.open = () => null")
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+    finally:
+        context.close()
+
+
 def _require_browser_regression_enabled():
     if os.environ.get("NMAPUI_RUN_BROWSER_REGRESSION") != "1":
         pytest.skip("Set NMAPUI_RUN_BROWSER_REGRESSION=1 to run browser regression coverage")
