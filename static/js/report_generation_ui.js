@@ -202,7 +202,7 @@ function initializeReportGenerationUI(socket, deps) {
     });
 
     socket.on('job_status', function(data) {
-        if (data?.job_type !== 'report') {
+        if (data?.job_type !== 'report' || !window.acceptJobStatus(data)) {
             return;
         }
         syncReportJobVisualState(data);

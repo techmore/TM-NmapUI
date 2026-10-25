@@ -1676,3 +1676,75 @@ def test_results_table_shows_empty_state_until_hosts_arrive(browser_server, play
         assert page.locator("#discovery-empty-state").is_visible()
     finally:
         context.close()
+
+
+@pytest.mark.parametrize("job_type", ["scan", "report"])
+@pytest.mark.parametrize("terminal", ["completed", "cancelled"])
+def test_terminal_job_status_cannot_be_reopened_by_late_same_run_events(browser_server, playwright_browser, job_type, terminal):
+    """Real Socket.IO packets may arrive terminal, idle, then stale cancelling/running."""
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.wait_for_function("() => window.socket?.connected && window.socket.listeners('job_status').length >= 3")
+        sid = page.evaluate("window.socket.id")
+        page.evaluate("""() => {
+            window.lastTestJobReceipt = null;
+            window.socket.on('job_status', job => {
+                if (job.browser_test_receipt) window.lastTestJobReceipt = job.browser_test_receipt;
+            });
+        }""")
+        started = (datetime.now() - timedelta(seconds=8)).isoformat()
+        first_id, next_id = str(uuid.uuid4()), str(uuid.uuid4())
+
+        def send(status, run_id=first_id, **fields):
+            receipt = str(uuid.uuid4())
+            payload = {"job_type": job_type, "status": status, "started_at": started,
+                       "details": {"target": "127.0.0.1", "chunked": False}, "browser_test_receipt": receipt, **fields}
+            if run_id is not None:
+                payload["source_job_id"] = run_id
+            browser_server["app_module"].socketio.emit("job_status", payload, to=sid)
+            page.wait_for_function("receipt => window.lastTestJobReceipt === receipt", arg=receipt)
+
+        def state():
+            return page.evaluate("""kind => kind === 'scan' ? {
+                active: activeScanKind !== null, timer: activePhaseTimer !== null, run: activeScanSourceJobId,
+                control: document.getElementById('start-scan-btn').disabled,
+                pause: document.getElementById('suspend-scan-btn').disabled,
+                resume: document.getElementById('resume-scan-btn').disabled
+            } : {
+                active: reportActionPending, timer: reportTimerInterval !== null, started: reportStartTime,
+                control: !document.getElementById('stop-report-btn').classList.contains('hidden'),
+                pulse: document.getElementById('generate-report-btn').classList.contains('card-pulsing')
+            }""", job_type)
+
+        send("running")
+        assert state()["active"] and state()["timer"]
+        send("running", paused=True, paused_at=datetime.now().isoformat())
+        assert state()["active"]
+        if job_type == "scan":
+            assert state()["pause"] and not state()["resume"]
+        send("running", paused=False)
+        assert state()["active"] and state()["timer"]
+        send(terminal, finished_at=datetime.now().isoformat())
+        ended = state()
+        assert not ended["active"] and not ended["timer"] and not ended["control"]
+        if job_type == "report":
+            assert not ended["pulse"]
+        send("idle", run_id=None)
+        for late_status in ["cancelling", "running"]:
+            send(late_status)
+            assert state() == ended
+        send("running", run_id=next_id, started_at=datetime.now().isoformat())
+        next_running = state()
+        assert next_running["active"] and next_running["timer"]
+        send("running")  # Older run must also stay terminal after a different run starts.
+        assert state() == next_running
+        send("cancelled", run_id=next_id, finished_at=datetime.now().isoformat())
+        assert not state()["active"] and not state()["timer"]
+        send("running", run_id=None)  # Missing IDs retain the legacy event behavior.
+        assert state()["active"] and state()["timer"]
+        send("cancelled", run_id=None, finished_at=datetime.now().isoformat())
+        assert not state()["active"] and not state()["timer"]
+    finally:
+        context.close()
