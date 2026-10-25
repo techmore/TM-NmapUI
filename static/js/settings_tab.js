@@ -1,4 +1,7 @@
 let settingsTabInitialized = false;
+const settingsTabSockets = new WeakSet();
+let googleDriveActionFeedback = false;
+let googleDriveStatusRequested = false;
 
 function setSettingsStatus(message, isError = false) {
     const status = document.getElementById('settings-tab-status');
@@ -106,7 +109,10 @@ function applySettingsForm(settings) {
     if (document.getElementById('settings-remote-sync-api-key')) document.getElementById('settings-remote-sync-api-key').value = settings.remoteSyncApiKey || '';
 }
 
-function setGoogleDriveStatus(message, isError = false) {
+function setGoogleDriveStatus(message, isError = false, background = false) {
+    // A late connection snapshot must not erase the outcome of a user action.
+    if (background && googleDriveActionFeedback) return;
+    if (!background) googleDriveActionFeedback = true;
     const status = document.getElementById('settings-google-drive-status');
     if (!status) return;
     status.textContent = message || 'Ready';
@@ -389,9 +395,9 @@ function addTargetProfile() {
     setSettingsStatus(`Profile saved locally - click Save Settings to persist it to the runtime.`);
 }
 
-function initializeSettingsTab(socket) {
-    if (settingsTabInitialized) return;
-    settingsTabInitialized = true;
+function initializeSettingsSocket(socket) {
+    if (!socket || settingsTabSockets.has(socket)) return;
+    settingsTabSockets.add(socket);
 
     // Load initial settings
     socket.on('initial_data', (data) => {
@@ -401,7 +407,8 @@ function initializeSettingsTab(socket) {
 
     socket.on('google_drive_status', (data = {}) => {
         if (data.config) applyGoogleDriveConfig(data.config, data);
-        setGoogleDriveStatus(data.status || data.error || 'Google Drive status updated.', !data.success && !!data.error);
+        setGoogleDriveStatus(data.status || data.error || 'Google Drive status updated.', !data.success && !!data.error, !googleDriveStatusRequested);
+        googleDriveStatusRequested = false;
     });
 
     socket.on('google_drive_auth_url', (data = {}) => {
@@ -417,6 +424,13 @@ function initializeSettingsTab(socket) {
         setGoogleDriveStatus(data.status || 'Report uploaded to Google Drive.');
         socket.emit('get_google_drive_status');
     });
+}
+
+function initializeSettingsTab(socket) {
+    // Socket listeners can arrive later; DOM controls are bound exactly once.
+    initializeSettingsSocket(socket);
+    if (settingsTabInitialized) return;
+    settingsTabInitialized = true;
 
     document.getElementById('save-settings-btn')?.addEventListener('click', saveSettingsTab);
     document.getElementById('refresh-settings-btn')?.addEventListener('click', loadSettingsTab);
@@ -430,7 +444,12 @@ function initializeSettingsTab(socket) {
             renderGoogleDriveSummary({ config: {}, status: status });
             setGoogleDriveStatus(status.connected ? 'Google Drive is connected.' : 'Google Drive is not connected.');
         } catch (error) {
-            socket.emit('get_google_drive_status');
+            if (window.socket?.connected) {
+                googleDriveStatusRequested = true;
+                window.socket.emit('get_google_drive_status');
+            } else {
+                setGoogleDriveStatus('Unable to check Google Drive status.', true);
+            }
         }
     });
     document.getElementById('settings-google-drive-connect-btn')?.addEventListener('click', async () => {

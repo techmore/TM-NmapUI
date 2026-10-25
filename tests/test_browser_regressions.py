@@ -78,6 +78,69 @@ def test_drive_popup_blocking_is_a_visible_recoverable_error(browser_server, pla
         context.close()
 
 
+
+def test_settings_http_controls_work_before_socket_and_bind_once_after_connect(browser_server, playwright_browser):
+    """HTTP controls remain usable across initial Socket.IO failure and recovery."""
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    blocked_socket_requests = []
+    settings_posts = []
+    base_url = browser_server["base_url"]
+    original = context.request.get(f"{base_url}/api/settings").json()
+    def block_socket(route):
+        blocked_socket_requests.append(route.request.url)
+        route.abort()
+
+    context.route("**/socket.io/**", block_socket)
+    context.add_init_script("window.open = () => { window.blockedPopupAttempts = (window.blockedPopupAttempts || 0) + 1; return null; };")
+    page.on("request", lambda request: settings_posts.append(request.post_data_json)
+            if request.method == "POST" and request.url == f"{base_url}/api/settings" else None)
+    try:
+        page.goto(base_url, wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        page.get_by_text("Settings loaded from the local runtime.", exact=True).wait_for()
+        assert blocked_socket_requests
+        assert page.evaluate("window.socket.connected") is False
+
+        def save(minutes):
+            page.locator("#settings-max-scan-minutes").fill(str(minutes))
+            with page.expect_response(lambda response: response.request.method == "POST" and response.url == f"{base_url}/api/settings") as saved:
+                page.locator("#save-settings-btn").click()
+            assert saved.value.json()["success"] is True
+            page.get_by_text("Settings saved to the local runtime and this browser.", exact=True).wait_for()
+
+        save(113)
+        assert len(settings_posts) == 1
+        assert context.request.get(f"{base_url}/api/settings").json()["scan_rules"]["max_scan_minutes"] == 113
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        assert page.evaluate("window.blockedPopupAttempts") == 1
+        assert page.evaluate("window.socket.connected") is False
+
+        context.unroute("**/socket.io/**")
+        page.wait_for_function("() => window.socket.connected && window.socket.listeners('google_drive_status').length === 1")
+        page.evaluate("""() => {
+            window.receivedDriveStatus = false;
+            window.socket.once('google_drive_status', () => { window.receivedDriveStatus = true; });
+        }""")
+        browser_server["app_module"].socketio.emit("google_drive_status", {
+            "success": True, "connected": True, "config": {"enabled": True}, "status": "Background status arrived",
+        })
+        page.wait_for_function("() => window.receivedDriveStatus")
+        assert page.locator("#settings-google-drive-enabled").is_checked()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        page.evaluate("initializeSettingsTab(window.socket); initializeSettingsTab(window.socket)")
+        assert page.evaluate("window.socket.listeners('google_drive_status').length") == 1
+        save(114)
+        assert len(settings_posts) == 2
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        assert page.evaluate("window.blockedPopupAttempts") == 2
+    finally:
+        context.request.post(f"{base_url}/api/settings", data=original)
+        context.close()
+
+
 def _require_browser_regression_enabled():
     if os.environ.get("NMAPUI_RUN_BROWSER_REGRESSION") != "1":
         pytest.skip("Set NMAPUI_RUN_BROWSER_REGRESSION=1 to run browser regression coverage")

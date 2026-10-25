@@ -1,11 +1,13 @@
-// Wire tab switching immediately (pure DOM) so tab clicks work while the
-// socket is still connecting. Data loads handle their own readiness.
+// Bind DOM and HTTP controls while Socket.IO is still connecting.
+// Transport listeners are attached separately once the connection is live.
+function initializeTemplateDOM() {
+    if (typeof initializeReportsTab === 'function') initializeReportsTab();
+    if (typeof initializeSettingsTab === 'function') initializeSettingsTab();
+}
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        if (typeof initializeReportsTab === 'function') initializeReportsTab();
-    });
-} else if (typeof initializeReportsTab === 'function') {
-    initializeReportsTab();
+    document.addEventListener('DOMContentLoaded', initializeTemplateDOM, { once: true });
+} else {
+    initializeTemplateDOM();
 }
 
 // Fetch the loopback socket token, then connect with it (#210).
