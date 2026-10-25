@@ -9,11 +9,23 @@ import Testing
 @Suite("Shared engine native library", .serialized)
 @MainActor
 struct SharedEngineLibraryViewTests {
+    @Test("fixture readiness leaves the main actor responsive")
+    func fixtureDoesNotBlockMainActor() async throws {
+        var heartbeat = false
+        let ticker = Task { @MainActor in
+            try await Task.sleep(nanoseconds: 50_000_000)
+            heartbeat = true
+        }
+        let fixture = try await LibraryFixture(mode: "delayed-ready")
+        defer { fixture.stop() }
+        #expect(heartbeat)
+        try await ticker.value
+    }
     @Test("native view renders connected long names, stale data, 401 and unavailable in light and dark")
     func renderedStates() async throws {
         try #require(pthread_main_np() != 0)
         _ = NSApplication.shared
-        let fixture = try LibraryFixture(mode: "long")
+        let fixture = try await LibraryFixture(mode: "long")
         defer { fixture.stop() }
         let model = SharedEngineLibraryModel(openDocument: { _ in true }, revealDocument: { _ in })
         model.address = fixture.address
@@ -35,7 +47,7 @@ struct SharedEngineLibraryViewTests {
         #expect(model.snapshot == nil)
         #expect(model.notice.contains("credentials"))
         try await capture(model, name: "credentials-401")
-        let unavailable = try LibraryFixture(mode: "unavailable")
+        let unavailable = try await LibraryFixture(mode: "unavailable")
         defer { unavailable.stop() }
         model.address = unavailable.address
         model.password = "fixture-contraseña-🔐"
@@ -48,7 +60,7 @@ struct SharedEngineLibraryViewTests {
 
     @Test("native artifact action opens authenticated owner-only document bytes, never an HTTP URL")
     func nativeDownload() async throws {
-        let fixture = try LibraryFixture(mode: "valid")
+        let fixture = try await LibraryFixture(mode: "valid")
         defer { fixture.stop() }
         var opened: URL?
         let cacheRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -73,7 +85,7 @@ struct SharedEngineLibraryViewTests {
 
     @Test("cancelled attachment and rapid refresh cannot overwrite a newer idle state")
     func cancellation() async throws {
-        let fixture = try LibraryFixture(mode: "valid")
+        let fixture = try await LibraryFixture(mode: "valid")
         defer { fixture.stop() }
         let model = SharedEngineLibraryModel()
         model.address = fixture.address
@@ -145,7 +157,7 @@ struct SharedEngineLibraryViewTests {
 private final class LibraryFixture {
     let process: Process
     let address: String
-    init(mode: String) throws {
+    init(mode: String) async throws {
         process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -154,13 +166,21 @@ private final class LibraryFixture {
                 .appendingPathComponent("SharedEngineCoreTests/Fixtures/server.py").path]
         process.environment = ProcessInfo.processInfo.environment.merging(["SHARED_FIXTURE_MODE": mode]) { _, new in new }
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        process.standardError = FileHandle.standardError
         let began = Date()
         print("Native library fixture launching: \(mode)")
         try process.run()
+        try pipe.fileHandleForWriting.close()
+        print("Native library fixture child PID=\(process.processIdentifier) executable=\(URL(fileURLWithPath: process.arguments![0]).lastPathComponent)")
         print("Native library fixture spawned: \(mode), \(Date().timeIntervalSince(began))s")
         do {
-            let ready = try JSONDecoder().decode(Ready.self, from: boundedLibraryReady(pipe.fileHandleForReading))
+            let data: Data = try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do { continuation.resume(returning: try boundedLibraryReady(pipe.fileHandleForReading)) }
+                    catch { continuation.resume(throwing: error) }
+                }
+            }
+            let ready = try JSONDecoder().decode(Ready.self, from: data)
             address = "http://127.0.0.1:\(ready.port)"
             print("Native library fixture ready: \(mode), \(Date().timeIntervalSince(began))s")
         } catch {

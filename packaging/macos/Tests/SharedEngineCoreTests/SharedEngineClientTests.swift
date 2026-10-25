@@ -5,6 +5,12 @@ import Testing
 
 @Suite("Shared engine HTTP client", .serialized)
 struct SharedEngineClientTests {
+    @Test("a fixture child that exits before readiness fails promptly")
+    func fixtureExited() async throws {
+        let start = Date()
+        await #expect(throws: FixtureStartupError.ended) { try await FlaskFixture(python: "/usr/bin/false", startupTimeout: 2) }
+        #expect(Date().timeIntervalSince(start) < 1.5)
+    }
     @Test("a silent readiness pipe has a deadline rather than blocking the test executor")
     func fixtureDeadline() throws {
         let pipe = Pipe()
@@ -32,7 +38,7 @@ struct SharedEngineClientTests {
 
     @Test("real Flask strict Basic access accepts Unicode credentials without requiring a browser session")
     func strictFlask() async throws {
-        let fixture = try FlaskFixture()
+        let fixture = try await FlaskFixture()
         defer { fixture.stop() }
         let client = fixture.client()
         let snapshot = try await client.snapshot()
@@ -56,7 +62,7 @@ struct SharedEngineClientTests {
 
     @Test("strict engine rejects missing and incorrect credentials without empty-state masking")
     func rejectedCredentials() async throws {
-        let fixture = try FlaskFixture()
+        let fixture = try await FlaskFixture()
         defer { fixture.stop() }
         for client in [SharedEngineClient(endpoint: fixture.endpoint), SharedEngineClient(endpoint: fixture.endpoint, username: "fixture-user", password: "wrong")] {
             await #expect(throws: SharedEngineError.http(401)) { try await client.snapshot() }
@@ -65,7 +71,7 @@ struct SharedEngineClientTests {
 
     @Test("malformed, incompatible and bounded JSON errors are explicit", arguments: ["bad-json", "bad-schema", "oversized-json", "streamed-json", "not-ready", "unavailable"])
     func responseErrors(mode: String) async throws {
-        let fixture = try FlaskFixture(mode: mode)
+        let fixture = try await FlaskFixture(mode: mode)
         defer { fixture.stop() }
         let expected: SharedEngineError = ["oversized-json", "streamed-json"].contains(mode) ? .oversized : mode == "not-ready" ? .notReady : mode == "unavailable" ? .http(503) : .schema
         await #expect(throws: expected) { try await fixture.client().snapshot() }
@@ -73,7 +79,7 @@ struct SharedEngineClientTests {
 
     @Test("report redirects, oversized declarations, wrong document bytes and missing HTML policy are rejected", arguments: ["redirect-report", "bad-pdf", "bad-policy", "oversized-report"])
     func reportErrors(mode: String) async throws {
-        let fixture = try FlaskFixture(mode: mode)
+        let fixture = try await FlaskFixture(mode: mode)
         defer { fixture.stop() }
         let format: SharedReportFormat = mode == "bad-policy" ? .html : .pdf
         let expected: SharedEngineError = mode == "redirect-report" ? .http(302) : mode == "bad-policy" ? .policy : mode == "oversized-report" ? .oversized : .artifact
@@ -82,13 +88,13 @@ struct SharedEngineClientTests {
 
     @Test("representative four MiB report transfer and cancellation")
     func largeReport() async throws {
-        let fixture = try FlaskFixture(mode: "large-pdf")
+        let fixture = try await FlaskFixture(mode: "large-pdf")
         defer { fixture.stop() }
         let start = Date()
         let data = try await fixture.client().report(path: "Example customer/scan with spaces 雪", format: .pdf)
         #expect(data.count == 4_194_313)
         print("Shared engine 4 MiB authenticated download: \(Date().timeIntervalSince(start)) seconds")
-        let slow = try FlaskFixture(mode: "slow-report")
+        let slow = try await FlaskFixture(mode: "slow-report")
         defer { slow.stop() }
         let slowClient = slow.client()
         let task = Task { try await slowClient.report(path: "Example customer/scan with spaces 雪", format: .pdf) }
@@ -99,7 +105,7 @@ struct SharedEngineClientTests {
 
     @Test("frozen shared app, actual auth/routes/runtime DB and report files", .enabled(if: ProcessInfo.processInfo.environment["NMAPUI_SHARED_ENGINE_SOURCE"] != nil))
     func canonicalEngine() async throws {
-        let fixture = try FlaskFixture(canonical: true)
+        let fixture = try await FlaskFixture(canonical: true)
         defer { fixture.stop() }
         await #expect(throws: SharedEngineError.http(401)) { try await SharedEngineClient(endpoint: fixture.endpoint).snapshot() }
         let client = fixture.client()
@@ -153,22 +159,30 @@ final class FlaskFixture {
     let endpoint: SharedEngineEndpoint
     let baselinePath: URL?
 
-    init(mode: String = "valid", canonical: Bool = false, startupTimeout: TimeInterval = 30) throws {
+    init(mode: String = "valid", canonical: Bool = false, python: String? = nil, startupTimeout: TimeInterval = 30) async throws {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [ProcessInfo.processInfo.environment[canonical ? "NMAPUI_SHARED_ENGINE_CANONICAL_PYTHON" : "NMAPUI_SHARED_ENGINE_FIXTURE_PYTHON"] ?? "python3",
+        process.arguments = [python ?? ProcessInfo.processInfo.environment[canonical ? "NMAPUI_SHARED_ENGINE_CANONICAL_PYTHON" : "NMAPUI_SHARED_ENGINE_FIXTURE_PYTHON"] ?? "python3",
                              URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(canonical ? "Fixtures/canonical_server.py" : "Fixtures/server.py").path]
         process.environment = ProcessInfo.processInfo.environment.merging(["SHARED_FIXTURE_MODE": mode]) { _, new in new }
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        process.standardError = FileHandle.standardError
         let began = Date()
         print("Shared fixture launching: \(canonical ? "canonical" : mode)")
         try process.run()
+        // The parent must release its writer so an early child exit produces EOF.
+        try pipe.fileHandleForWriting.close()
         self.process = process
+        print("Shared fixture child PID=\(process.processIdentifier) executable=\(URL(fileURLWithPath: process.arguments![0]).lastPathComponent)")
         print("Shared fixture spawned: \(canonical ? "canonical" : mode), \(Date().timeIntervalSince(began))s")
         do {
-            let line = try readFixtureReady(pipe.fileHandleForReading, timeout: startupTimeout)
+            let line: Data = try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do { continuation.resume(returning: try readFixtureReady(pipe.fileHandleForReading, timeout: startupTimeout)) }
+                    catch { continuation.resume(throwing: error) }
+                }
+            }
             let ready = try JSONDecoder().decode(Ready.self, from: line)
             endpoint = try SharedEngineEndpoint("http://127.0.0.1:\(ready.port)")
             baselinePath = ready.baselinePath.map { URL(fileURLWithPath: $0) }
