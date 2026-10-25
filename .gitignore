@@ -38,3 +38,8 @@ EOF
 # Local Flask scheduler configuration and downloaded browser cache
 auto_scan_config.json
 .playwright-browsers/
+
+# Generated Flask fallback bundle and mutable runtime data
+/NmapUI.app/
+/data/
+/config/customers.yaml

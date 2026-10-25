@@ -111,22 +111,24 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 20
     env:
-      NMAPUI_DATA_DIR: ${{ runner.temp }}/nmapui-native-data
-      NMAPUI_LOG_DIR: ${{ runner.temp }}/nmapui-native-logs
-      NMAPUI_RUNTIME_WORKDIR: ${{ runner.temp }}/nmapui-native-work
       NMAPUI_STARTUP_TRACEROUTE: "false"
       NMAPUI_ENABLE_NETWORK_FINGERPRINT: "false"
       NMAPUI_ENABLE_UPDATE_CHECK: "false"
       NMAPUI_ENABLE_VULNERS: "false"
       NMAPUI_RUN_NATIVE_BUNDLE_SMOKE: "1"
       NMAPUI_BUILD_CONFIGURATION: release
-      NMAPUI_NATIVE_BUILD_DIR: ${{ runner.temp }}/nmapui-native-swift-build
       CODESIGN_IDENTITY: "-"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      - name: Isolate native runtime paths
+        run: |
+          echo "NMAPUI_DATA_DIR=$RUNNER_TEMP/nmapui-native-data" >> "$GITHUB_ENV"
+          echo "NMAPUI_LOG_DIR=$RUNNER_TEMP/nmapui-native-logs" >> "$GITHUB_ENV"
+          echo "NMAPUI_RUNTIME_WORKDIR=$RUNNER_TEMP/nmapui-native-work" >> "$GITHUB_ENV"
+          echo "NMAPUI_NATIVE_BUILD_DIR=$RUNNER_TEMP/nmapui-native-swift-build" >> "$GITHUB_ENV"
       - name: Install native test tools
         run: |
           brew list nmap >/dev/null 2>&1 || brew install nmap
