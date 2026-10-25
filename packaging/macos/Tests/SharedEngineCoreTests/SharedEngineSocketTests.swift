@@ -31,66 +31,66 @@ struct SharedEngineSocketTests {
         var observed: [String] = []
         client.onChange = { observed.append("\($0.connection) \($0.jobs[.scan]?.sourceJobID?.uuidString ?? "-") \($0.jobs[.scan]?.rawStatus ?? "-") \($0.lastError ?? "")") }
         do {
-        #expect(throws: SharedControlError.disconnected) { try client.startScan(target: "127.0.0.1") }
-        for password in ["", "wrong"] {
-            let denied = SharedEngineSocketClient(endpoint: fixture.endpoint, username: "fixture-user", password: password)
-            await #expect(throws: SharedControlError.http(401)) { try await denied.connect() }
-            #expect(denied.state.connection == .disconnected)
-        }
-        try await client.connect()
-        try await wait("initial snapshots") { client.state.connection == .ready }
-        try client.startScan(target: "127.0.0.1")
-        try await wait("owned fake scanner launched") { fixture.invocations.count == 1 && client.state.jobs[.scan]?.status == .running }
-        let id = try #require(client.state.jobs[.scan]?.sourceJobID)
-        let pid = try #require(fixture.invocations.first?["pid"] as? Int32)
-        #expect(kill(pid, 0) == 0)
-        #expect(throws: SharedControlError.staleJob) { try client.cancel(.scan, observedID: UUID()) }
-        try client.pause(.scan, observedID: id)
-        try await wait("real process paused") { client.state.jobs[.scan]?.paused == true }
-        #expect(client.state.jobs[.scan]?.pauseMode == "process")
-        try client.resume(.scan, observedID: id)
-        try await wait("real process resumed") { client.state.jobs[.scan]?.paused == false }
-        client.disconnect()
-        #expect(throws: SharedControlError.disconnected) { try client.cancel(.scan, observedID: id) }
-        #expect(throws: SharedControlError.disconnected) { try client.startScan(target: "127.0.0.1") }
-        try await client.reconnect()
-        try await wait("reconnected snapshot retains original identity") { client.state.connection == .ready && client.state.jobs[.scan]?.sourceJobID == id }
-        #expect(fixture.invocations.count == 1)
-        try client.cancel(.scan, observedID: id)
-        try await wait("canonical cancellation terminal") { client.state.latestCompletion[.scan]?.sourceJobID == id && client.state.latestCompletion[.scan]?.status == .cancelled && client.state.jobs[.scan]?.status.isTerminal == true }
-        try await wait("cancelled process reaped") { kill(pid, 0) == -1 && errno == ESRCH }
-        try client.startScan(target: "not valid ;; target")
-        try await wait("canonical target validation error") { client.state.lastError?.localizedCaseInsensitiveContains("invalid target") == true }
-        #expect(fixture.invocations.count == 1)
-        #expect(client.state.startOutcome == .none)
-        // Reconnecting before a second run also demonstrates no mutation replay.
-        try await client.reconnect(); try await wait("second reconnect") { client.state.connection == .ready }
-        try client.startScan(target: "127.0.0.1")
-        try await wait("new run") { fixture.invocations.count == 2 && client.state.jobs[.scan]?.sourceJobID != nil && client.state.jobs[.scan]?.sourceJobID != id && client.state.jobs[.scan]?.status == .running }
-        let next = try #require(client.state.jobs[.scan]?.sourceJobID)
-        let nextPID = try #require(fixture.invocations.last?["pid"] as? Int32)
-        #expect(throws: SharedControlError.staleJob) { try client.cancel(.scan, observedID: id) }
-        #expect(client.state.jobs[.scan]?.status == .running)
-        // Bypass only the client-side stale-ID guard to verify the actual
-        // canonical server independently refuses a stale UUID.
-        let probe = try await RawControlProbe(endpoint: fixture.endpoint)
-        defer { probe.close() }
-        try await wait("authenticated raw probe") { probe.connected }
-        probe.socket.emit("cancel_job", ["job_type": "scan", "source_job_id": id.uuidString.lowercased()])
-        try await wait("server stale identity rejection") { probe.error?.contains("no longer active") == true }
-        #expect(client.state.jobs[.scan]?.status == .running)
-        try client.pause(.scan, observedID: next)
-        try await wait("second process paused") { client.state.jobs[.scan]?.paused == true }
-        try client.cancel(.scan, observedID: next)
-        try await wait("cancel wakes stopped group") { client.state.latestCompletion[.scan]?.sourceJobID == next && client.state.latestCompletion[.scan]?.status == .cancelled && client.state.jobs[.scan]?.status.isTerminal == true }
-        try await wait("stopped scanner process reaped") { kill(nextPID, 0) == -1 && errno == ESRCH }
-        #expect(fixture.invocations.count == 2)
-        #expect(HTTPCookieStorage.shared.cookies?.contains(where: { $0.name == cookie.name }) == true)
-        #expect(URLCredentialStorage.shared.credentials(for: space)?[credential.user!] == credential)
-        let requests = try String(contentsOf: fixture.root.appendingPathComponent("requests.jsonl"), encoding: .utf8)
-        #expect(!requests.contains("never-send-this-cookie"))
-        #expect(!requests.contains("fixture-contraseña"))
-        #expect(!requests.contains("never-send-this-credential"))
+            #expect(throws: SharedControlError.disconnected) { try client.startScan(target: "127.0.0.1") }
+            for password in ["", "wrong"] {
+                let denied = SharedEngineSocketClient(endpoint: fixture.endpoint, username: "fixture-user", password: password)
+                await #expect(throws: SharedControlError.http(401)) { try await denied.connect() }
+                #expect(denied.state.connection == .disconnected)
+            }
+            try await client.connect()
+            try await wait("initial snapshots") { client.state.connection == .ready }
+            try client.startScan(target: "127.0.0.1")
+            try await wait("owned fake scanner launched") { fixture.invocations.count == 1 && client.state.jobs[.scan]?.status == .running }
+            let id = try #require(client.state.jobs[.scan]?.sourceJobID)
+            let pid = try #require(fixture.invocations.first?["pid"] as? Int32)
+            #expect(kill(pid, 0) == 0)
+            #expect(throws: SharedControlError.staleJob) { try client.cancel(.scan, observedID: UUID()) }
+            try client.pause(.scan, observedID: id)
+            try await wait("real process paused") { client.state.jobs[.scan]?.paused == true }
+            #expect(client.state.jobs[.scan]?.pauseMode == "process")
+            try client.resume(.scan, observedID: id)
+            try await wait("real process resumed") { client.state.jobs[.scan]?.paused == false }
+            client.disconnect()
+            #expect(throws: SharedControlError.disconnected) { try client.cancel(.scan, observedID: id) }
+            #expect(throws: SharedControlError.disconnected) { try client.startScan(target: "127.0.0.1") }
+            try await client.reconnect()
+            try await wait("reconnected snapshot retains original identity") { client.state.connection == .ready && client.state.jobs[.scan]?.sourceJobID == id }
+            #expect(fixture.invocations.count == 1)
+            try client.cancel(.scan, observedID: id)
+            try await wait("canonical cancellation terminal") { client.state.latestCompletion[.scan]?.sourceJobID == id && client.state.latestCompletion[.scan]?.status == .cancelled && client.state.jobs[.scan]?.status.isTerminal == true }
+            try await wait("cancelled process reaped") { kill(pid, 0) == -1 && errno == ESRCH }
+            try client.startScan(target: "not valid ;; target")
+            try await wait("canonical target validation error") { client.state.lastError?.localizedCaseInsensitiveContains("invalid target") == true }
+            #expect(fixture.invocations.count == 1)
+            #expect(client.state.startOutcome == .none)
+            // Reconnecting before a second run also demonstrates no mutation replay.
+            try await client.reconnect(); try await wait("second reconnect") { client.state.connection == .ready }
+            try client.startScan(target: "127.0.0.1")
+            try await wait("new run") { fixture.invocations.count == 2 && client.state.jobs[.scan]?.sourceJobID != nil && client.state.jobs[.scan]?.sourceJobID != id && client.state.jobs[.scan]?.status == .running }
+            let next = try #require(client.state.jobs[.scan]?.sourceJobID)
+            let nextPID = try #require(fixture.invocations.last?["pid"] as? Int32)
+            #expect(throws: SharedControlError.staleJob) { try client.cancel(.scan, observedID: id) }
+            #expect(client.state.jobs[.scan]?.status == .running)
+            // Bypass only the client-side stale-ID guard to verify the actual
+            // canonical server independently refuses a stale UUID.
+            let probe = try await RawControlProbe(endpoint: fixture.endpoint)
+            defer { probe.close() }
+            try await wait("authenticated raw probe") { probe.connected }
+            probe.socket.emit("cancel_job", ["job_type": "scan", "source_job_id": id.uuidString.lowercased()])
+            try await wait("server stale identity rejection") { probe.error?.contains("no longer active") == true }
+            #expect(client.state.jobs[.scan]?.status == .running)
+            try client.pause(.scan, observedID: next)
+            try await wait("second process paused") { client.state.jobs[.scan]?.paused == true }
+            try client.cancel(.scan, observedID: next)
+            try await wait("cancel wakes stopped group") { client.state.latestCompletion[.scan]?.sourceJobID == next && client.state.latestCompletion[.scan]?.status == .cancelled && client.state.jobs[.scan]?.status.isTerminal == true }
+            try await wait("stopped scanner process reaped") { kill(nextPID, 0) == -1 && errno == ESRCH }
+            #expect(fixture.invocations.count == 2)
+            #expect(HTTPCookieStorage.shared.cookies?.contains(where: { $0.name == cookie.name }) == true)
+            #expect(URLCredentialStorage.shared.credentials(for: space)?[credential.user!] == credential)
+            let requests = try String(contentsOf: fixture.root.appendingPathComponent("requests.jsonl"), encoding: .utf8)
+            #expect(!requests.contains("never-send-this-cookie"))
+            #expect(!requests.contains("fixture-contraseña"))
+            #expect(!requests.contains("never-send-this-credential"))
         } catch {
             print("Canonical control state transitions:", observed.joined(separator: "\n"))
             print("Canonical server diagnostics:", (try? String(contentsOf: fixture.root.appendingPathComponent("server.log"), encoding: .utf8)) ?? "unavailable")
