@@ -59,8 +59,13 @@ def test_real_native_bundle_versions_resources_and_signatures(tmp_path):
     assert info["NmapUISourceRevision"] == revision
     resources = bundle / "Contents/Resources"
     assert (resources / "VERSION").read_text().strip() == raw
-    for resource in ("NmapUI_NmapUIApp.bundle", "index.html", "nmap-modern.xsl", "static", "nmap-vulners", "AppIcon.icns", "techmore.png"):
+    for resource in ("NmapUI_NmapUIApp.bundle", "Starscream_Starscream.bundle", "index.html", "nmap-modern.xsl", "static", "nmap-vulners", "AppIcon.icns", "techmore.png"):
         assert (resources / resource).exists(), resource
+    manifests = list((resources / "Starscream_Starscream.bundle").rglob("PrivacyInfo.xcprivacy"))
+    assert len(manifests) == 1
+    with manifests[0].open("rb") as stream:
+        assert plistlib.load(stream) == {"NSPrivacyTracking": False, "NSPrivacyTrackingDomains": [],
+                                       "NSPrivacyCollectedDataTypes": [], "NSPrivacyAccessedAPITypes": []}
     for license_name, phrase in (("SocketIO-MIT.txt", "MIT License"), ("Starscream-Apache-2.0.txt", "Apache License")):
         matches = list((resources / "NmapUI_NmapUIApp.bundle").rglob(license_name))
         assert len(matches) == 1, license_name

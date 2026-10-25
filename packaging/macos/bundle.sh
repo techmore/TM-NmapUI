@@ -54,6 +54,14 @@ else
     echo "Missing Swift Package resource bundle: $RESOURCE_BUNDLE_SOURCE" >&2
     exit 1
 fi
+# Starscream's pinned package declares a privacy manifest resource bundle.
+# Keep it alongside the application's resources before signing the container.
+STARSCREAM_RESOURCE_BUNDLE="$BUILD_DIR/$CONFIGURATION/Starscream_Starscream.bundle"
+if [ ! -d "$STARSCREAM_RESOURCE_BUNDLE" ]; then
+    echo "Missing Swift Package resource bundle: $STARSCREAM_RESOURCE_BUNDLE" >&2
+    exit 1
+fi
+ditto "$STARSCREAM_RESOURCE_BUNDLE" "$RESOURCES_DIR/Starscream_Starscream.bundle"
 if [ -f "$HELPER_PATH" ]; then
     cp "$HELPER_PATH" "$HELPER_EXECUTABLE"
     chmod 755 "$HELPER_EXECUTABLE"
