@@ -3,6 +3,7 @@ import json
 import plistlib
 import runpy
 import base64
+import hashlib
 from contextlib import closing
 from pathlib import Path
 import shutil
@@ -147,6 +148,8 @@ def test_build_script_output_launches_and_serves_health(tmp_path):
         assert readiness["startup"]["dependencies_ok"] is True
         assert readiness["startup"]["traceroute_initialized"] is False
         assert readiness["auto_scan_thread_alive"] is True
+        script_digest = hashlib.sha256((bundled_resources / "nmap-vulners/vulners.nse").read_bytes()).hexdigest()[:16]
+        assert readiness["tool_versions"]["vulners"] == f"vulners.nse sha256:{script_digest}"
         status_url = f"http://127.0.0.1:{port}/api/runtime/status"
         with pytest.raises(HTTPError) as denied:
             urlopen(status_url, timeout=5)
