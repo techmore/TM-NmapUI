@@ -12,6 +12,10 @@ import subprocess
 import signal
 import sys
 import tempfile
+import faulthandler
+print("Canonical fixture stage: python-start", file=sys.stderr, flush=True)
+faulthandler.dump_traceback_later(10)
+from loopback_server import LoopbackFixtureServer
 
 PIN = "911f83d837c6ea992f2592b4633c59e4a5c1ee29"
 source = Path(os.environ["NMAPUI_SHARED_ENGINE_SOURCE"]).resolve(strict=True)
@@ -64,8 +68,10 @@ class QuietHandler(WSGIRequestHandler):
         pass
 
 
-server = make_server("127.0.0.1", 0, engine.app, request_handler=QuietHandler, threaded=True)
+print("Canonical fixture stage: binding-loopback", file=sys.stderr, flush=True)
+server = LoopbackFixtureServer("127.0.0.1", 0, engine.app, handler=QuietHandler)
 print(json.dumps({"port": server.server_port, "baselinePath": str(folder / "scan_web.html")}), flush=True)
+faulthandler.cancel_dump_traceback_later()
 try:
     server.serve_forever()
 finally:
