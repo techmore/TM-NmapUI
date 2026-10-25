@@ -5,6 +5,12 @@ macOS native experience and elementary OS. The release is **not yet qualified**.
 Do not infer release approval from a draft PR, passing unit tests, or older
 September installer evidence.
 
+The later [release preflight](RELEASE_PREFLIGHT_2026-10-25.md) records the current
+nine-branch/five-PR merge assessment, nine open issues, duplicate Actions trigger
+repair and reproduced browser-test startup race. Sources and run links below
+remain evidence for their named checkpoints; the old `911f83d8` integration pin
+must be replaced with the final qualified candidate before release.
+
 ## Candidate and integration sources
 
 - Shared engine/web/macOS candidate: [PR #254](https://github.com/techmore/TM-NmapUI/pull/254),
