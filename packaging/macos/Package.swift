@@ -24,9 +24,12 @@ let package = Package(
             targets: ["RuntimeReportHelper"]
         )
     ],
+    dependencies: [
+        .package(path: "Vendor/SocketIO")
+    ],
     targets: [
-        .target(name: "SharedEngineCore", path: "Sources/SharedEngineCore"),
-        .testTarget(name: "SharedEngineCoreTests", dependencies: ["SharedEngineCore"], path: "Tests/SharedEngineCoreTests", exclude: ["Fixtures"]),
+        .target(name: "SharedEngineCore", dependencies: [.product(name: "SocketIO", package: "SocketIO")], path: "Sources/SharedEngineCore"),
+        .testTarget(name: "SharedEngineCoreTests", dependencies: ["SharedEngineCore", .product(name: "SocketIO", package: "SocketIO")], path: "Tests/SharedEngineCoreTests", exclude: ["Fixtures"]),
         .target(name: "GoogleDriveCore", path: "Sources/GoogleDriveCore"),
         .testTarget(name: "GoogleDriveCoreTests", dependencies: ["GoogleDriveCore"], path: "Tests/GoogleDriveCoreTests"),
         .target(

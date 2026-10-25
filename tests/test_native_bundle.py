@@ -61,6 +61,10 @@ def test_real_native_bundle_versions_resources_and_signatures(tmp_path):
     assert (resources / "VERSION").read_text().strip() == raw
     for resource in ("NmapUI_NmapUIApp.bundle", "index.html", "nmap-modern.xsl", "static", "nmap-vulners", "AppIcon.icns", "techmore.png"):
         assert (resources / resource).exists(), resource
+    for license_name, phrase in (("SocketIO-MIT.txt", "MIT License"), ("Starscream-Apache-2.0.txt", "Apache License")):
+        matches = list((resources / "NmapUI_NmapUIApp.bundle").rglob(license_name))
+        assert len(matches) == 1, license_name
+        assert phrase in matches[0].read_text()
     for executable, identifier in {
         "NmapUI.real": "com.techmore.nmapui",
         "NmapPrivilegedHelper": "com.techmore.nmapui.nmap-helper",

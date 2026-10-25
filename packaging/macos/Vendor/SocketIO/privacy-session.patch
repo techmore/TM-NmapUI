@@ -1,0 +1,68 @@
+--- a/Package.swift
++++ b/Package.swift
+@@ -12,6 +12,5 @@
+     ],
+     targets: [
+         .target(name: "SocketIO", dependencies: ["Starscream"]),
+-        .testTarget(name: "TestSocketIO", dependencies: ["SocketIO"]),
+     ]
+ )
+--- a/Sources/SocketIO/Client/SocketIOClientOption.swift
++++ b/Sources/SocketIO/Client/SocketIOClientOption.swift
+@@ -107,6 +107,9 @@
+ 
+     /// Sets an NSURLSessionDelegate for the underlying engine. Useful if you need to handle self-signed certs.
+     case sessionDelegate(URLSessionDelegate)
++
++    /// A copied configuration used on every polling session reset.
++    case sessionConfiguration(URLSessionConfiguration)
+ 
+     /// If passed `false`, the WebSocket stream will be configured with the useCustomEngine `false`.
+     case useCustomEngine(Bool)
+@@ -159,6 +162,8 @@
+             description = "selfSigned"
+         case .security:
+             description = "security"
++        case .sessionConfiguration:
++            description = "sessionConfiguration"
+         case .sessionDelegate:
+             description = "sessionDelegate"
+         case .enableSOCKSProxy:
+@@ -214,6 +219,8 @@
+             value = security
+         case let .selfSigned(signed):
+             value = signed
++        case let .sessionConfiguration(configuration):
++            value = configuration
+         case let .sessionDelegate(delegate):
+             value = delegate
+         case let .enableSOCKSProxy(enable):
+--- a/Sources/SocketIO/Engine/SocketEngine.swift
++++ b/Sources/SocketIO/Engine/SocketEngine.swift
+@@ -101,6 +101,8 @@
+     /// The URLSession that will be used for polling.
+     public private(set) var session: URLSession?
+ 
++    private var sessionConfiguration: URLSessionConfiguration = .default
++
+     /// The session id for this engine.
+     public private(set) var sid = ""
+ 
+@@ -563,7 +565,7 @@
+         polling = true
+         probing = false
+         invalidated = false
+-        session = Foundation.URLSession(configuration: .default, delegate: sessionDelegate, delegateQueue: queue)
++        session = Foundation.URLSession(configuration: sessionConfiguration.copy() as! URLSessionConfiguration, delegate: sessionDelegate, delegateQueue: queue)
+         sid = ""
+         waitingForPoll = false
+         waitingForPost = false
+@@ -607,6 +609,8 @@
+                 self.cookies = cookies
+             case let .extraHeaders(headers):
+                 extraHeaders = headers
++            case let .sessionConfiguration(configuration):
++                sessionConfiguration = configuration.copy() as! URLSessionConfiguration
+             case let .sessionDelegate(delegate):
+                 sessionDelegate = delegate
+             case let .forcePolling(force):
