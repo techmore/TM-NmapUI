@@ -5,6 +5,13 @@ import Testing
 
 @Suite("Shared engine HTTP client", .serialized)
 struct SharedEngineClientTests {
+    @Test("a silent readiness pipe has a deadline rather than blocking the test executor")
+    func fixtureDeadline() throws {
+        let pipe = Pipe()
+        let start = Date()
+        #expect(throws: FixtureStartupError.timeout) { try readFixtureReady(pipe.fileHandleForReading, timeout: 0.15) }
+        #expect(Date().timeIntervalSince(start) < 3)
+    }
     @Test("endpoint is literal loopback without userinfo, alternate encodings or ambient proxies")
     func endpoints() throws {
         for value in ["http://127.0.0.1:9000", "http://[::1]:9000/"] { _ = try SharedEngineEndpoint(value) }
@@ -146,7 +153,7 @@ final class FlaskFixture {
     let endpoint: SharedEngineEndpoint
     let baselinePath: URL?
 
-    init(mode: String = "valid", canonical: Bool = false) throws {
+    init(mode: String = "valid", canonical: Bool = false, startupTimeout: TimeInterval = 30) throws {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -155,15 +162,19 @@ final class FlaskFixture {
         process.environment = ProcessInfo.processInfo.environment.merging(["SHARED_FIXTURE_MODE": mode]) { _, new in new }
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        let began = Date()
+        print("Shared fixture launching: \(canonical ? "canonical" : mode)")
         try process.run()
         self.process = process
-        let line = pipe.fileHandleForReading.availableData
+        print("Shared fixture spawned: \(canonical ? "canonical" : mode), \(Date().timeIntervalSince(began))s")
         do {
+            let line = try readFixtureReady(pipe.fileHandleForReading, timeout: startupTimeout)
             let ready = try JSONDecoder().decode(Ready.self, from: line)
             endpoint = try SharedEngineEndpoint("http://127.0.0.1:\(ready.port)")
             baselinePath = ready.baselinePath.map { URL(fileURLWithPath: $0) }
+            print("Shared fixture ready: \(canonical ? "canonical" : mode), \(Date().timeIntervalSince(began))s")
         } catch {
-            if process.isRunning { process.terminate() }
+            if process.isRunning { kill(process.processIdentifier, SIGTERM) }
             throw error
         }
     }
@@ -174,14 +185,43 @@ final class FlaskFixture {
     }
     func stop() {
         if process.isRunning {
-            process.terminate()
+            let began = Date()
+            kill(process.processIdentifier, SIGTERM)
             // NSTask.waitUntilExit can deadlock Swift Testing's cooperative
             // executor after child exit. Reaping remains owned by Foundation.
             for _ in 0..<100 {
-                if kill(process.processIdentifier, 0) == -1 && errno == ESRCH { return }
+                if kill(process.processIdentifier, 0) == -1 && errno == ESRCH {
+                    print("Shared fixture stopped: \(Date().timeIntervalSince(began))s")
+                    return
+                }
                 usleep(10_000)
             }
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            print("Shared fixture stop fallback: \(Date().timeIntervalSince(began))s")
         }
     }
+}
+
+private enum FixtureStartupError: Error { case timeout, ended, oversized }
+
+private func readFixtureReady(_ handle: FileHandle, timeout: TimeInterval) throws -> Data {
+    let descriptor = handle.fileDescriptor
+    _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK)
+    let deadline = ProcessInfo.processInfo.systemUptime + timeout
+    var data = Data()
+    var chunk = [UInt8](repeating: 0, count: 512)
+    while ProcessInfo.processInfo.systemUptime < deadline {
+        var descriptorState = pollfd(fd: descriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+        let result = poll(&descriptorState, 1, 50)
+        if result < 0 && errno == EINTR { continue }
+        guard result >= 0 else { throw FixtureStartupError.ended }
+        if result == 0 { continue }
+        let count = read(descriptor, &chunk, chunk.count)
+        if count < 0 && [EAGAIN, EINTR].contains(errno) { continue }
+        guard count > 0 else { throw FixtureStartupError.ended }
+        data.append(contentsOf: chunk.prefix(count))
+        guard data.count <= 4096 else { throw FixtureStartupError.oversized }
+        if let newline = data.firstIndex(of: 10) { return data.prefix(through: newline) }
+    }
+    throw FixtureStartupError.timeout
 }

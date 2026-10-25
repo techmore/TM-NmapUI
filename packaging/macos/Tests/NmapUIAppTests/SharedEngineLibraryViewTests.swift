@@ -11,6 +11,7 @@ import Testing
 struct SharedEngineLibraryViewTests {
     @Test("native view renders connected long names, stale data, 401 and unavailable in light and dark")
     func renderedStates() async throws {
+        try #require(pthread_main_np() != 0)
         _ = NSApplication.shared
         let fixture = try LibraryFixture(mode: "long")
         defer { fixture.stop() }
@@ -115,6 +116,8 @@ struct SharedEngineLibraryViewTests {
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         var windows: [NSWindow] = []
         for (label, scheme) in [("light", ColorScheme.light), ("dark", ColorScheme.dark)] {
+            try #require(pthread_main_np() != 0)
+            print("Shared view render starting: \(name)-\(label)")
             let content = ScrollView {
                 SharedEngineLibraryView(model: model).padding(24)
             }.frame(width: 1100, height: 900).background(Color(NSColor.windowBackgroundColor))
@@ -132,6 +135,7 @@ struct SharedEngineLibraryViewTests {
             hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
             let png = try #require(bitmap.representation(using: .png, properties: [:]))
             try png.write(to: output.appendingPathComponent("\(name)-\(label).png"))
+            print("Shared view render saved: \(name)-\(label)")
         }
         windows.forEach { $0.close() }
         try await Task.sleep(nanoseconds: 100_000_000) // Settle the real onDisappear cleanup before the next attachment.
@@ -151,19 +155,57 @@ private final class LibraryFixture {
         process.environment = ProcessInfo.processInfo.environment.merging(["SHARED_FIXTURE_MODE": mode]) { _, new in new }
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        let began = Date()
+        print("Native library fixture launching: \(mode)")
         try process.run()
-        let ready = try JSONDecoder().decode(Ready.self, from: pipe.fileHandleForReading.availableData)
-        address = "http://127.0.0.1:\(ready.port)"
+        print("Native library fixture spawned: \(mode), \(Date().timeIntervalSince(began))s")
+        do {
+            let ready = try JSONDecoder().decode(Ready.self, from: boundedLibraryReady(pipe.fileHandleForReading))
+            address = "http://127.0.0.1:\(ready.port)"
+            print("Native library fixture ready: \(mode), \(Date().timeIntervalSince(began))s")
+        } catch {
+            if process.isRunning { kill(process.processIdentifier, SIGTERM) }
+            throw error
+        }
     }
     private struct Ready: Decodable { let port: Int }
     func stop() {
         if process.isRunning {
-            process.terminate()
+            let began = Date()
+            kill(process.processIdentifier, SIGTERM)
             for _ in 0..<100 {
-                if kill(process.processIdentifier, 0) == -1 && errno == ESRCH { return }
+                if kill(process.processIdentifier, 0) == -1 && errno == ESRCH {
+                    print("Native library fixture stopped: \(Date().timeIntervalSince(began))s")
+                    return
+                }
                 usleep(10_000)
             }
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            print("Native library fixture stop fallback: \(Date().timeIntervalSince(began))s")
         }
     }
+}
+
+private enum LibraryStartupError: Error { case timeout, ended, oversized }
+
+private func boundedLibraryReady(_ handle: FileHandle) throws -> Data {
+    let descriptor = handle.fileDescriptor
+    _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK)
+    let deadline = ProcessInfo.processInfo.systemUptime + 30
+    var data = Data()
+    var chunk = [UInt8](repeating: 0, count: 512)
+    while ProcessInfo.processInfo.systemUptime < deadline {
+        var state = pollfd(fd: descriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+        let result = poll(&state, 1, 50)
+        if result < 0 && errno == EINTR { continue }
+        guard result >= 0 else { throw LibraryStartupError.ended }
+        if result == 0 { continue }
+        let count = read(descriptor, &chunk, chunk.count)
+        if count < 0 && [EAGAIN, EINTR].contains(errno) { continue }
+        guard count > 0 else { throw LibraryStartupError.ended }
+        data.append(contentsOf: chunk.prefix(count))
+        guard data.count <= 4096 else { throw LibraryStartupError.oversized }
+        if let newline = data.firstIndex(of: 10) { return data.prefix(through: newline) }
+    }
+    throw LibraryStartupError.timeout
 }

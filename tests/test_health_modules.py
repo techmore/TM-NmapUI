@@ -4,7 +4,8 @@ from nmapui.handlers.routes import register_core_routes
 from nmapui.settings import get_effective_scan_rules
 
 
-def test_runtime_status_route_reports_active_jobs():
+def test_runtime_status_route_reports_active_jobs(monkeypatch):
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
     app = Flask(__name__)
 
     class JobRegistryStub:

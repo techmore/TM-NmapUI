@@ -1,5 +1,6 @@
 """Check actual exported files in Chromium; all HTTP(S) attempts are intercepted."""
 import json
+import base64
 from pathlib import Path
 import sys
 from playwright.sync_api import sync_playwright
@@ -46,5 +47,32 @@ with sync_playwright() as playwright:
         page.close()
     assert observations[0] == observations[1], "Offline protection changed report layout/text"
     assert not requests, "Offline report attempted an HTTP(S) request"
+    # External viewers do not apply HTTP-only sandbox flags from meta CSP.
+    # Preserve this boundary explicitly: navigation can occur, but the client
+    # must never serialize/forward its engine authorization to that viewer.
+    sensitive = ["fixture-contraseña-🔐", base64.b64encode("fixture-user:fixture-contraseña-🔐".encode()).decode()]
+    for name in ("canonical-offline.html", "adversarial-comment.html"):
+        text = (root / name).read_text()
+        assert all(secret not in text for secret in sensitive)
+    navigation = (root / "adversarial-comment.html").read_text().replace(
+        "</body>", '<meta http-equiv="refresh" content="0;url=http://127.0.0.1:9/offline-navigation-canary"></body>')
+    navigation_path = root / "navigation-boundary.html"
+    navigation_path.write_text(navigation)
+    boundary = []
+    def intercept_navigation(route):
+        if route.request.url.startswith(("http:", "https:")):
+            headers = route.request.all_headers()
+            boundary.append({"authorization_present": "authorization" in headers,
+                             "credential_present": any(secret in json.dumps(headers) + route.request.url for secret in sensitive)})
+            route.abort()  # No request reaches even the loopback canary port.
+        else:
+            route.continue_()
+    context.unroute("**/*", intercept)
+    context.route("**/*", intercept_navigation)
+    page = context.new_page()
+    page.goto(navigation_path.as_uri())
+    page.wait_for_timeout(250)
+    assert boundary == [{"authorization_present": False, "credential_present": False}]
     browser.close()
-print(json.dumps({"adversarial_documents_blocked": 4, "canonical_layout_equal": True, "hashed_runtime_filter_csv": True, "http_requests": 0}))
+print(json.dumps({"adversarial_scripts_blocked": 4, "canonical_layout_equal": True, "hashed_runtime_filter_csv": True,
+                  "script_subresource_http_requests": 0, "viewer_navigation_intercepted": 1, "navigation_engine_credentials": False}))

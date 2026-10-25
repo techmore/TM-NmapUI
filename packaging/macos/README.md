@@ -162,13 +162,17 @@ download. Unrecognized files, symlinks and active sessions are never pruned.
 Offline HTML gets a restrictive policy before all original document bytes and
 retains applicable server policy. Only the server's SHA-256-authorized runtime
 or no scripts are accepted. HTTP-only sandbox/frame-ancestor protections cannot
-be reproduced by a meta policy; the offline policy separately disables network,
-forms, objects and base URLs. Unsupported policies fail explicitly with PDF/XML
+be reproduced by a meta policy; the offline policy separately blocks network
+subresources, forms, objects and base URLs. Unsupported policies fail explicitly with PDF/XML
 as alternatives. HTML is opened externally, never in a privileged application
-WebView.
+WebView. Meta policy does not provide HTTP sandbox isolation: an external viewer
+may still navigate, including through a document's meta-refresh directive.
+The client does not place engine credentials in the downloaded document or
+forward them to an external viewer/navigation request. The policy guards script
+execution and subresource requests; it is not arbitrary-HTML network isolation.
 
 Canonical integration tests verify the exact clean shared-engine revision
-`46a18a27bbc9df5fec061f6df226159b18f788e5`, using its real app, authentication,
+`911f83d837c6ea992f2592b4633c59e4a5c1ee29`, using its real app, authentication,
 routes, SQLite store and report renderer with temporary data and no scan calls.
 Its scheduler thread runs for readiness with automatic scanning disabled. CI
 checks out that revision separately; fault-injection Flask fixtures are additional

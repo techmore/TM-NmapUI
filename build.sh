@@ -302,7 +302,7 @@ export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright-browsers"
 # packaged desktop entrypoint.
 export NMAPUI_ALLOW_UNSAFE_WERKZEUG=true
 export NMAPUI_STARTUP_TRACEROUTE="${NMAPUI_STARTUP_TRACEROUTE:-false}"
-export NMAPUI_TRUST_LOCAL_UI=true
+export NMAPUI_TRUST_LOCAL_UI="${NMAPUI_TRUST_LOCAL_UI:-true}"
 
 # Run the NmapUI application
 exec python3 app.py
