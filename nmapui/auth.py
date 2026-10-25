@@ -2,6 +2,7 @@ import base64
 import ipaddress
 import os
 from functools import wraps
+from urllib.parse import urlsplit
 
 from flask import jsonify, request
 from flask_socketio import emit
@@ -45,44 +46,70 @@ def local_ui_trusted():
     }
 
 
+def _url_origin(value, *, allow_path=False):
+    try:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+            or (not allow_path and (parsed.path or parsed.query))
+        ):
+            return None
+        port = parsed.port
+        if port == 0:
+            return None
+        return parsed.scheme, parsed.hostname, port or (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return None
+
+
+def browser_request_origin_allowed():
+    """Validate browser mutations while preserving headerless Basic API clients."""
+    expected = _url_origin(request.host_url.rstrip("/"))
+    allowed = {
+        origin
+        for value in os.environ.get("NMAPUI_ALLOWED_ORIGINS", "").split(",")
+        if (origin := _url_origin(value.strip())) is not None
+    }
+    if expected is not None:
+        allowed.add(expected)
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        return _url_origin(origin) in allowed
+    referer = request.headers.get("Referer")
+    if referer is not None:
+        return _url_origin(referer, allow_path=True) in allowed
+    return (request.headers.get("Sec-Fetch-Site") or "").strip().lower() != "cross-site"
+
+
 def request_is_local_ui():
     if not local_ui_trusted():
         return False
-
-    host = (request.host or "").split(":", 1)[0].lower()
+    allowed_hosts = {"127.0.0.1", "localhost", "::1"}
+    host_origin = _url_origin(request.host_url.rstrip("/"))
+    if host_origin is None or host_origin[1] not in allowed_hosts:
+        return False
     remote_addr = (request.remote_addr or "").lower()
-    origin = (request.headers.get("Origin") or "").lower()
-
-    allowed_hosts = {"127.0.0.1", "localhost"}
-    local_remote_addrs = {"127.0.0.1", "::1", "localhost"}
-
-    def is_loopback_remote_addr(value):
-        if value in local_remote_addrs:
-            return True
-        try:
-            address = ipaddress.ip_address(value)
-            if address.is_loopback:
-                return True
-            if getattr(address, "ipv4_mapped", None) is not None:
-                return address.ipv4_mapped.is_loopback
-            return False
-        except ValueError:
-            return False
-
-    def origin_is_local_ui(value):
-        if not value:
-            return True
-        return any(token in value for token in ("127.0.0.1", "localhost"))
-
-    if not is_loopback_remote_addr(remote_addr):
+    try:
+        address = ipaddress.ip_address(remote_addr)
+        loopback = address.is_loopback or bool(getattr(address, "ipv4_mapped", None) and address.ipv4_mapped.is_loopback)
+    except ValueError:
+        loopback = remote_addr == "localhost"
+    if not loopback:
         return False
-
-    if host and host not in allowed_hosts:
+    if (request.headers.get("Sec-Fetch-Site") or "").strip().lower() == "cross-site":
         return False
-
-    if not origin_is_local_ui(origin):
-        return False
-
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        parsed = _url_origin(origin)
+        return parsed is not None and parsed[1] in allowed_hosts
+    referer = request.headers.get("Referer")
+    if referer is not None:
+        parsed = _url_origin(referer, allow_path=True)
+        return parsed is not None and parsed[1] in allowed_hosts
     return True
 
 
@@ -132,14 +159,19 @@ def require_auth(f):
 
     @wraps(f)
     def decorated(*args, **kwargs):
+        def authenticated_call():
+            if request.method not in {"GET", "HEAD", "OPTIONS"} and not browser_request_origin_allowed():
+                return jsonify({"error": "Request origin is not allowed"}), 403
+            return f(*args, **kwargs)
+
         auth = request.authorization
         if request_is_local_ui():
-            return f(*args, **kwargs)
+            return authenticated_call()
         if not auth or not check_auth(auth.username, auth.password):
             if auth_uses_insecure_defaults():
                 return jsonify({"error": "Authentication is not configured securely"}), 503
             return jsonify({"error": "Unauthorized"}), 401
-        return f(*args, **kwargs)
+        return authenticated_call()
 
     return decorated
 

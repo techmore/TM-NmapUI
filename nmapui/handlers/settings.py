@@ -2,7 +2,7 @@ from flask import jsonify, request
 from html import escape
 
 from nmapui.auto_monitor import build_auto_monitor_rule_status
-from nmapui.auth import require_auth
+from nmapui.auth import browser_request_origin_allowed, require_auth
 from nmapui.settings import normalize_settings_document
 
 
@@ -93,6 +93,8 @@ def register_settings_routes(app, deps):
     @app.route("/api/settings/google-drive/auth-url")
     @require_auth
     def google_drive_auth_url_route():
+        if not browser_request_origin_allowed():
+            return jsonify({"success": False, "error": "Request origin is not allowed"}), 403
         redirect_uri = request.host_url.rstrip("/") + "/api/settings/google-drive/callback"
         result = build_google_drive_auth_url(redirect_uri=redirect_uri)
         status_code = 200 if result.get("success") else 400
