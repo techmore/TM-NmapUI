@@ -305,6 +305,7 @@
             });
         });
         socket.on('job_status', function (data) {
+            if (!window.acceptJobStatus(data)) return;
             schedulePersistedLogRefresh();
         });
         socket.on('report_complete', function (data) {

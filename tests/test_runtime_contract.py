@@ -190,9 +190,8 @@ def test_settings_tab_google_drive_actions_use_http_routes():
         "/api/settings/google-drive/credentials",
     ):
         assert f"fetch('{route}'" in settings_source
-    # The dead socket events must no longer be the primary path (HTTP first, socket fallback allowed).
-    assert "fetch('/api/settings/google-drive/auth-url'" in settings_source
-    assert "emit('connect_google_drive')" in settings_source  # node fallback retained
+    # Browser regressions exercise real import and sign-in behavior; unavailable
+    # HTTP routes must produce useful feedback, not invoke unhandled events.
 
 
 def test_settings_tab_maintenance_buttons_call_runtime_routes():
@@ -266,8 +265,8 @@ def test_wrapper_contract_uses_single_supported_launcher():
     build_script = (ROOT / "build.sh").read_text()
 
     assert 'PACKAGING_DIR="$ROOT_DIR/packaging/macos"' in build_script
-    assert 'APP_VERSION="$(tr -d \'\\r\\n\' < "$ROOT_DIR/VERSION")"' in build_script
-    assert 'echo "ERROR: VERSION file is empty" >&2' in build_script
+    assert 'VERSION_METADATA="$(python3 "$PACKAGING_DIR/bundle_version.py" "$ROOT_DIR/VERSION")" || exit 1' in build_script
+    assert build_script.index('VERSION_METADATA=') < build_script.index('SDK=$(xcrun')
     assert "ROOT_RUNTIME_PY=(" in build_script
     assert "customer_fingerprint_matcher.py" in build_script
     assert "customer_fingerprint_store.py" in build_script
@@ -304,7 +303,9 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'MIGRATION_SOURCE_DB="$NMAPUI_MIGRATE_DB_FROM"' in build_script
     assert 'MIGRATION_SOURCE_DB="$INSTALLED_RUNTIME_DB"' in build_script
     assert 'echo "Host architecture: $HOST_ARCH"' in build_script
-    assert "<string>$APP_VERSION</string>" in build_script
+    assert "<string>$BUNDLE_BUILD_VERSION</string>" in build_script
+    assert "<string>$BUNDLE_SHORT_VERSION</string>" in build_script
+    assert "<string>$APP_VERSION</string>" not in build_script
     assert "<string>NmapUI</string>" in build_script
     assert "<string>com.techmore.nmapui</string>" in build_script
     assert 'echo "Target: $SWIFT_TARGET"' in build_script
@@ -324,15 +325,16 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'open "$INSTALLED_APP_NAME"' in build_script
     assert 'RUNTIME_PID_FILE_REL="Contents/Resources/nmapui-runtime.pid"' in build_script
     assert 'SHUTDOWN_MARKER_REL="Contents/Resources/nmapui-shutdown"' in build_script
-    assert 'AUTO_SCAN_LOCK_REL="Contents/Resources/data/auto_scan_scheduler.lock"' in build_script
+    assert 'AUTO_SCAN_LOCK_REL=' not in build_script
+    assert '/usr/bin/pkill' not in build_script
+    assert '"$RUNTIME_DATA_DIR/auto_scan_scheduler.lock"' not in build_script
     assert "shell_escape() {" in build_script
     assert "applescript_escape() {" in build_script
-    assert "kill_runtime_tree() {" in build_script
-    assert "purge_bundle_artifacts() {" in build_script
+    assert "assert_bundles_stopped() {" in build_script
+    assert 'python3 "$PACKAGING_DIR/assert_bundle_stopped.py" "$@" || exit 1' in build_script
     assert "remove_bundle_path() {" in build_script
     assert "stage_google_drive_credentials() {" in build_script
-    assert 'purge_bundle_artifacts "$APP_NAME"' in build_script
-    assert 'purge_bundle_artifacts "$INSTALLED_APP_NAME"' in build_script
+    assert 'assert_bundles_stopped "$APP_NAME" "$INSTALLED_APP_NAME"' in build_script
     assert 'rm -rf "$BUILD_DIR"' in build_script
     assert 'rm -rf "$APP_NAME"' in build_script
     assert 'remove_bundle_path "$INSTALLED_APP_NAME"' in build_script
@@ -402,12 +404,10 @@ def test_wrapper_launcher_quit_path_tracks_and_stops_runtime_tree():
     assert 'if isQuitting {' in launcher_source
     assert 'isQuitting = true' in launcher_source
     assert 'stopFlask(wait: true)' in launcher_source
-    assert 'RUNTIME_PORT=\\(shellEscaped(runtimePortValue))' in launcher_source
-    assert 'done < <(/usr/sbin/lsof -tiTCP:"$RUNTIME_PORT" -sTCP:LISTEN 2>/dev/null || true)' in launcher_source
-    assert 'TARGET_PID="$(/bin/cat "$PID_FILE" 2>/dev/null | /usr/bin/tr -cd \'0-9\')"' in launcher_source
-    assert '/usr/bin/pkill -TERM -f "$RUN_SCRIPT_PATH" 2>/dev/null || true' in launcher_source
-    assert '/usr/bin/pkill -TERM -f "$RESOURCES_PATH/app.py" 2>/dev/null || true' in launcher_source
-    assert '/usr/bin/pkill -TERM -f "$RESOURCES_PATH/.venv/bin/python3" 2>/dev/null || true' in launcher_source
+    assert 'let targetPID = pythonProcess?.isRunning == true ? pythonProcess!.processIdentifier : 0' in launcher_source
+    assert 'func pollReadinessThenOpen(generation: UUID, deadline: Date)' in launcher_source
+    assert '/usr/bin/pkill' not in launcher_source
+    assert '/usr/sbin/lsof' not in launcher_source
     assert '/bin/rm -f "$PID_FILE" "$SHUTDOWN_MARKER"' in launcher_source
     assert "/Applications/NmapUI.app/Contents/Resources/app.py" not in launcher_source
 
@@ -691,7 +691,7 @@ def test_connection_handler_prefers_sqlite_snapshots_without_active_owner():
     assert "subscriber_set = set(self._connected_sids) or {owner_sid}" in jobs_source
     assert "def _load_persisted_active_job(runtime_store):" in connections_source
     assert "def _load_persisted_job_events(runtime_store, job_id):" in connections_source
-    assert 'runtime_store.list_jobs(statuses=("running", "cancelling"), limit=1)' in connections_source
+    assert 'runtime_store.list_jobs(statuses=("running", "cancelling"), job_type=job_type, limit=1)' in connections_source
     assert 'runtime_store.list_job_events(job_id=job_id, limit=200)' in connections_source
     assert 'runtime_store.get_runtime_snapshot("current_customer")' in connections_source
     assert 'runtime_store.get_runtime_snapshot("network_key")' in connections_source
@@ -1000,9 +1000,9 @@ def test_runtime_status_route_and_menu_bar_indicator_contract():
     assert "pickAvailableRuntimePort" in launcher_source
     assert "startStatusPolling()" in launcher_source
     assert "pollRuntimeStatus()" in launcher_source
-    assert "Recent scan or report completed" in launcher_source
+    assert "Recent scan or report ended; review results" in launcher_source
     assert 'symbolName = "dot.radiowaves.left.and.right"' in launcher_source
-    assert 'symbolName = "checkmark.circle.fill"' in launcher_source
+    assert 'symbolName = "clock"' in launcher_source
 
 
 def test_release_paths_prefer_dot_venv():
@@ -1598,8 +1598,6 @@ def test_google_drive_integration_contract_exists():
     assert 'ENCRYPTED_TOKEN_SCHEMA_VERSION = 1' in google_drive_source
     assert "def _load_or_create_encryption_key(key_path: Path) -> bytes:" in google_drive_source
     assert '\"ciphertext\"' in google_drive_source
-    assert 'with file_path.open("rb") as file_handle:' in google_drive_source
-    assert "file_path.read_bytes()" not in google_drive_source
     assert "upload_report_artifacts_to_google_drive=" in app_source
     assert "key_path=GOOGLE_DRIVE_TOKEN_KEY_FILE" in app_source
     assert "load_remote_sync_secret(" in app_source

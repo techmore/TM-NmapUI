@@ -19,7 +19,7 @@ window.socket = null;
     } catch (err) {
         console.warn('Could not fetch socket token; retrying unauthenticated.');
     }
-    const socket = io.connect(`http://${document.domain}:${location.port}`, {
+    const socket = io.connect(window.location.origin, {
         auth: { token },
         query: { token }
     });

@@ -7,6 +7,10 @@ scanner tools.
 
 ## macOS appliance
 
+The supported Flask scanner does not require Go or GoWitness. The installer
+installs the scanner and report dependencies; screenshot capture from the legacy
+or experimental native implementation is not part of this setup.
+
 For development, install the Homebrew toolchain and Python environment:
 
 ```bash

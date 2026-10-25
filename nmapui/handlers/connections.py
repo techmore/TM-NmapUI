@@ -50,10 +50,15 @@ def _load_persisted_source_state(runtime_store):
 def _load_persisted_active_job(runtime_store):
     if runtime_store is None or not hasattr(runtime_store, "list_jobs"):
         return None
-    jobs = runtime_store.list_jobs(statuses=("running", "cancelling"), limit=1)
+    # Durable bridge commands also have a running state. They must not replace
+    # a scanner/report snapshot merely because their acceptance is newer.
+    jobs = [
+        job for job_type in ("scan", "report")
+        for job in runtime_store.list_jobs(statuses=("running", "cancelling"), job_type=job_type, limit=1)
+    ]
     if not jobs:
         return None
-    job = jobs[0]
+    job = max(jobs, key=lambda item: (item.get("updated_at", ""), item["job_id"]))
     payload = dict(job.get("payload", {}))
     details = dict(payload.get("details", {}))
     return {
@@ -119,6 +124,25 @@ def register_connection_handlers(socketio, deps):
             broadcaster.set_bridge_client(new_sid, command_namespace=command_namespace)
             emit_to_client(new_sid, "daedalus_protocol", {"version": 1, "command_results": command_namespace is not None, "source_job_metadata": True, "command_namespace": command_namespace})
 
+        replayed_event_ids = set()
+
+        def emit_bridge_replay(envelope):
+            # Active envelopes exist in both durable history and the bounded
+            # in-memory replay. Deliver their stable identity only once per
+            # reconnect instead of serializing/uploading the same evidence twice.
+            event_id = envelope.get("client_event_id")
+            if event_id in replayed_event_ids:
+                return
+            replayed_event_ids.add(event_id)
+            emit_to_client(new_sid, "daedalus_event", envelope)
+
+        def emit_recovery_event(sid, event_name, envelope):
+            # The reconnecting client receives the newly persisted terminal
+            # receipt below, after its original acceptance. Existing peers
+            # still receive the recovery result immediately.
+            if sid != new_sid or event_name != "daedalus_event":
+                emit_to_client(sid, event_name, envelope)
+
         def replay_persisted_bridge_events():
             if not bridge_client or runtime_store is None or not hasattr(runtime_store, "list_jobs"):
                 return
@@ -129,7 +153,7 @@ def register_connection_handlers(socketio, deps):
                 if saved_job.get("job_type") == "command" and saved_job.get("status") == "interrupted":
                     command_id = (saved_job.get("payload") or {}).get("command_id")
                     if isinstance(command_id, int) and not isinstance(command_id, bool):
-                        emit_command_result(command_id=command_id, owner_sid=new_sid, status="failed", result="NmapUI restarted before this command completed.", broadcaster=broadcaster, emit_to_client=emit_to_client, runtime_store=runtime_store, command_namespace=(saved_job.get("payload") or {}).get("command_namespace"))
+                        emit_command_result(command_id=command_id, owner_sid=new_sid, status="failed", result="NmapUI restarted before this command completed.", broadcaster=broadcaster, emit_to_client=emit_recovery_event, runtime_store=runtime_store, command_namespace=(saved_job.get("payload") or {}).get("command_namespace"))
                 if saved_job.get("status") not in {"running", "cancelling"}:
                     try:
                         updated = datetime.fromisoformat(str(saved_job["updated_at"]).replace("Z", "+00:00"))
@@ -144,7 +168,7 @@ def register_connection_handlers(socketio, deps):
                         "occurred_at": saved["created_at"],
                         "event_name": saved["event_name"], "payload": saved["payload"],
                     }
-                    emit_to_client(new_sid, "daedalus_event", envelope)
+                    emit_bridge_replay(envelope)
 
         replay_persisted_bridge_events()
         active_job_type = None
@@ -228,7 +252,7 @@ def register_connection_handlers(socketio, deps):
 
         if bridge_client and hasattr(broadcaster, "get_bridge_replay_buffer"):
             for envelope in broadcaster.get_bridge_replay_buffer(owner_sid, job_type=active_job_type):
-                emit_to_client(new_sid, "daedalus_event", envelope)
+                emit_bridge_replay(envelope)
         else:
             for event, data in replay_buffer:
                 emit_to_client(new_sid, event, data)

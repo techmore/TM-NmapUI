@@ -263,10 +263,11 @@ def register_core_routes(app, deps):
         return response
 
     @app.route("/api/runtime/status")
+    @require_auth
     def runtime_status():
         snapshot = job_registry.snapshot()
         active_jobs = snapshot["active_jobs"]
-        return jsonify(
+        response = jsonify(
             {
                 "has_active_jobs": snapshot["has_active_jobs"],
                 "maintenance_active": snapshot.get("maintenance_active", False),
@@ -276,6 +277,8 @@ def register_core_routes(app, deps):
                 "active_jobs": active_jobs,
             }
         )
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.route("/api/runtime/live-hosts")
     @require_auth

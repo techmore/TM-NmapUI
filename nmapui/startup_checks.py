@@ -3,6 +3,7 @@ import subprocess
 from nmapui.auto_scan import build_auto_scan_status_payload
 from nmapui.runtime import env_flag
 from nmapui.runtime_log import append_runtime_log
+from nmapui.scanning import vulners_script_version
 
 
 def run_startup_checks(deps, quick=False):
@@ -65,28 +66,7 @@ def run_startup_checks(deps, quick=False):
         vulners_ok = bool(check_vulners(vulners_script))
         if not vulners_ok:
             errors.append(f"Vulners NSE script missing at {vulners_script}")
-        vulners_dir = vulners_script.parent
-        if vulners_dir.exists():
-            try:
-                version_result = subprocess.run(
-                    [
-                        "git",
-                        "log",
-                        "-1",
-                        "--oneline",
-                        "--date=short",
-                        "--pretty=format:%h %ad %s",
-                    ],
-                    cwd=vulners_dir,
-                    capture_output=True,
-                    text=True,
-                )
-                if version_result.returncode == 0:
-                    tool_versions.set_version("vulners", version_result.stdout.strip())
-                else:
-                    tool_versions.set_version("vulners", "Unknown")
-            except Exception:
-                tool_versions.set_version("vulners", "Unknown")
+        tool_versions.set_version("vulners", vulners_script_version(vulners_script) if vulners_ok else "Not installed")
 
         logger.info("\nChecking arp-scan...")
         if check_arp_scan():

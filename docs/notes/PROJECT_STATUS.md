@@ -1,4 +1,31 @@
-# Project status — 2026-09-29
+# Project status — 2026-10-25
+
+## Next release stabilization
+
+Current work is published in [draft PR #254](https://github.com/techmore/TM-NmapUI/pull/254).
+The cross-platform evidence ledger is
+[RELEASE_READINESS_2026-10-25.md](RELEASE_READINESS_2026-10-25.md).
+It tracks web, native macOS, native elementary OS, Drive, Daedalus packaging and
+installed-host gates separately. Shared engine `911f83d8` passed all four hosted
+jobs, including the Settings transport race and runtime-status privacy fixes.
+Elementary `4b3f1c5`, the Daedalus kit and the native canonical fixture are being
+repinned to that immutable source. Full SwiftUI stabilization is in draft
+[PR #255](https://github.com/techmore/TM-NmapUI/pull/255), with native Drive and
+retained-web hardening in [PR #256](https://github.com/techmore/TM-NmapUI/pull/256)
+and the native shared-scanner library in [PR #257](https://github.com/techmore/TM-NmapUI/pull/257).
+Read-only shared-library access does not establish shared scan/schedule execution;
+that transport and routing work remains open. Installed-host, signing and real
+OAuth gates also remain open. No release has been qualified or tagged.
+
+## October 25 repository audit
+
+Local `main` was fast-forwarded from `ead49881` to `bec25d94` (22 commits).
+PR #240 merged October 12 as `0fc510e2`; there are no open PRs at this audit.
+The September implementation narrative and checkpoint below are historical,
+including references to #240 being draft and the old branch divergence counts.
+Current findings, dependency changes, branch dispositions and validation are in
+[REPOSITORY_AUDIT_2026-10-25.md](REPOSITORY_AUDIT_2026-10-25.md).
+The installed-host and unattended-operation release gates still apply.
 
 ## Product direction
 
@@ -356,7 +383,7 @@ serialize with scheduler updates so a stale browser form cannot erase a just-
 completed run. Unit and staged-worker tests cover these paths; installed-host
 crash, power-loss and multi-process behavior still need verification.
 
-## Where work stopped
+## Historical September checkpoint
 
 - `main` / `origin/main`: `2828bd36`, PR #239 merged August 24. Latest CI passed
   unit/contract, browser regression and packaged Mac smoke jobs:
