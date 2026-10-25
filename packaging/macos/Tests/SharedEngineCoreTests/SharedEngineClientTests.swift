@@ -5,6 +5,12 @@ import Testing
 
 @Suite("Shared engine HTTP client", .serialized)
 struct SharedEngineClientTests {
+    @Test("fixture startup has a bounded readiness deadline rather than blocking the test executor")
+    func fixtureDeadline() throws {
+        let start = Date()
+        #expect(throws: FixtureStartupError.timeout) { try FlaskFixture(mode: "never-ready", startupTimeout: 0.15) }
+        #expect(Date().timeIntervalSince(start) < 3)
+    }
     @Test("endpoint is literal loopback without userinfo, alternate encodings or ambient proxies")
     func endpoints() throws {
         for value in ["http://127.0.0.1:9000", "http://[::1]:9000/"] { _ = try SharedEngineEndpoint(value) }
@@ -146,7 +152,7 @@ final class FlaskFixture {
     let endpoint: SharedEngineEndpoint
     let baselinePath: URL?
 
-    init(mode: String = "valid", canonical: Bool = false) throws {
+    init(mode: String = "valid", canonical: Bool = false, startupTimeout: TimeInterval = 30) throws {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -157,13 +163,15 @@ final class FlaskFixture {
         process.standardError = FileHandle.nullDevice
         try process.run()
         self.process = process
-        let line = pipe.fileHandleForReading.availableData
+        print("Shared fixture startup: \(canonical ? "canonical" : mode)")
         do {
+            let line = try readFixtureReady(pipe.fileHandleForReading, timeout: startupTimeout)
             let ready = try JSONDecoder().decode(Ready.self, from: line)
             endpoint = try SharedEngineEndpoint("http://127.0.0.1:\(ready.port)")
             baselinePath = ready.baselinePath.map { URL(fileURLWithPath: $0) }
+            print("Shared fixture ready: \(canonical ? "canonical" : mode)")
         } catch {
-            if process.isRunning { process.terminate() }
+            if process.isRunning { kill(process.processIdentifier, SIGTERM) }
             throw error
         }
     }
@@ -184,4 +192,28 @@ final class FlaskFixture {
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
     }
+}
+
+private enum FixtureStartupError: Error { case timeout, ended, oversized }
+
+private func readFixtureReady(_ handle: FileHandle, timeout: TimeInterval) throws -> Data {
+    let descriptor = handle.fileDescriptor
+    _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK)
+    let deadline = ProcessInfo.processInfo.systemUptime + timeout
+    var data = Data()
+    var chunk = [UInt8](repeating: 0, count: 512)
+    while ProcessInfo.processInfo.systemUptime < deadline {
+        var descriptorState = pollfd(fd: descriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+        let result = poll(&descriptorState, 1, 50)
+        if result < 0 && errno == EINTR { continue }
+        guard result >= 0 else { throw FixtureStartupError.ended }
+        if result == 0 { continue }
+        let count = read(descriptor, &chunk, chunk.count)
+        if count < 0 && [EAGAIN, EINTR].contains(errno) { continue }
+        guard count > 0 else { throw FixtureStartupError.ended }
+        data.append(contentsOf: chunk.prefix(count))
+        guard data.count <= 4096 else { throw FixtureStartupError.oversized }
+        if let newline = data.firstIndex(of: 10) { return data.prefix(through: newline) }
+    }
+    throw FixtureStartupError.timeout
 }

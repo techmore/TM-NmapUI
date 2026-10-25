@@ -152,6 +152,14 @@ jobs:
       - name: Verify numeric versions and optimized native bundle
         run: python -m pytest -q -s --basetemp "$RUNNER_TEMP/nmapui-native-pytest" tests/test_macos_bundle_version.py tests/test_native_bundle.py tests/test_macos_build_preflight.py
       - name: Upload native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-shared-scanner-evidence
+          path: ${{ runner.temp }}/nmapui-shared-engine-ui
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload native failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -159,6 +167,5 @@ jobs:
           path: |
             ${{ runner.temp }}/nmapui-native-logs
             ${{ runner.temp }}/nmapui-native-pytest/test_real_native_bundle_*/artifacts
-            ${{ runner.temp }}/nmapui-shared-engine-ui
             .pytest_cache
           if-no-files-found: ignore
