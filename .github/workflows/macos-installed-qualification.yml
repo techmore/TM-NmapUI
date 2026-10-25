@@ -32,8 +32,8 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 80
     env:
-      # First attempt refused /usr/local/bin. Collect evidence before any repair.
-      QUALIFICATION_PHASE: inventory
+      # Exact two-directory preparation reviewed against inventory40245362133.
+      QUALIFICATION_PHASE: lifecycle
       QUALIFIED_SOURCE: ${{ inputs.source_sha || '0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9' }}
     steps:
       - uses: actions/checkout@v5
@@ -59,7 +59,7 @@ jobs:
           /usr/bin/python3 harness/scripts/ci/macos_installed_qualification.py
           --inventory-output "$GITHUB_WORKSPACE/diagnostics/macos-directory-inventory.json"
       - name: Provision protected tools and qualify the actual system LaunchDaemon
-        if: env.QUALIFICATION_PHASE == 'lifecycle' 
+        if: env.QUALIFICATION_PHASE == 'lifecycle'
         shell: bash
         run: |
           set -euo pipefail

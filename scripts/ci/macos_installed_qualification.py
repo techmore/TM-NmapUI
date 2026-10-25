@@ -79,6 +79,7 @@ def inventory_entry(path):
         return entry
     details = path.lstat()
     entry.update(uid=details.st_uid, gid=details.st_gid, mode=oct(stat.S_IMODE(details.st_mode)),
+                 device=details.st_dev, inode=details.st_ino,
                  kind='symlink' if path.is_symlink() else 'directory' if path.is_dir() else 'file')
     if path.is_symlink():
         entry['link_target'] = os.readlink(path)
@@ -177,16 +178,89 @@ def assert_initial_install_failure_restored():
     receipt('initial-install-failure-restored', {'loaded_service': False, 'active_artifacts': False})
 
 
-def preflight(source):
+def require_clean_targets():
     require_absent([ROOT, INSTALL, PLIST, WRAPPER, HELPER, SUDOERS, DATA, LOGS, ASSETS, *TOOL_LINKS])
     require_launchd_absent()
-    for path in [ROOT, INSTALL, PLIST, WRAPPER, HELPER, SUDOERS, DATA, LOGS, ASSETS, *TOOL_LINKS]:
-        protected_parent(path)
-    actual = capture(['/usr/bin/git', '-C', source, 'rev-parse', 'HEAD']).strip()
+
+
+def verify_source(source):
+    # The checkout is runner-owned. Authorize this exact read-only repository
+    # invocation rather than changing root's global safe.directory policy.
+    git = ['/usr/bin/git', '-c', 'safe.directory=' + str(source), '-c', 'core.fsmonitor=false', '-C', source]
+    actual = capture([*git, 'rev-parse', 'HEAD']).strip()
     if actual != os.environ['NMAPUI_QUALIFIED_SOURCE']:
         raise RuntimeError('Source checkout does not match the immutable qualification pin')
-    if capture(['/usr/bin/git', '-C', source, 'status', '--porcelain']).strip():
+    if capture([*git, 'status', '--porcelain']).strip():
         raise RuntimeError('Runtime source checkout must be clean')
+
+
+def preflight(source):
+    require_clean_targets()
+    for path in [ROOT, INSTALL, PLIST, WRAPPER, HELPER, SUDOERS, DATA, LOGS, ASSETS, *TOOL_LINKS]:
+        protected_parent(path)
+    verify_source(source)
+
+
+SERVICE_PARENT_PREPARATION = ('/usr/local/bin', '/usr/local/share')
+
+
+def validate_preparation_inventory(inventory):
+    entries = {entry['path']: entry for entry in inventory['entries']}
+    for path in ['/usr/local/Homebrew', '/usr/local/Cellar', '/usr/local/opt', '/usr/local/bin/brew',
+                 '/usr/local/lib', '/usr/local/libexec']:
+        if entries[path]['exists']:
+            raise RuntimeError('Hosted layout changed; refusing service-parent preparation: ' + path)
+    for path in SERVICE_PARENT_PREPARATION:
+        entry = entries[path]
+        if any(entry.get(key) != value for key, value in {'exists': True, 'kind': 'directory', 'uid': 501,
+                                                        'gid': 80, 'mode': '0o775'}.items()):
+            raise RuntimeError('Service parent does not match reviewed hosted ownership/type/mode: ' + path)
+        lines = entry.get('flags_acls_xattr_sizes', '').splitlines()
+        fields = lines[0].split() if lines else []
+        if len(lines) != 1 or len(fields) < 5 or fields[0] != 'drwxrwxr-x' or fields[4] != '-' or entry.get('acl_inspection_error'):
+            raise RuntimeError('Unexpected ACL, xattr, flags or unreadable service parent: ' + path)
+        children = inventory['immediate_children'].get(path)
+        if children is None or any(child.get('sha256_unavailable') or child.get('acl_inspection_error') for child in children):
+            raise RuntimeError('Cannot prove unchanged child files before preparation: ' + path)
+
+
+def prepare_service_path_parents(source):
+    require_disposable_host(os.environ, platform.system(), platform.machine(), os.geteuid())
+    require_clean_targets()
+    verify_source(source)
+    protected(Path('/usr/local'))
+    before = directory_inventory()
+    validate_preparation_inventory(before)
+    entries = {entry['path']: entry for entry in before['entries']}
+    # No recursion: only already-reviewed generic service PATH parent inodes.
+    # Their /usr/local parent is protected; O_NOFOLLOW binds metadata changes
+    # to the exact inspected directories, never to children or Homebrew.
+    for name in SERVICE_PARENT_PREPARATION:
+        path = Path(name)
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            details = os.fstat(descriptor)
+            expected = entries[name]
+            if (details.st_dev, details.st_ino, details.st_uid, details.st_gid, stat.S_IMODE(details.st_mode)) != (
+                expected['device'], expected['inode'], 501, 80, 0o775):
+                raise RuntimeError('Service parent changed before protected preparation: ' + name)
+            os.fchown(descriptor, 0, 0)
+            os.fchmod(descriptor, 0o755)
+        finally:
+            os.close(descriptor)
+        protected(path)
+    after = directory_inventory()
+    after_entries = {entry['path']: entry for entry in after['entries']}
+    for name in SERVICE_PARENT_PREPARATION:
+        if any(after_entries[name].get(key) != value for key, value in {'uid': 0, 'gid': 0, 'mode': '0o755'}.items()):
+            raise RuntimeError('Prepared service-parent ownership or mode is incorrect: ' + name)
+        if before['immediate_children'][name] != after['immediate_children'][name]:
+            raise RuntimeError('Service-parent preparation changed existing child metadata or bytes: ' + name)
+    arm_brew = lambda inventory: next(entry for entry in inventory['entries'] if entry['path'] == '/opt/homebrew')
+    if arm_brew(before) != arm_brew(after):
+        raise RuntimeError('Unrelated ARM Homebrew metadata changed during preparation')
+    return {'scope': list(SERVICE_PARENT_PREPARATION), 'recursive': False,
+            'children_unchanged': True, 'arm_homebrew_unchanged': True, 'before': before, 'after': after}
 
 
 def receipt(name, value):
@@ -226,10 +300,12 @@ def load_stager():
 
 
 def provision(source):
+    preparation = prepare_service_path_parents(source)
     preflight(source)
     ROOT.mkdir(mode=0o755)
     (ROOT / 'owner.json').write_text(json.dumps({'run': os.environ['GITHUB_RUN_ID'], 'source': os.environ['NMAPUI_QUALIFIED_SOURCE']}))
     (ROOT / 'owner.json').chmod(0o600)
+    receipt('service-parent-preparation', preparation)
     downloads, builds = ROOT / 'downloads', ROOT / 'build'
     downloads.mkdir(); builds.mkdir()
     manifest = json.loads(MANIFEST.read_text())

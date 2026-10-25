@@ -239,10 +239,10 @@ def test_terminal_callback_does_not_race_ahead_of_results_and_complete_xml():
     assert qualification.api_evidence_ready([{'job_type': 'scan', 'status': 'failed', 'source_job_id': 'owned-source'}], [], [])
 
 
-def test_inventory_phase_cannot_execute_provisioning_even_on_push():
+def test_lifecycle_phase_is_explicit_and_inventory_command_is_read_only():
     workflow = yaml.safe_load((ROOT / '.github/workflows/macos-installed-qualification.yml').read_text())
     job = workflow['jobs']['installed-macos']
-    assert job['env']['QUALIFICATION_PHASE'] == 'inventory'
+    assert job['env']['QUALIFICATION_PHASE'] == 'lifecycle'
     provisioning = next(step for step in job['steps'] if step.get('name', '').startswith('Provision protected'))
     assert provisioning['if'].strip() == "env.QUALIFICATION_PHASE == 'lifecycle'"
     inventory = next(step for step in job['steps'] if step.get('name', '').startswith('Read-only hosted'))
@@ -267,3 +267,100 @@ def test_inventory_output_refuses_local_context_before_writes(monkeypatch, tmp_p
     with pytest.raises(RuntimeError):
         qualification.write_diagnostic_inventory(target)
     assert not target.parent.exists()
+
+
+def preparation_inventory():
+    entries = [{'path': name, 'exists': False} for name in
+               ['/usr/local/Homebrew', '/usr/local/Cellar', '/usr/local/opt', '/usr/local/bin/brew',
+                '/usr/local/lib', '/usr/local/libexec']]
+    entries += [dict(path=name, exists=True, kind='directory', uid=501, gid=80, mode='0o775', device=1, inode=index + 1,
+                     flags_acls_xattr_sizes='drwxrwxr-x 2 runner admin - 64 Oct 25 00:00 ' + name + '\n')
+                for index, name in enumerate(qualification.SERVICE_PARENT_PREPARATION)]
+    entries.append({'path': '/opt/homebrew', 'exists': True, 'uid': 501, 'mode': '0o755'})
+    return {'entries': entries, 'immediate_children': {name: [{'path': name + '/existing', 'uid': 501, 'mode': '0o755', 'sha256': 'unchanged'}]
+                                                     for name in qualification.SERVICE_PARENT_PREPARATION}}
+
+
+@pytest.mark.parametrize('change', ['symlink', 'owner', 'group', 'mode', 'acl', 'flags', 'unreadable', 'intel-brew', 'existing-lib'])
+def test_parent_preparation_refuses_unreviewed_layout_before_any_mutation(change):
+    inventory = preparation_inventory()
+    entry = next(entry for entry in inventory['entries'] if entry['path'] == '/usr/local/bin')
+    if change == 'symlink': entry['kind'] = 'symlink'
+    if change == 'owner': entry['uid'] = 502
+    if change == 'group': entry['gid'] = 20
+    if change == 'mode': entry['mode'] = '0o777'
+    if change == 'acl': entry['flags_acls_xattr_sizes'] += ' 0: user:runner allow write,add_file\n'
+    if change == 'flags': entry['flags_acls_xattr_sizes'] = entry['flags_acls_xattr_sizes'].replace('admin -', 'admin uchg')
+    if change == 'unreadable': entry['acl_inspection_error'] = 'denied'
+    if change == 'intel-brew': next(entry for entry in inventory['entries'] if entry['path'] == '/usr/local/Homebrew')['exists'] = True
+    if change == 'existing-lib': next(entry for entry in inventory['entries'] if entry['path'] == '/usr/local/lib')['exists'] = True
+    with pytest.raises(RuntimeError):
+        qualification.validate_preparation_inventory(inventory)
+
+
+def stub_parent_preparation(monkeypatch, before, after):
+    from types import SimpleNamespace
+    mutations = []
+    monkeypatch.setattr(qualification, 'require_disposable_host', lambda *a: None)
+    monkeypatch.setattr(qualification, 'require_clean_targets', lambda: None)
+    monkeypatch.setattr(qualification, 'verify_source', lambda *a: None)
+    monkeypatch.setattr(qualification, 'protected', lambda *a: None)
+    inventories = iter([before, after])
+    monkeypatch.setattr(qualification, 'directory_inventory', lambda: next(inventories))
+    paths = {}
+    def fake_open(path, flags):
+        assert flags & qualification.os.O_NOFOLLOW and flags & qualification.os.O_DIRECTORY
+        descriptor = len(paths) + 100
+        paths[descriptor] = str(path)
+        return descriptor
+    monkeypatch.setattr(qualification.os, 'open', fake_open)
+    def fake_fstat(descriptor):
+        entry = next(entry for entry in before['entries'] if entry['path'] == paths[descriptor])
+        return SimpleNamespace(st_dev=entry['device'], st_ino=entry['inode'], st_uid=501, st_gid=80, st_mode=0o40775)
+    monkeypatch.setattr(qualification.os, 'fstat', fake_fstat)
+    monkeypatch.setattr(qualification.os, 'fchown', lambda descriptor, uid, gid: mutations.append(('chown', paths[descriptor], uid, gid)))
+    monkeypatch.setattr(qualification.os, 'fchmod', lambda descriptor, mode: mutations.append(('chmod', paths[descriptor], mode)))
+    monkeypatch.setattr(qualification.os, 'close', lambda descriptor: None)
+    return mutations
+
+
+def test_parent_preparation_changes_only_two_directory_inodes_without_touching_children(monkeypatch):
+    import copy
+    before = preparation_inventory(); after = copy.deepcopy(before)
+    for entry in after['entries']:
+        if entry['path'] in qualification.SERVICE_PARENT_PREPARATION:
+            entry.update(uid=0, gid=0, mode='0o755')
+    mutations = stub_parent_preparation(monkeypatch, before, after)
+    receipt = qualification.prepare_service_path_parents(Path('/unused'))
+    assert mutations == [('chown', '/usr/local/bin', 0, 0), ('chmod', '/usr/local/bin', 0o755),
+                         ('chown', '/usr/local/share', 0, 0), ('chmod', '/usr/local/share', 0o755)]
+    assert receipt['children_unchanged'] and receipt['arm_homebrew_unchanged'] and not receipt['recursive']
+
+
+@pytest.mark.parametrize('changed', ['child', 'arm-homebrew'])
+def test_parent_preparation_cannot_claim_unchanged_children_or_unrelated_homebrew(monkeypatch, changed):
+    import copy
+    before = preparation_inventory(); after = copy.deepcopy(before)
+    for entry in after['entries']:
+        if entry['path'] in qualification.SERVICE_PARENT_PREPARATION: entry.update(uid=0, gid=0, mode='0o755')
+    if changed == 'child': after['immediate_children']['/usr/local/bin'][0]['sha256'] = 'changed'
+    else: next(entry for entry in after['entries'] if entry['path'] == '/opt/homebrew')['uid'] = 0
+    stub_parent_preparation(monkeypatch, before, after)
+    with pytest.raises(RuntimeError, match='changed'):
+        qualification.prepare_service_path_parents(Path('/unused'))
+
+
+def test_source_git_authorization_is_exact_read_only_and_not_global(monkeypatch):
+    monkeypatch.setenv('NMAPUI_QUALIFIED_SOURCE', 'a' * 40)
+    calls = []
+    results = iter(['a' * 40 + '\n', ''])
+    def capture(arguments):
+        calls.append(arguments)
+        return next(results)
+    monkeypatch.setattr(qualification, 'capture', capture)
+    qualification.verify_source(Path('/exact/checkout'))
+    for arguments in calls:
+        assert arguments[:5] == ['/usr/bin/git', '-c', 'safe.directory=/exact/checkout', '-c', 'core.fsmonitor=false']
+        assert '--global' not in arguments
+    assert calls[0][-2:] == ['rev-parse', 'HEAD']
+    assert calls[1][-2:] == ['status', '--porcelain']

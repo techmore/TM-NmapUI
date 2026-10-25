@@ -7,12 +7,22 @@ commands on a developer's Mac. `--plan` and the unit tests are unprivileged and
 do not execute those operations.
 
 The first hosted attempt (`40245175016`) refused `/usr/local/bin` before any
-provisioning write. The current hardcoded workflow phase is **inventory**:
-the lifecycle/provisioning step is provably skipped. A read-only diagnostic
+provisioning write. The diagnostic-only phase completed with the provisioning step skipped. The
+current hardcoded phase is **lifecycle**, enabled after review of that evidence
+and the bounded two-directory preparation below. A read-only diagnostic
 records exact ancestor owner/mode/flags/ACLs and immediate child metadata/hashes
 in the workflow workspace. It performs no sudo, build, install, chown, chmod,
-or service action. Evidence and a narrowly scoped preparation proposal must be
-reviewed before a future commit can enable lifecycle qualification.
+or service action. Inventory run `40245362133` completed with provisioning skipped. It found only
+`/usr/local/bin` and `/usr/local/share` unprotected: runner UID 501/admin GID 80,
+0775, ordinary directories with no ACL/xattr/flags. The implemented preparation
+accepts exactly that observed shape, with no Intel Homebrew locations present,
+and changes only those two directory inodes to root:wheel 0755 through bound
+`O_NOFOLLOW` descriptors. Before/after receipts must prove all immediate child
+bytes, owners, modes and symlinks unchanged, and `/opt/homebrew` unchanged.
+All production validators still run unchanged after that preparation. The
+concrete implementation and stubbed tests were reviewed before enabling the
+next disposable lifecycle attempt. No installed gate is claimed until its
+actual receipts pass.
 
 The workflow is restricted to the named repository and branch; it never runs
 for PR events. Pushing that reviewed branch explicitly starts qualification.
@@ -24,9 +34,10 @@ immutable commits. No runtime source or installer is patched to accept tests.
 Before the first write, the harness refuses any existing NmapUI system label,
 managed release/state/log/assets, plist, wrapper, helper, sudoers entry,
 qualification prefix, or planned tool symlink. Uninspectable launchd status
-fails closed. Existing ancestors must already be root-owned and non-writable
-by other users; the harness does not take over a Homebrew prefix or alter an
-unrelated toolchain. A port is allocated on loopback and checked again before
+fails closed. Other existing ancestors must already be root-owned and non-writable
+by other users. The only preparation exception is the two generic directory
+inodes described above; the harness does not take over a Homebrew prefix or
+alter any existing child toolchain file. A port is allocated on loopback and checked again before
 configuration and by the production installer.
 
 Pinned upstream sources and SHA256 provenance are in
