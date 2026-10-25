@@ -145,3 +145,18 @@ def test_effective_scan_rules_prefer_matching_target_profile():
         "excluded_targets": ["192.168.1.50"],
         "max_scan_minutes": 120,
     }
+
+
+
+def test_readiness_allows_disabled_topology_but_requires_runtime_and_dependencies():
+    from nmapui.health import build_readiness_payload
+    state = {"startup_complete": True, "dependencies_ok": True, "traceroute_initialized": False}
+    def readiness(startup_state=state, alive=True):
+        return build_readiness_payload(startup_state=startup_state, app_version="test", default_interface="lo0",
+                                       auto_scan_thread_alive=alive, tool_versions={})
+    payload, status = readiness()
+    assert status == 200 and payload["ready"] is True
+    assert payload["startup"]["traceroute_initialized"] is False
+    assert readiness(alive=False)[1] == 503
+    assert readiness({**state, "startup_complete": False})[1] == 503
+    assert readiness({**state, "dependencies_ok": False})[1] == 503

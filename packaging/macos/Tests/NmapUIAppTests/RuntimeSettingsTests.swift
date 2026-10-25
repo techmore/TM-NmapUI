@@ -336,8 +336,7 @@ struct RuntimeSettingsTests {
     }
     @Test("runs a native quick discovery scan through ScanCoordinator")
     func nativeQuickDiscoveryScanProducesHostSummary() async throws {
-        let nmapPath = "/opt/homebrew/bin/nmap"
-        guard FileManager.default.isExecutableFile(atPath: nmapPath) else { return }
+        let nmapPath = try #require(RuntimeToolchain.current().nmapPath, "Native integration tests require nmap")
         let workDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("nmapui-scan-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: workDirectory) }

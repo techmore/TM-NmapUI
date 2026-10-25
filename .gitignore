@@ -34,3 +34,7 @@ work/
 .venv/
 .claude/settings.local.json
 EOF
+
+# Local Flask scheduler configuration and downloaded browser cache
+auto_scan_config.json
+.playwright-browsers/

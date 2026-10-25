@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 import shutil
 import socket
@@ -48,6 +49,7 @@ def test_build_script_output_launches_and_serves_health():
     port = _find_free_port()
     env = os.environ.copy()
     env["NMAPUI_SKIP_OPEN"] = "1"
+    env["NMAPUI_STARTUP_TRACEROUTE"] = "false"
     env["NMAPUI_PORT"] = str(port)
 
     subprocess.run(
@@ -74,6 +76,10 @@ def test_build_script_output_launches_and_serves_health():
         health_body = _wait_for_url(f"http://127.0.0.1:{port}/api/health/live", timeout=90)
         index_body = _wait_for_url(f"http://127.0.0.1:{port}/", timeout=30)
 
+        readiness = json.loads(_wait_for_url(f"http://127.0.0.1:{port}/api/health/ready", timeout=30))
+        assert readiness["ready"] is True
+        assert readiness["auto_scan_thread_alive"] is True
+        assert readiness["startup"]["traceroute_initialized"] is False
         assert "ok" in health_body.lower()
         assert "Dashboard" in index_body
         assert "Reports" in index_body

@@ -136,6 +136,14 @@ else
 fi
 
 echo ""
+# The retained Flask wrapper needs its own reproducible Python runtime.
+ROOT_DIR="$SCRIPT_DIR"
+python3 -m venv "$ROOT_DIR/.venv"
+source "$ROOT_DIR/.venv/bin/activate"
+python -m pip install -r "$ROOT_DIR/requirements.txt"
+PLAYWRIGHT_BROWSERS_PATH="$(pwd)/.playwright-browsers" python -m playwright install chromium
+export PLAYWRIGHT_BROWSERS_PATH="$ROOT_DIR/.playwright-browsers"
+
 echo "[4/5] Installing npm packages..."
 if [ -f "package.json" ]; then
     if command -v npm &> /dev/null; then

@@ -33,7 +33,8 @@ def build_readiness_payload(
     traceroute_initialized = bool(startup_state.get("traceroute_initialized"))
     startup_errors = list(startup_state.get("errors", []))
 
-    ready = startup_complete and traceroute_initialized and (
+    # Public topology is optional on isolated scanner networks.
+    ready = startup_complete and auto_scan_thread_alive and (
         dependency_checks_skipped or dependencies_ok
     )
     status_code = 200 if ready else 503

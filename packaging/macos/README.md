@@ -126,3 +126,24 @@ The menu bar icon includes a `Runtime:` status row plus an `About NmapUI` item a
 - The runtime should write its working data into Application Support, not inside the app bundle.
 - The shell should open the local loopback UI once the runtime is healthy.
 - This directory intentionally starts small so the migration can grow without forcing a rewrite all at once.
+
+The retained Flask wrapper uses the selected local runtime URL (the default
+local loopback URL is `http://127.0.0.1:9000`). Native SwiftUI does not need that
+listener. For Flask runtime-store migration, use
+`scripts/backfill_runtime_store.py --help` before changing stored data.
+
+## Verification and compatibility clients
+
+CI keeps the Flask unit/browser/wrapper jobs and additionally requires the full
+SwiftPM test suite and an optimized native bundle with strict signature/resource
+checks. Tests use temporary data and loopback listeners; they never launch the
+native GUI or install its service. The browser suite uses real Socket.IO clients
+and has no expected-failure masks.
+
+`templates/index.html` uses the compatible Flask API modules. The retained native
+web bridge in root `index.html` loads its transport-specific variants from
+`static/js/native/`; the production SwiftUI controls remain in `Sources/NmapUIApp`.
+The shared Monitoring Hub display lives in `static/js/monitoring_hub.js` for the
+Flask page. Desktop Flask startup skips public traceroute by default; an explicit
+`NMAPUI_STARTUP_TRACEROUTE=true` still opts in. Readiness requires the scanner and
+scheduler, independently of optional public topology discovery.
