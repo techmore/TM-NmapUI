@@ -19,12 +19,21 @@ def get_auth_credentials():
 
 
 def default_credentials_allowed():
-    return os.environ.get("NMAPUI_ALLOW_DEFAULT_CREDENTIALS", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
+    """Acknowledgement applies only to a loopback-bound, trusted local UI."""
+    acknowledged = os.environ.get("NMAPUI_ALLOW_DEFAULT_CREDENTIALS", "").strip().lower() in {
+        "1", "true", "yes", "on",
     }
+    if not acknowledged or not local_ui_trusted():
+        return False
+    bind_host = os.environ.get("NMAPUI_HOST", "127.0.0.1").strip()
+    if bind_host.startswith("[") and bind_host.endswith("]"):
+        bind_host = bind_host[1:-1]
+    if bind_host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(bind_host.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
 
 
 def local_ui_trusted():
@@ -80,9 +89,9 @@ def request_is_local_ui():
 def auth_uses_insecure_defaults():
     username, password = get_auth_credentials()
     return (
-        username == DEFAULT_AUTH_USERNAME
-        and password == DEFAULT_AUTH_PASSWORD
-        and not default_credentials_allowed()
+        not username.strip()
+        or not password.strip()
+        or (password == DEFAULT_AUTH_PASSWORD and not default_credentials_allowed())
     )
 
 
