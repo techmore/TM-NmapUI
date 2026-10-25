@@ -1,5 +1,13 @@
 # Project status — 2026-10-25
 
+## Next release stabilization
+
+Current work is published in [draft PR #254](https://github.com/techmore/TM-NmapUI/pull/254).
+The cross-platform evidence ledger is
+[RELEASE_READINESS_2026-10-25.md](RELEASE_READINESS_2026-10-25.md).
+It tracks web, native macOS, native elementary OS, Drive, Daedalus packaging and
+installed-host gates separately. The next release has not been qualified or tagged.
+
 ## October 25 repository audit
 
 Local `main` was fast-forwarded from `ead49881` to `bec25d94` (22 commits).

@@ -129,6 +129,7 @@ def test_untrusted_session_url_never_receives_file_or_bearer_token(artifact, url
     Response(308, headers={"Range": "bytes=0-7"}),
     Response(302, headers={"Location": "https://attacker.test"}),
     Response(403, payload={"error": "permission denied"}),
+    Response(403, payload={"error": {"errors": None}}),
     Response(404),
 ])
 def test_invalid_completion_and_permanent_errors_fail_without_restart(artifact, response):
@@ -180,3 +181,17 @@ def test_growing_report_never_sends_bytes_beyond_announced_size(artifact):
     with pytest.raises(RuntimeError, match="File changed"):
         run_upload(artifact, transport)
     assert not transport.puts
+
+
+def test_early_success_cannot_confirm_an_unsent_file_tail(artifact, monkeypatch):
+    monkeypatch.setattr(uploads, "CHUNK_BYTES", 4)
+    transport = Transport([Response(payload={"id": "incomplete"})])
+    with pytest.raises(RuntimeError, match="before the entire file"):
+        run_upload(artifact, transport)
+
+
+def test_probe_cannot_confirm_completion_after_only_a_nonfinal_chunk(artifact, monkeypatch):
+    monkeypatch.setattr(uploads, "CHUNK_BYTES", 4)
+    transport = Transport([OSError("response lost"), Response(payload={"id": "incomplete"})])
+    with pytest.raises(RuntimeError, match="before the entire file"):
+        run_upload(artifact, transport)

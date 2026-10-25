@@ -73,6 +73,7 @@ jobs:
       - name: Run browser regression suite
         run: >-
           pytest -q tests/test_browser_regressions.py
+          tests/test_history_modal_state.py::test_archive_failed_refresh_keeps_saved_cards_and_retry_recovers_in_chromium
           tests/test_reporting_modules.py::test_pdf_renderer_blocks_external_scripts
           tests/test_reporting_modules.py::test_representative_report_fixture_renders_shared_landmarks_for_web_and_pdf
       - name: Upload browser regression diagnostics

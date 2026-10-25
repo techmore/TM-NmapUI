@@ -24,7 +24,7 @@ def _retryable(response):
     if response.status_code == 429 or 500 <= response.status_code <= 599:
         return True
     error = _payload(response).get("error")
-    reasons = error.get("errors", []) if isinstance(error, dict) else []
+    reasons = (error.get("errors") or []) if isinstance(error, dict) else []
     return response.status_code == 403 and any(
         isinstance(item, dict) and item.get("reason") in {"rateLimitExceeded", "userRateLimitExceeded"}
         for item in reasons
@@ -103,13 +103,15 @@ def upload_file(*, file_path, name, folder_id, requests_module, get_access_token
         if response.status_code not in (200, 201):
             raise RuntimeError(f"Google Drive could not start upload for {name} (HTTP {response.status_code}).")
         session = _session_url(response.headers.get("Location", ""))
-        offset, failures, probing = 0, 0, False
+        offset, failures, probing, sent_through = 0, 0, False, 0
         while True:
             verify_source()
             source.seek(offset)
             chunk = b"" if probing else source.read(min(CHUNK_BYTES, size - offset))
             if not probing and not chunk and offset < size:
                 raise RuntimeError(f"File changed during Google Drive upload: {name}.")
+            if not probing:
+                sent_through = max(sent_through, offset + len(chunk))
             content_range = f"bytes */{size}" if probing or not size else f"bytes {offset}-{offset + len(chunk) - 1}/{size}"
             try:
                 response = send(
@@ -124,6 +126,8 @@ def upload_file(*, file_path, name, folder_id, requests_module, get_access_token
                 continue
             if response.status_code in (200, 201):
                 verify_source()
+                if sent_through < size:
+                    raise RuntimeError("Google Drive confirmed completion before the entire file was sent.")
                 result = _payload(response)
                 if not isinstance(result.get("id"), str) or not result["id"]:
                     raise RuntimeError("Google Drive did not confirm the uploaded file ID.")
