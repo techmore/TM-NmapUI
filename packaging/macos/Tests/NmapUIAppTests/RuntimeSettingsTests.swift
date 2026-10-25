@@ -2144,7 +2144,7 @@ struct RuntimeSettingsTests {
 
     @MainActor
     @Test("dispatches Swift-owned client requests")
-    func dispatchesSwiftOwnedClientRequests() throws {
+    func dispatchesSwiftOwnedClientRequests() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         defer {
@@ -2180,7 +2180,16 @@ struct RuntimeSettingsTests {
         sessionState.emitHistoryData()
         sessionState.emitReportsData()
 
-        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState)
+        var serviceCalls: [String] = []
+        let services = RuntimeAutoScanServices(
+            ensureHelperReady: { serviceCalls.append("authorize") },
+            sync: { enabled, recurrence, time in
+                serviceCalls.append("schedule:\(enabled):\(recurrence):\(time)")
+                return .success(())
+            },
+            presentFailure: { _ in Issue.record("Unexpected authorization failure") }
+        )
+        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState, autoScanServices: services)
 
         let initial = dispatcher.dispatch(
             RuntimeClientRequestEnvelope(event: .getInitialData),
@@ -2238,6 +2247,11 @@ struct RuntimeSettingsTests {
         } else {
             Issue.record("Expected autoScanConfig payload")
         }
+
+        for _ in 0..<20 where serviceCalls.count < 2 { await Task.yield() }
+        #expect(serviceCalls == ["authorize", "schedule:true:weekly:02:30"])
+        _ = dispatcher.dispatch(RuntimeClientRequestEnvelope(event: .disableAutoScan), dataDirectory: tempDirectory, version: "1.0.0")
+        #expect(serviceCalls.last == "schedule:false:weekly:02:30")
 
         let prefix = dispatcher.dispatch(
             RuntimeClientRequestEnvelope(

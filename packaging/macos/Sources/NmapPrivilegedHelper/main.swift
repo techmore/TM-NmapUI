@@ -1,7 +1,6 @@
 import Darwin
 import Foundation
 import Security
-import CryptoKit
 import RuntimeContracts
 
 /// Root-only helper that runs allowlisted nmap invocations for NmapUI.
@@ -149,20 +148,14 @@ private func runDaemon() {
 /// #237: record the installed helper's protocol version + binary hash so the app can
 /// verify compatibility without reinstalling (which would trigger an admin prompt).
 private func writeInstallStamp() {
-    let fm = FileManager.default
-    let dir = "/Library/Application Support/NmapUI"
-    let stampPath = dir + "/helper-stamp.json"
-    guard let binary = fm.contents(atPath: CommandLine.arguments[0]),
-          let hashData = SHA256.hash(data: binary) as? [UInt8] else { return }
-    let hash = hashData.map { String(format: "%02x", $0) }.joined()
-    let stamp: [String: Any] = [
-        "protocolVersion": HelperConstants.protocolVersion,
-        "binarySHA256": hash,
-        "installedAt": ISO8601DateFormatter().string(from: Date()),
-    ]
-    guard let data = try? JSONSerialization.data(withJSONObject: stamp, options: [.prettyPrinted]) else { return }
-    try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-    fm.createFile(atPath: stampPath, contents: data, attributes: [.posixPermissions: 0o644])
+    do {
+        try writeHelperInstallStamp(
+            binaryURL: URL(fileURLWithPath: CommandLine.arguments[0]),
+            stampURL: URL(fileURLWithPath: "/Library/Application Support/NmapUI/helper-stamp.json")
+        )
+    } catch {
+        fputs("Could not write helper install stamp: \(error.localizedDescription)\n", stderr)
+    }
 }
 
 private final class XPCHelperService: NSObject, NmapPrivilegedServiceProtocol {
