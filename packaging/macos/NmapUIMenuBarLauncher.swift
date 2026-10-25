@@ -1,6 +1,19 @@
 import Cocoa
 import Darwin
 
+/// Build the production status request without starting the app or reading OS credentials.
+func makeRuntimeStatusRequest(url: URL, environment: [String: String]) -> URLRequest {
+    var request = URLRequest(url: url)
+    request.timeoutInterval = 1.5
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    if let username = environment["NMAPUI_USERNAME"], !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+       let password = environment["NMAPUI_PASSWORD"], !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let credentials = Data("\(username):\(password)".utf8).base64EncodedString()
+        request.setValue("Basic \(credentials)", forHTTPHeaderField: "Authorization")
+    }
+    return request
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var runtimePort = 9000
     var statusItem: NSStatusItem!
@@ -331,8 +344,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        var request = URLRequest(url: runtimeStatusURL)
-        request.timeoutInterval = 1.5
+        let request = makeRuntimeStatusRequest(url: runtimeStatusURL, environment: ProcessInfo.processInfo.environment)
 
         URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
@@ -347,7 +359,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let data = data,
                     let runtimeStatus = try? JSONDecoder().decode(RuntimeStatus.self, from: data)
                 else {
-                    self.updateStatusIcon(state: .error, detail: "Unable to read runtime status")
+                    let statusCode = (response as? HTTPURLResponse)?.statusCode
+                    self.updateStatusIcon(state: .error, detail: statusCode == 401 ? "Scanner status requires credentials; open NmapUI" : "Unable to read runtime status")
                     return
                 }
 
