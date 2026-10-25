@@ -96,7 +96,7 @@ public struct SharedControlState: Equatable, Sendable {
         if synchronized.count == SharedJobKind.allCases.count { connection = .ready }
         if job.jobType == .scan, let id = job.sourceJobID, id != submittedAfterSourceID { startOutcome = .none }
     }
-    public mutating func receiveError(_ message: String) { lastError = String(message.prefix(500)); if startOutcome == .submitting { startOutcome = .none } }
+    public mutating func receiveError(_ message: String) { lastError = String(message.prefix(500)); if startOutcome == .submitting { startOutcome = .uncertain } }
     public func requireReady() throws {
         guard connection != .disconnected && connection != .authenticating else { throw SharedControlError.disconnected }
         guard connection == .ready else { throw SharedControlError.synchronizing }

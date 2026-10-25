@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @preconcurrency import SocketIO
@@ -17,7 +18,7 @@ struct SharedEngineSocketTests {
     @Test("strict canonical Gunicorn Socket.IO: identity, pause, reconnect, cancellation, errors",
           .enabled(if: ProcessInfo.processInfo.environment["NMAPUI_SHARED_ENGINE_SOURCE"] != nil))
     func canonicalControls() async throws {
-        let fixture = try ControlFixture(); defer { fixture.stop() }
+        let fixture = try await ControlFixture(); defer { fixture.stop() }
         let client = SharedEngineSocketClient(endpoint: fixture.endpoint, username: "fixture-user", password: "fixture-contraseña-🔐")
         defer { client.disconnect() }
         let cookie = try #require(HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "nmapui-decoy-" + UUID().uuidString,
@@ -62,7 +63,11 @@ struct SharedEngineSocketTests {
             try client.startScan(target: "not valid ;; target")
             try await wait("canonical target validation error") { client.state.lastError?.localizedCaseInsensitiveContains("invalid target") == true }
             #expect(fixture.invocations.count == 1)
-            #expect(client.state.startOutcome == .none)
+            #expect(client.state.startOutcome == .uncertain)
+            #expect(throws: SharedControlError.busy) { try client.startScan(target: "127.0.0.1") }
+            // Unscoped error events cannot prove which mutation failed. Verify
+            // current status, then explicitly acknowledge before a fresh start.
+            try client.acknowledgeUncertainStart()
             // Reconnecting before a second run also demonstrates no mutation replay.
             try await client.reconnect(); try await wait("second reconnect") { client.state.connection == .ready }
             try client.startScan(target: "127.0.0.1")
@@ -100,9 +105,31 @@ struct SharedEngineSocketTests {
 
 
 
+    @Test("an interpreter that exits before readiness produces bounded failure instead of a pipe deadlock")
+    func earlyFixtureFailure() async throws {
+        let started = Date()
+        await #expect(throws: ControlFixtureFailure.self) { _ = try await ControlFixture(policy: "challenge", interpreter: "/usr/bin/false") }
+        #expect(Date().timeIntervalSince(started) < 2)
+    }
+
+    @Test("owned fixture readiness preserves MainActor responsiveness")
+    func readinessHeartbeat() async throws {
+        var heartbeat = false
+        let beat = Task { @MainActor in
+            try await Task.sleep(for: .milliseconds(50))
+            heartbeat = true
+        }
+        async let pending = ControlFixture(policy: "delayed-ready")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(heartbeat)
+        let fixture = try await pending
+        fixture.stop()
+        try await beat.value
+    }
+
     @Test("vendored Engine.IO copies private session configuration on every reset")
     func engineSessionReset() async throws {
-        let fixture = try ControlFixture(policy: "socket-redirect"); defer { fixture.stop() }
+        let fixture = try await ControlFixture(policy: "socket-redirect"); defer { fixture.stop() }
         let configuration = SharedEngineSocketClient.privateSessionConfiguration()
         let manager = SocketManager(socketURL: fixture.endpoint.url, config: [.forcePolling(true), .reconnects(false),
             .log(false), .handleQueue(.main), .sessionConfiguration(configuration)])
@@ -129,7 +156,7 @@ struct SharedEngineSocketTests {
     @Test("token and Engine.IO redirects and authentication challenges never use ambient credentials",
           arguments: ["token-redirect", "socket-redirect", "challenge"])
     func privateSessionPolicy(mode: String) async throws {
-        let fixture = try ControlFixture(policy: mode); defer { fixture.stop() }
+        let fixture = try await ControlFixture(policy: mode); defer { fixture.stop() }
         let client = SharedEngineSocketClient(endpoint: fixture.endpoint, username: "private-user", password: "private-password")
         defer { client.disconnect() }
         if mode == "socket-redirect" {
@@ -148,7 +175,7 @@ struct SharedEngineSocketTests {
     @Test("a valid CSRF token alone cannot authenticate a real Socket.IO connection",
           .enabled(if: ProcessInfo.processInfo.environment["NMAPUI_SHARED_ENGINE_SOURCE"] != nil))
     func tokenIsNotCredential() async throws {
-        let fixture = try ControlFixture(); defer { fixture.stop() }
+        let fixture = try await ControlFixture(); defer { fixture.stop() }
         let config = URLSessionConfiguration.ephemeral; config.urlCredentialStorage = nil; config.httpCookieStorage = nil
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
         var request = URLRequest(url: fixture.endpoint.api("/api/socket-token"))
@@ -176,36 +203,74 @@ struct SharedEngineSocketTests {
     }
 }
 
+@MainActor
 private final class ControlFixture {
     let process: Process
     let endpoint: SharedEngineEndpoint
     let root: URL
     let diagnostics: URL
-    init(policy: String? = nil) throws {
+    init(policy: String? = nil, interpreter: String? = nil) async throws {
         process = Process()
         let ready = Pipe()
         diagnostics = FileManager.default.temporaryDirectory.appendingPathComponent("nmapui-control-fixture-\(UUID()).log")
         FileManager.default.createFile(atPath: diagnostics.path, contents: nil)
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [ProcessInfo.processInfo.environment["NMAPUI_SHARED_ENGINE_CANONICAL_PYTHON"] ?? "python3",
+        process.arguments = [interpreter ?? ProcessInfo.processInfo.environment["NMAPUI_SHARED_ENGINE_CANONICAL_PYTHON"] ?? "python3",
             URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(policy == nil ? "Fixtures/canonical_control_server.py" : "Fixtures/control_policy_server.py").path]
         process.environment = ProcessInfo.processInfo.environment
         process.environment?["NMAPUI_CONTROL_POLICY"] = policy
         process.standardOutput = ready; process.standardError = try FileHandle(forWritingTo: diagnostics)
         try process.run()
+        try ready.fileHandleForWriting.close()
         // The Python launcher has its own bounded readiness deadline and
         // prints diagnostics on failure; EOF also resolves this read.
-        let data = ready.fileHandleForReading.availableData
+        let data: Data
+        do { data = try await Self.readiness(from: ready.fileHandleForReading) }
+        catch {
+            if process.isRunning { kill(process.processIdentifier, SIGTERM) }
+            throw error
+        }
         struct Ready: Decodable { let port: Int; let root: String }
         do {
             let info = try JSONDecoder().decode(Ready.self, from: data)
             endpoint = try SharedEngineEndpoint("http://127.0.0.1:\(info.port)")
             root = URL(fileURLWithPath: info.root)
         } catch {
-            kill(process.processIdentifier, SIGTERM)
-            throw error
+            if process.isRunning { kill(process.processIdentifier, SIGTERM) }
+            let details = (try? String(contentsOf: diagnostics, encoding: .utf8)) ?? ""
+            throw ControlFixtureFailure(details: "Fixture exited before readiness. " + String(details.suffix(12_000)))
         }
     }
+    private static func readiness(from handle: FileHandle) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            // poll/read run off both MainActor and Swift's cooperative pool.
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let deadline = Date().addingTimeInterval(25)
+                    var result = Data()
+                    while Date() < deadline {
+                        var descriptor = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+                        let remaining = Int32(max(1, deadline.timeIntervalSinceNow * 1000))
+                        let available = poll(&descriptor, 1, remaining)
+                        if available < 0, errno == EINTR { continue }
+                        guard available > 0 else { throw ControlFixtureFailure(details: "Owned fixture readiness deadline exceeded") }
+                        var buffer = [UInt8](repeating: 0, count: 4096)
+                        let count = read(handle.fileDescriptor, &buffer, buffer.count)
+                        if count < 0, errno == EINTR { continue }
+                        guard count >= 0 else { throw ControlFixtureFailure(details: "Owned fixture readiness pipe failed") }
+                        if count == 0 { continuation.resume(returning: result); return }
+                        result.append(contentsOf: buffer.prefix(count))
+                        guard result.count <= 65_536 else { throw ControlFixtureFailure(details: "Owned fixture readiness output exceeded limit") }
+                        if let newline = result.firstIndex(of: 10) {
+                            continuation.resume(returning: result.prefix(through: newline)); return
+                        }
+                    }
+                    throw ControlFixtureFailure(details: "Owned fixture readiness deadline exceeded")
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
     var invocations: [[String: Any]] {
         guard let data = try? Data(contentsOf: root.appendingPathComponent("invocations.jsonl")) else { return [] }
         return data.split(separator: 10).compactMap { try? JSONSerialization.jsonObject(with: Data($0)) as? [String: Any] }
@@ -244,4 +309,9 @@ private final class RawControlProbe {
         socket.connect(withPayload: ["token": token])
     }
     func close() { socket.removeAllHandlers(); socket.disconnect() }
+}
+
+private struct ControlFixtureFailure: Error, CustomStringConvertible, Sendable {
+    let details: String
+    var description: String { details }
 }

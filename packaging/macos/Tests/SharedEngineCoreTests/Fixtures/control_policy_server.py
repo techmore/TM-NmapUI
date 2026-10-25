@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import signal
 import tempfile
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 root = tempfile.TemporaryDirectory(prefix="nmapui-control-policy-")
@@ -38,6 +39,7 @@ class Handler(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 def stop(*_): raise SystemExit(0)
 signal.signal(signal.SIGTERM, stop)
+if mode == "delayed-ready": time.sleep(.3)
 print(json.dumps({"port": server.server_port, "root": root.name}), flush=True)
 try: server.serve_forever()
 finally:

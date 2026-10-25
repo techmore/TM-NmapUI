@@ -66,6 +66,15 @@ struct SharedEngineControlStateTests {
         state.receive(try job("running", id: UUID()))
         #expect(state.startOutcome == .none)
     }
+    @Test func unscopedControlErrorCannotResolvePendingStart() throws {
+        var state = try ready(); state.submittedStart()
+        state.receiveError("This scan is no longer active; refresh its status")
+        state.receive(try job("idle")); state.receive(try job("idle", kind: "report"))
+        #expect(state.startOutcome == .uncertain)
+        #expect(throws: SharedControlError.busy) { try state.validateStart(target: "127.0.0.1") }
+        state.receive(try job("running", id: UUID()))
+        #expect(state.startOutcome == .none)
+    }
     @Test func disconnectedSnapshotsIgnoredAndErrorsBounded() throws {
         var state = SharedControlState(); state.receive(try job("running", id: UUID()))
         #expect(state.jobs.isEmpty)
