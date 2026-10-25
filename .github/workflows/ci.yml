@@ -8,6 +8,12 @@ on:
       - "codex/**"
   pull_request:
 
+# Push and PR events for one source branch share a key; only the newest
+# candidate needs these full packaging and installed-service checks.
+concurrency:
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   unit-tests:
     name: Unit And Contract Tests
