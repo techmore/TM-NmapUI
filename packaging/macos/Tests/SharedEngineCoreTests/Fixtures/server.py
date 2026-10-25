@@ -109,5 +109,7 @@ class QuietHandler(WSGIRequestHandler):
 
 
 server = make_server("127.0.0.1", 0, app, request_handler=QuietHandler, threaded=True)
+if mode == "delayed-ready":
+    time.sleep(0.3)
 print(json.dumps({"port": server.server_port}), flush=True)
 server.serve_forever()
