@@ -32,6 +32,8 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 80
     env:
+      # First attempt refused /usr/local/bin. Collect evidence before any repair.
+      QUALIFICATION_PHASE: inventory
       QUALIFIED_SOURCE: ${{ inputs.source_sha || '0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9' }}
     steps:
       - uses: actions/checkout@v5
@@ -47,7 +49,17 @@ jobs:
           ref: ${{ env.QUALIFIED_SOURCE }}
           path: runtime
           persist-credentials: false
+      - name: Read-only hosted ownership, ACL and child-file inventory
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          NMAPUI_DISPOSABLE_MAC_QUALIFICATION: "1"
+          NMAPUI_QUALIFIED_SOURCE: ${{ env.QUALIFIED_SOURCE }}
+        run: >-
+          /usr/bin/python3 harness/scripts/ci/macos_installed_qualification.py
+          --inventory-output "$GITHUB_WORKSPACE/diagnostics/macos-directory-inventory.json"
       - name: Provision protected tools and qualify the actual system LaunchDaemon
+        if: env.QUALIFICATION_PHASE == 'lifecycle' 
         shell: bash
         run: |
           set -euo pipefail
@@ -65,6 +77,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: disposable-macos-installed-${{ env.QUALIFIED_SOURCE }}
-          path: /Library/NmapUIQualification/receipts
+          path: |
+            /Library/NmapUIQualification/receipts
+            diagnostics/macos-directory-inventory.json
           if-no-files-found: warn
           retention-days: 14

@@ -6,6 +6,14 @@ local override. Do not run its provisioning, builds, installer, or privileged
 commands on a developer's Mac. `--plan` and the unit tests are unprivileged and
 do not execute those operations.
 
+The first hosted attempt (`40245175016`) refused `/usr/local/bin` before any
+provisioning write. The current hardcoded workflow phase is **inventory**:
+the lifecycle/provisioning step is provably skipped. A read-only diagnostic
+records exact ancestor owner/mode/flags/ACLs and immediate child metadata/hashes
+in the workflow workspace. It performs no sudo, build, install, chown, chmod,
+or service action. Evidence and a narrowly scoped preparation proposal must be
+reviewed before a future commit can enable lifecycle qualification.
+
 The workflow is restricted to the named repository and branch; it never runs
 for PR events. Pushing that reviewed branch explicitly starts qualification.
 A later manual dispatch also requires the disposable-install confirmation.

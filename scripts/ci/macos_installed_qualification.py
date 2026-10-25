@@ -46,14 +46,14 @@ BRANCH = 'refs/heads/codex/macos-installed-qualification-2026-10-25'
 MANIFEST = Path(__file__).with_name('macos_qualification_sources.json')
 
 
-def require_disposable_host(environment, system, machine, uid):
+def require_disposable_context(environment, system, machine):
     required = {
         'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'github-hosted',
         'RUNNER_OS': 'macOS', 'GITHUB_REPOSITORY': 'techmore/TM-NmapUI',
         'GITHUB_REF': BRANCH, 'NMAPUI_DISPOSABLE_MAC_QUALIFICATION': '1',
     }
-    if system != 'Darwin' or machine != 'arm64' or uid != 0:
-        raise RuntimeError('Only a root process in the selected disposable macOS arm64 VM may run this harness')
+    if system != 'Darwin' or machine != 'arm64':
+        raise RuntimeError('Only the selected disposable macOS arm64 VM may run this harness')
     if any(environment.get(key) != value for key, value in required.items()):
         raise RuntimeError('Missing explicit GitHub-hosted disposable qualification guards')
     if environment.get('GITHUB_EVENT_NAME') not in ('push', 'workflow_dispatch'):
@@ -64,6 +64,68 @@ def require_disposable_host(environment, system, machine, uid):
         raise RuntimeError('Missing immutable harness commit identity')
     if not re.fullmatch(r'[0-9a-f]{40}', environment.get('NMAPUI_QUALIFIED_SOURCE', '')):
         raise RuntimeError('Runtime source must be an immutable commit SHA')
+
+
+
+def require_disposable_host(environment, system, machine, uid):
+    if uid != 0:
+        raise RuntimeError('Provisioning requires root in the guarded disposable VM')
+    require_disposable_context(environment, system, machine)
+
+
+def inventory_entry(path):
+    entry = {'path': str(path), 'exists': os.path.lexists(path)}
+    if not entry['exists']:
+        return entry
+    details = path.lstat()
+    entry.update(uid=details.st_uid, gid=details.st_gid, mode=oct(stat.S_IMODE(details.st_mode)),
+                 kind='symlink' if path.is_symlink() else 'directory' if path.is_dir() else 'file')
+    if path.is_symlink():
+        entry['link_target'] = os.readlink(path)
+    elif path.is_file():
+        digest = hashlib.sha256()
+        try:
+            with path.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            entry['sha256'] = digest.hexdigest()
+        except OSError as error:
+            entry['sha256_unavailable'] = type(error).__name__
+    result = subprocess.run(['/bin/ls', '-ldeO@', str(path)], capture_output=True, text=True, timeout=15)
+    entry['flags_acls_xattr_sizes'] = result.stdout
+    if result.returncode:
+        entry['acl_inspection_error'] = result.stderr
+    return entry
+
+
+def directory_inventory():
+    paths = [Path(value) for value in [
+        '/usr/local', '/usr/local/bin', '/usr/local/lib', '/usr/local/libexec', '/usr/local/share',
+        '/usr/local/Homebrew', '/usr/local/Cellar', '/usr/local/opt', '/usr/local/bin/brew', '/opt/homebrew',
+        '/Library', '/Library/Application Support', '/Library/Logs', '/Library/LaunchDaemons',
+        '/etc', '/etc/sudoers.d']]
+    entries = [inventory_entry(path) for path in paths]
+    # These immediate child receipts permit a later approved shallow metadata
+    # preparation to prove that child binaries, symlinks and ownership did not change.
+    children = {}
+    for path in paths[:5]:
+        if path.is_dir() and not path.is_symlink():
+            children[str(path)] = [inventory_entry(child) for child in sorted(path.iterdir())]
+    return {'phase': 'inventory-only', 'qualification_executed': False,
+            'harness_sha': os.environ.get('GITHUB_SHA'),
+            'source_sha': os.environ.get('NMAPUI_QUALIFIED_SOURCE'),
+            'system': platform.system(), 'architecture': platform.machine(),
+            'entries': entries, 'immediate_children': children}
+
+
+def write_diagnostic_inventory(output):
+    require_disposable_context(os.environ, platform.system(), platform.machine())
+    workspace = Path(os.environ['GITHUB_WORKSPACE']).resolve(strict=True)
+    if output != workspace / 'diagnostics/macos-directory-inventory.json':
+        raise RuntimeError('Diagnostic inventory must stay in this workflow workspace')
+    output.parent.mkdir(exist_ok=True)
+    output.write_text(json.dumps(directory_inventory(), indent=2, sort_keys=True) + '\n')
+    print(output.read_text())
 
 
 def run(arguments, **kwargs):
@@ -688,12 +750,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path)
     parser.add_argument('--exercise', action='store_true')
+    parser.add_argument('--inventory-output', type=Path, help='Read-only hosted directory/ACL inventory; no provisioning')
     parser.add_argument('--plan', action='store_true', help='Print fixed plan without platform checks or effects')
     arguments = parser.parse_args()
     if arguments.plan:
         print(json.dumps({'root': str(ROOT), 'label': LABEL, 'branch': BRANCH,
                           'sources': json.loads(MANIFEST.read_text()),
                           'effects': 'ONLY guarded disposable GHA macOS VM; no local execution supported'}, indent=2))
+        return
+    if arguments.inventory_output:
+        write_diagnostic_inventory(arguments.inventory_output)
         return
     require_disposable_host(os.environ, platform.system(), platform.machine(), os.geteuid())
     if arguments.exercise:

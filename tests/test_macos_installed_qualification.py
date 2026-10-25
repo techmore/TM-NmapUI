@@ -237,3 +237,33 @@ def test_terminal_callback_does_not_race_ahead_of_results_and_complete_xml():
     chunks.append({**chunks[0], 'chunk_index': 1})
     assert qualification.api_evidence_ready(jobs, [{'hosts_up': 1}], chunks)
     assert qualification.api_evidence_ready([{'job_type': 'scan', 'status': 'failed', 'source_job_id': 'owned-source'}], [], [])
+
+
+def test_inventory_phase_cannot_execute_provisioning_even_on_push():
+    workflow = yaml.safe_load((ROOT / '.github/workflows/macos-installed-qualification.yml').read_text())
+    job = workflow['jobs']['installed-macos']
+    assert job['env']['QUALIFICATION_PHASE'] == 'inventory'
+    provisioning = next(step for step in job['steps'] if step.get('name', '').startswith('Provision protected'))
+    assert provisioning['if'].strip() == "env.QUALIFICATION_PHASE == 'lifecycle'"
+    inventory = next(step for step in job['steps'] if step.get('name', '').startswith('Read-only hosted'))
+    assert 'sudo' not in inventory['run']
+    assert '--inventory-output' in inventory['run']
+
+
+def test_inventory_main_cannot_reach_provisioning(monkeypatch, tmp_path):
+    output = tmp_path / 'inventory.json'
+    monkeypatch.setattr(sys, 'argv', [str(SCRIPT), '--inventory-output', str(output)])
+    seen = []
+    monkeypatch.setattr(qualification, 'write_diagnostic_inventory', lambda path: seen.append(path))
+    monkeypatch.setattr(qualification, 'provision', lambda *a: pytest.fail('inventory must never provision'))
+    monkeypatch.setattr(qualification, 'exercise', lambda *a: pytest.fail('inventory must never exercise'))
+    qualification.main()
+    assert seen == [output]
+
+
+def test_inventory_output_refuses_local_context_before_writes(monkeypatch, tmp_path):
+    monkeypatch.setenv('NMAPUI_DISPOSABLE_MAC_QUALIFICATION', '')
+    target = tmp_path / 'must-not-exist/inventory.json'
+    with pytest.raises(RuntimeError):
+        qualification.write_diagnostic_inventory(target)
+    assert not target.parent.exists()
