@@ -408,6 +408,9 @@ export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright-browsers"
 # a separate production WSGI stack, so allow Werkzeug explicitly for this
 # packaged desktop entrypoint.
 export NMAPUI_ALLOW_UNSAFE_WERKZEUG=true
+# Optional public topology discovery must not delay the desktop listener.
+# Operators can explicitly opt back in without rebuilding the bundle.
+export NMAPUI_STARTUP_TRACEROUTE="${NMAPUI_STARTUP_TRACEROUTE:-false}"
 
 # Loopback access is trusted by default. Reuse credentials from the LaunchDaemon
 # installer for optional remote access; without credentials, remote requests

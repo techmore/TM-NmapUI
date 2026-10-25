@@ -45,6 +45,9 @@ installations can supply `NMAPUI_USERNAME` and `NMAPUI_PASSWORD` to the launcher
 Without them, the status reader reports that credentials are needed; opening
 NmapUI still provides the browser sign-in. Browser sessions are not shared with
 the native status reader.
+The packaged desktop entrypoint defaults `NMAPUI_STARTUP_TRACEROUTE=false` so
+public topology discovery cannot block server startup. Set it explicitly to
+`true` to opt in; this does not disable later network fingerprinting by itself.
 Shutdown allows the owned runtime a two-second TERM grace period, then freezes
 its remaining process tree before collecting and killing descendants. PID marker
 files and port listeners never grant ownership of another process.

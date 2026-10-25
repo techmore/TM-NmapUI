@@ -1,4 +1,5 @@
 import os
+import json
 import plistlib
 import runpy
 import base64
@@ -10,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
@@ -26,17 +28,21 @@ def _find_free_port():
         return sock.getsockname()[1]
 
 
-def _wait_for_url(url, *, timeout=60, headers=None):
-    deadline = time.time() + timeout
+def _wait_for_url(url, *, timeout=60, headers=None, process=None):
+    deadline = time.monotonic() + timeout
     last_error = None
 
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            raise AssertionError(f"Packaged process exited with status {process.returncode} while waiting for {url}")
         try:
             with urlopen(Request(url, headers=headers or {}), timeout=5) as response:
                 return response.read().decode("utf-8", errors="replace")
+        except HTTPError as error:
+            last_error = f"{error}: {error.read(2048).decode('utf-8', errors='replace')}"
         except Exception as error:  # pragma: no cover - exercised only in smoke mode
             last_error = error
-            time.sleep(1)
+        time.sleep(0.25)
 
     raise AssertionError(f"Timed out waiting for {url}: {last_error}")
 
@@ -53,6 +59,11 @@ def test_build_script_output_launches_and_serves_health(tmp_path):
     port = _find_free_port()
     env = os.environ.copy()
     env["NMAPUI_SKIP_OPEN"] = "1"
+    # Startup/browser smoke must work without public network availability.
+    for flag in ("NMAPUI_STARTUP_TRACEROUTE", "NMAPUI_ENABLE_NETWORK_FINGERPRINT",
+                 "NMAPUI_ENABLE_UPDATE_CHECK", "NMAPUI_ENABLE_VULNERS"):
+        env[flag] = "false"
+    env["NMAPUI_HOST"] = "127.0.0.1"
     env["NMAPUI_PORT"] = str(port)
     env["NMAPUI_APPLICATIONS_DIR"] = str(tmp_path / "Applications")
     env["NMAPUI_DATA_DIR"] = str(tmp_path / "data")
@@ -126,7 +137,20 @@ def test_build_script_output_launches_and_serves_health(tmp_path):
     )
 
     try:
-        health_body = _wait_for_url(f"http://127.0.0.1:{port}/api/health/live", timeout=90)
+        started = time.monotonic()
+        health_body = _wait_for_url(f"http://127.0.0.1:{port}/api/health/live", timeout=90, process=process)
+        readiness = json.loads(_wait_for_url(f"http://127.0.0.1:{port}/api/health/ready", timeout=30, process=process))
+        elapsed = time.monotonic() - started
+        print(f"Packaged runtime reached readiness after {elapsed:.2f}s on loopback port {port}")
+        assert readiness["ready"] is True
+        assert readiness["startup"]["startup_complete"] is True
+        assert readiness["startup"]["dependencies_ok"] is True
+        assert readiness["startup"]["traceroute_initialized"] is False
+        assert readiness["auto_scan_thread_alive"] is True
+        launch_log.flush()
+        startup_log = launch_log_path.read_text(encoding="utf-8", errors="replace")
+        assert "Skipping public traceroute during service startup" in startup_log
+        assert "Running traceroute:" not in startup_log
         index_body = _wait_for_url(
             f"http://127.0.0.1:{port}/", timeout=30,
             headers={"Authorization": f"Basic {authorization}"},
@@ -172,3 +196,28 @@ def test_build_script_output_launches_and_serves_health(tmp_path):
             process.kill()
             process.wait(timeout=5)
         launch_log.close()
+
+
+@pytest.mark.parametrize("operator_setting,expected", [(None, "false"), ("true", "true"), ("false", "false")])
+def test_packaged_entrypoint_defaults_startup_traceroute_off_and_preserves_operator_choice(tmp_path, operator_setting, expected):
+    source = (ROOT / "build.sh").read_text()
+    script = source.split('cat > "$APP_NAME/Contents/Resources/run.sh" << \'EOF\'\n', 1)[1].split('\nEOF', 1)[0]
+    (tmp_path / ".venv/bin").mkdir(parents=True)
+    (tmp_path / ".venv/bin/activate").write_text("")
+    (tmp_path / "run.sh").write_text(script)
+    (tmp_path / "app.py").write_text('import os; print(os.environ["NMAPUI_STARTUP_TRACEROUTE"])')
+    env = {**os.environ, "NMAPUI_DATA_DIR": str(tmp_path / "data"), "NMAPUI_LOG_DIR": str(tmp_path / "logs"),
+           "NMAPUI_USERNAME": "test", "NMAPUI_PASSWORD": "isolated-test"}
+    env.pop("NMAPUI_STARTUP_TRACEROUTE", None)
+    if operator_setting is not None:
+        env["NMAPUI_STARTUP_TRACEROUTE"] = operator_setting
+    result = subprocess.run(["bash", str(tmp_path / "run.sh")], env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected
+
+
+def test_packaged_health_wait_reports_exited_child_without_waiting_for_deadline():
+    child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(7)"])
+    child.wait(timeout=5)
+    with pytest.raises(AssertionError, match="exited with status 7"):
+        _wait_for_url("http://127.0.0.1:1/api/health/live", timeout=90, process=child)
