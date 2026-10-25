@@ -9,8 +9,6 @@ from werkzeug.serving import WSGIRequestHandler, make_server
 
 app = Flask(__name__)
 mode = os.environ.get("SHARED_FIXTURE_MODE", "valid")
-if mode == "never-ready":
-    time.sleep(30)
 scan_path = "Example customer/scan with spaces 雪"
 pdf = b"%PDF-1.4\nfixture-report\n%%EOF\n"
 

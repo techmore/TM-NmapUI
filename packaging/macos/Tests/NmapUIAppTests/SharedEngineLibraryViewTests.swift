@@ -155,12 +155,14 @@ private final class LibraryFixture {
         process.environment = ProcessInfo.processInfo.environment.merging(["SHARED_FIXTURE_MODE": mode]) { _, new in new }
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        let began = Date()
+        print("Native library fixture launching: \(mode)")
         try process.run()
-        print("Native library fixture startup: \(mode)")
+        print("Native library fixture spawned: \(mode), \(Date().timeIntervalSince(began))s")
         do {
             let ready = try JSONDecoder().decode(Ready.self, from: boundedLibraryReady(pipe.fileHandleForReading))
             address = "http://127.0.0.1:\(ready.port)"
-            print("Native library fixture ready: \(mode)")
+            print("Native library fixture ready: \(mode), \(Date().timeIntervalSince(began))s")
         } catch {
             if process.isRunning { kill(process.processIdentifier, SIGTERM) }
             throw error
@@ -169,12 +171,17 @@ private final class LibraryFixture {
     private struct Ready: Decodable { let port: Int }
     func stop() {
         if process.isRunning {
-            process.terminate()
+            let began = Date()
+            kill(process.processIdentifier, SIGTERM)
             for _ in 0..<100 {
-                if kill(process.processIdentifier, 0) == -1 && errno == ESRCH { return }
+                if kill(process.processIdentifier, 0) == -1 && errno == ESRCH {
+                    print("Native library fixture stopped: \(Date().timeIntervalSince(began))s")
+                    return
+                }
                 usleep(10_000)
             }
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            print("Native library fixture stop fallback: \(Date().timeIntervalSince(began))s")
         }
     }
 }

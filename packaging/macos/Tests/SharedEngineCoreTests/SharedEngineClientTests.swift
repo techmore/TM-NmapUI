@@ -5,10 +5,11 @@ import Testing
 
 @Suite("Shared engine HTTP client", .serialized)
 struct SharedEngineClientTests {
-    @Test("fixture startup has a bounded readiness deadline rather than blocking the test executor")
+    @Test("a silent readiness pipe has a deadline rather than blocking the test executor")
     func fixtureDeadline() throws {
+        let pipe = Pipe()
         let start = Date()
-        #expect(throws: FixtureStartupError.timeout) { try FlaskFixture(mode: "never-ready", startupTimeout: 0.15) }
+        #expect(throws: FixtureStartupError.timeout) { try readFixtureReady(pipe.fileHandleForReading, timeout: 0.15) }
         #expect(Date().timeIntervalSince(start) < 3)
     }
     @Test("endpoint is literal loopback without userinfo, alternate encodings or ambient proxies")
@@ -161,15 +162,17 @@ final class FlaskFixture {
         process.environment = ProcessInfo.processInfo.environment.merging(["SHARED_FIXTURE_MODE": mode]) { _, new in new }
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        let began = Date()
+        print("Shared fixture launching: \(canonical ? "canonical" : mode)")
         try process.run()
         self.process = process
-        print("Shared fixture startup: \(canonical ? "canonical" : mode)")
+        print("Shared fixture spawned: \(canonical ? "canonical" : mode), \(Date().timeIntervalSince(began))s")
         do {
             let line = try readFixtureReady(pipe.fileHandleForReading, timeout: startupTimeout)
             let ready = try JSONDecoder().decode(Ready.self, from: line)
             endpoint = try SharedEngineEndpoint("http://127.0.0.1:\(ready.port)")
             baselinePath = ready.baselinePath.map { URL(fileURLWithPath: $0) }
-            print("Shared fixture ready: \(canonical ? "canonical" : mode)")
+            print("Shared fixture ready: \(canonical ? "canonical" : mode), \(Date().timeIntervalSince(began))s")
         } catch {
             if process.isRunning { kill(process.processIdentifier, SIGTERM) }
             throw error
@@ -182,14 +185,19 @@ final class FlaskFixture {
     }
     func stop() {
         if process.isRunning {
-            process.terminate()
+            let began = Date()
+            kill(process.processIdentifier, SIGTERM)
             // NSTask.waitUntilExit can deadlock Swift Testing's cooperative
             // executor after child exit. Reaping remains owned by Foundation.
             for _ in 0..<100 {
-                if kill(process.processIdentifier, 0) == -1 && errno == ESRCH { return }
+                if kill(process.processIdentifier, 0) == -1 && errno == ESRCH {
+                    print("Shared fixture stopped: \(Date().timeIntervalSince(began))s")
+                    return
+                }
                 usleep(10_000)
             }
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            print("Shared fixture stop fallback: \(Date().timeIntervalSince(began))s")
         }
     }
 }
