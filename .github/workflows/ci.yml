@@ -150,7 +150,7 @@ jobs:
           python -m playwright install chromium --only-shell
           python packaging/macos/Tests/SharedEngineCoreTests/Fixtures/check_offline_html.py "$NMAPUI_SHARED_ENGINE_UI_ARTIFACTS"
       - name: Verify numeric versions and optimized native bundle
-        run: python -m pytest -q -s --basetemp "$RUNNER_TEMP/nmapui-native-pytest" tests/test_macos_bundle_version.py tests/test_native_bundle.py
+        run: python -m pytest -q -s --basetemp "$RUNNER_TEMP/nmapui-native-pytest" tests/test_macos_bundle_version.py tests/test_native_bundle.py tests/test_macos_build_preflight.py
       - name: Upload native diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

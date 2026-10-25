@@ -31,6 +31,7 @@ SIGN_OPTIONS="${CODESIGN_OPTIONS:---force --sign}"
 DATA_DIR="${NMAPUI_DATA_DIR:-$HOME/Library/Application Support/NmapUI}"
 
 cd "$SCRIPT_DIR"
+python3 "$SCRIPT_DIR/assert_bundle_stopped.py" "$APP_BUNDLE"
 swift build -c "$CONFIGURATION" --scratch-path "$BUILD_DIR"
 for PRODUCT in "$APP_NAME" NmapPrivilegedHelper GoogleDriveHelper RuntimeReportHelper; do
     if [ ! -x "$BUILD_DIR/$CONFIGURATION/$PRODUCT" ]; then
@@ -39,6 +40,8 @@ for PRODUCT in "$APP_NAME" NmapPrivilegedHelper GoogleDriveHelper RuntimeReportH
     fi
 done
 
+# Recheck after compilation, before replacing a copy started during the build.
+python3 "$SCRIPT_DIR/assert_bundle_stopped.py" "$APP_BUNDLE"
 rm -rf "$APP_BUNDLE"
 rm -rf "$ICONSET_DIR"
 rm -rf "$GENERATED_ASSETS_DIR"
@@ -88,6 +91,8 @@ PYPLIST
 printf '%s\n' "$APP_VERSION" > "$RESOURCES_DIR/VERSION"
 
 cp "$SCRIPT_DIR/../../index.html" "$RESOURCES_DIR/index.html"
+# Include the installer's former extra image before sealing the bundle.
+cp "$SCRIPT_DIR/Sources/NmapUIApp/Assets/techmore.png" "$RESOURCES_DIR/techmore.png"
 cp "$SCRIPT_DIR/../../nmap-modern.xsl" "$RESOURCES_DIR/nmap-modern.xsl"
 rm -rf "$RESOURCES_DIR/nmap-vulners"
 ditto "$SCRIPT_DIR/../../nmap-vulners" "$RESOURCES_DIR/nmap-vulners"

@@ -64,7 +64,6 @@ fi
 
 RUNTIME_PID_FILE_REL="Contents/Resources/nmapui-runtime.pid"
 SHUTDOWN_MARKER_REL="Contents/Resources/nmapui-shutdown"
-AUTO_SCAN_LOCK_REL="Contents/Resources/data/auto_scan_scheduler.lock"
 
 shell_escape() {
     printf "'%s'" "${1//\'/\'\"\'\"\'}"
@@ -77,68 +76,14 @@ applescript_escape() {
     printf '%s' "$value"
 }
 
-kill_runtime_tree() {
-    local bundle_path="$1"
-    local pid_file="$bundle_path/$RUNTIME_PID_FILE_REL"
-    local shutdown_marker="$bundle_path/$SHUTDOWN_MARKER_REL"
-    local resource_root="$bundle_path/Contents/Resources"
-    local run_script="$resource_root/run.sh"
-
-    kill_tree() {
-        local target_pid="$1"
-        if [[ -z "$target_pid" ]]; then
-            return
-        fi
-        local child_pid
-        while IFS= read -r child_pid; do
-            [[ -z "$child_pid" ]] && continue
-            kill_tree "$child_pid"
-        done < <(/usr/bin/pgrep -P "$target_pid" 2>/dev/null || true)
-        /bin/kill -TERM "$target_pid" 2>/dev/null || true
-    }
-
-    force_kill_tree() {
-        local target_pid="$1"
-        if [[ -z "$target_pid" ]]; then
-            return
-        fi
-        local child_pid
-        while IFS= read -r child_pid; do
-            [[ -z "$child_pid" ]] && continue
-            force_kill_tree "$child_pid"
-        done < <(/usr/bin/pgrep -P "$target_pid" 2>/dev/null || true)
-        /bin/kill -KILL "$target_pid" 2>/dev/null || true
-    }
-
-    /usr/bin/touch "$shutdown_marker" 2>/dev/null || true
-    if [[ -f "$pid_file" ]]; then
-        local target_pid
-        target_pid="$(/bin/cat "$pid_file" 2>/dev/null | /usr/bin/tr -cd '0-9')"
-        if [[ -n "$target_pid" ]]; then
-            kill_tree "$target_pid"
-            /bin/sleep 2
-            force_kill_tree "$target_pid"
-        fi
-    fi
-    /usr/bin/pkill -TERM -f "$run_script" 2>/dev/null || true
-    /usr/bin/pkill -TERM -f "$resource_root/app.py" 2>/dev/null || true
-    /usr/bin/pkill -TERM -f "$resource_root/.venv/bin/python3" 2>/dev/null || true
-    /bin/sleep 1
-    /usr/bin/pkill -KILL -f "$run_script" 2>/dev/null || true
-    /usr/bin/pkill -KILL -f "$resource_root/app.py" 2>/dev/null || true
-    /usr/bin/pkill -KILL -f "$resource_root/.venv/bin/python3" 2>/dev/null || true
-    /bin/rm -f "$pid_file" "$shutdown_marker" "$bundle_path/$AUTO_SCAN_LOCK_REL" "$RUNTIME_DATA_DIR/auto_scan_scheduler.lock" 2>/dev/null || true
-}
-
-purge_bundle_artifacts() {
-    local bundle_path="$1"
-    [[ -z "$bundle_path" ]] && return
-    kill_runtime_tree "$bundle_path"
+assert_bundles_stopped() {
+    python3 "$PACKAGING_DIR/assert_bundle_stopped.py" "$@" || exit 1
 }
 
 remove_bundle_path() {
     local bundle_path="$1"
     [[ -z "$bundle_path" ]] && return
+    assert_bundles_stopped "$bundle_path"
 
     rm -rf "$bundle_path" 2>/dev/null || true
     if [[ ! -e "$bundle_path" ]]; then
@@ -198,8 +143,7 @@ stage_google_drive_credentials() {
 
 # Ensure build output doesn't collide with the nmapui package on case-insensitive filesystems.
 echo "Purging stale runtime state and build artifacts..."
-purge_bundle_artifacts "$APP_NAME"
-purge_bundle_artifacts "$INSTALLED_APP_NAME"
+assert_bundles_stopped "$APP_NAME" "$INSTALLED_APP_NAME"
 rm -rf "$BUILD_DIR"
 rm -rf "$APP_NAME"
 mkdir -p "$BUILD_DIR"
