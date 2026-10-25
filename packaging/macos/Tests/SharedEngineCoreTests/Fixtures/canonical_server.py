@@ -17,7 +17,7 @@ print("Canonical fixture stage: python-start", file=sys.stderr, flush=True)
 faulthandler.dump_traceback_later(10)
 from loopback_server import LoopbackFixtureServer
 
-PIN = "911f83d837c6ea992f2592b4633c59e4a5c1ee29"
+PIN = "0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9"
 source = Path(os.environ["NMAPUI_SHARED_ENGINE_SOURCE"]).resolve(strict=True)
 assert subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip() == PIN
 assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True).strip()
