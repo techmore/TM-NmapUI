@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-PIN = "911f83d837c6ea992f2592b4633c59e4a5c1ee29"
+PIN = "0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9"
 
 if os.environ.get("NMAPUI_CONTROL_FIXTURE_WORKER") == "1":
     sys.path.insert(0, os.environ["NMAPUI_SHARED_ENGINE_SOURCE"])

@@ -30,7 +30,7 @@ are enabled. An uncertain start remains blocked until a new source identity is
 observed or the caller explicitly acknowledges the uncertainty after syncing.
 No local engine fallback or alternate REST scan workflow exists here.
 
-Tests use the frozen canonical source `911f83d837c6ea992f2592b4633c59e4a5c1ee29`
+Tests use the frozen canonical source `0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9`
 with a real, single-worker Gunicorn and an owned nmap executable that performs
 no networking. Both local trust and Socket.IO auth-disable switches are forced
 false before importing the canonical app. Tests exercise strict Unicode Basic

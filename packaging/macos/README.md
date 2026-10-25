@@ -201,7 +201,7 @@ forward them to an external viewer/navigation request. The policy guards script
 execution and subresource requests; it is not arbitrary-HTML network isolation.
 
 Canonical integration tests verify the exact clean shared-engine revision
-`911f83d837c6ea992f2592b4633c59e4a5c1ee29`, using its real app, authentication,
+`0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9`, using its real app, authentication,
 routes, SQLite store and report renderer with temporary data and no scan calls.
 Its scheduler thread runs for readiness with automatic scanning disabled. CI
 checks out that revision separately; fault-injection Flask fixtures are additional
