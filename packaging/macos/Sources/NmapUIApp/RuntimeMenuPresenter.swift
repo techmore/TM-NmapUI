@@ -36,13 +36,14 @@ final class RuntimeMenuPresenter {
         launchAtLoginMenuItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
-    func syncRuntimeMenuState(isReady: Bool, statusText: String) {
-        runtimeStatusMenuItem?.title = "Native: \(statusText)"
+    func syncRuntimeMenuState(isReady: Bool, statusText: String, sourceLabel: String = "Native", allowsLegacyControls: Bool = true) {
+        runtimeStatusMenuItem?.title = "\(sourceLabel): \(statusText)"
         let canOpenUIAnyway = statusText == "Waiting"
         openAppMenuItem?.title = isReady ? "Open NmapUI" : (canOpenUIAnyway ? "Open UI Anyway" : "Starting NmapUI...")
         openAppMenuItem?.isEnabled = isReady || canOpenUIAnyway
         restartRuntimeMenuItem?.isEnabled = true
-        openDataDirectoryMenuItem?.isEnabled = true
+        openDataDirectoryMenuItem?.isEnabled = allowsLegacyControls
+        launchAtLoginMenuItem?.isEnabled = allowsLegacyControls
         updateStatusIcon(isReady: isReady)
     }
 

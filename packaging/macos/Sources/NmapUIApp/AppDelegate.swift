@@ -1,9 +1,11 @@
 import GoogleDriveCore
 import AppKit
+import Combine
 import Foundation
 import ServiceManagement
 import SwiftUI
 import RuntimeContracts
+import SharedEngineCore
 
 private extension String {
     var nilIfEmpty: String? {
@@ -13,7 +15,7 @@ private extension String {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var activeScanCoordinator: ScanCoordinator?
     private var activeScanLock: ScanRunLock?
     private var scanGeneration: UInt64 = 0
@@ -22,26 +24,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let appCommandController = AppCommandController()
     private let appMenuBuilder = AppMenuBuilder()
     private let launchAtLoginController = LaunchAtLoginController()
-    let sessionState = AppSessionState()
-    let preferencesStore = PreferencesStore()
-    private lazy var lifecycleController = RuntimeLifecycleController(sessionState: sessionState)
+    let sessionState: AppSessionState
+    lazy var preferencesStore = PreferencesStore()
+    let executionRouter: ApplicationExecutionRouter
+    private let legacyServices: LegacyRuntimeServices
+
+    override init() {
+        executionRouter = ApplicationExecutionRouter()
+        sessionState = AppSessionState()
+        legacyServices = .live
+        super.init()
+    }
+    init(executionRouter: ApplicationExecutionRouter, legacyServices: LegacyRuntimeServices, sessionState: AppSessionState = AppSessionState()) {
+        self.executionRouter = executionRouter
+        self.sessionState = sessionState
+        self.legacyServices = legacyServices
+        super.init()
+    }
+    private func permitLegacy(_ action: LegacyExecutionAction) -> Bool {
+        var permitted = false
+        executionRouter.legacy(action) { permitted = legacyServices.permit(action) }
+        return permitted
+    }
+    func beginSelectedRuntime() {
+        if executionRouter.source == .legacy {
+            guard permitLegacy(.bootstrap) else { return }
+            bootstrapLegacyRuntime()
+        } else {
+            sessionState.runtimeIsReady = true
+            sessionState.runtimeStatusText = executionRouter.source == .shared ? "Shared scanner · detached" : "Choose execution source"
+            sessionState.showLoadingStrip = false
+            if executionRouter.source == .shared {
+                sharedStatusSubscription = executionRouter.sharedScanner.$controlState.sink { [weak self] state in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        switch state.connection {
+                        case .disconnected: self.sessionState.runtimeStatusText = "Detached · previous observation may be stale"
+                        case .authenticating: self.sessionState.runtimeStatusText = "Authenticating"
+                        case .synchronizing: self.sessionState.runtimeStatusText = "Synchronizing canonical jobs"
+                        case .ready: self.sessionState.runtimeStatusText = state.jobs[.scan].map { "Scan: \($0.rawStatus)" } ?? "Job status unavailable"
+                        }
+                        self.syncRuntimeMenuState()
+                    }
+                }
+            }
+        }
+    }
+    @discardableResult
+    func chooseExecutionSource(_ source: ExecutionSource) -> Bool {
+        guard executionRouter.choose(source, localScanActive: sessionState.runtimeScanSession.isScanning || legacyWorkQueue.runningCount > 0) else { return false }
+        if executionRouter.restartPending {
+            helperStatusRefreshTask?.cancel()
+            bootstrapNetworkTask?.cancel()
+            legacyWorkQueue.cancelAll()
+            if executionRouter.source == .legacy { lifecycleController.stop() }
+        } else {
+            beginSelectedRuntime()
+        }
+        if statusItem != nil { setupStatusItem() }
+        syncRuntimeMenuState()
+        return true
+    }
+    private lazy var lifecycleController = RuntimeLifecycleController(sessionState: sessionState, allowsLegacy: { [weak self] in self?.executionRouter.allowsLegacy == true })
     /// Task handle for privilege-helper status refreshes (distinct from
     /// lifecycle capability polling, which now lives in RuntimeLifecycleController).
     private var helperStatusRefreshTask: Task<Void, Never>?
+    private var bootstrapNetworkTask: Task<Void, Never>?
+    lazy var legacyWorkQueue = LegacyTaskQueue(allowsLegacy: { [weak self] in self?.executionRouter.allowsLegacy == true })
     private lazy var appTerminationController = AppTerminationController()
 
     private var statusItem: NSStatusItem?
+    private var sharedStatusSubscription: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ScheduledScanRunner.isScheduledScanInvocation {
             NSApp.setActivationPolicy(.prohibited)
-            Task {
-                await ScheduledScanRunner.runAndExit()
-            }
+            Task { await ScheduledScanRunner.runAndExit() }
             return
         }
-
         NSApp.setActivationPolicy(.regular)
+        setupStatusItem()
+        beginSelectedRuntime()
+        syncRuntimeMenuState()
+    }
+
+    private func bootstrapLegacyRuntime() {
         // App stays a normal user process. Privileged nmap runs via helper when needed.
         _ = PrivilegeElevationController.relaunchAsRootIfNeeded()
         RuntimeDiagnosticsLogger.log(
@@ -84,9 +151,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RuntimeMetadataStore.persistIdentity(startupIdentity, to: dataDirectory)
         RuntimeMetadataStore.persistCapabilities(capabilities, to: dataDirectory)
         RuntimeMetadataStore.persistToolchain(toolchain, to: dataDirectory)
-        Task {
+        bootstrapNetworkTask = Task {
+            guard !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
             let freshNetworkState = await RuntimeNetworkState.current()
+            guard !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
             await MainActor.run {
+                guard self.executionRouter.allowsLegacy else { return }
                 RuntimeDiagnosticsLogger.log("Network state resolved localIP=\(freshNetworkState.localIP) mask=\(freshNetworkState.mask) cidr=\(freshNetworkState.cidr) publicIP=\(freshNetworkState.publicIP) hops=\(freshNetworkState.tracerouteHops.count)")
                 let refreshedCustomerProfile = RuntimeCustomerProfile.current(
                     prefix: RuntimeMetadataStore.loadCustomerProfilePrefix(from: dataDirectory),
@@ -111,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.sessionState.emitCustomerProfile()
                 self.emitCurrentRuntimeSnapshotToWebView()
             }
+            guard !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
             RuntimeMetadataStore.persistNetworkState(freshNetworkState, to: dataDirectory)
             if let runtimeCustomerProfile = self.sessionState.runtimeCustomerProfile {
                 RuntimeMetadataStore.persistCustomerProfile(runtimeCustomerProfile, to: dataDirectory)
@@ -123,8 +194,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.emitPrivilegeHelperStatus()
         }
         lifecycleController.startStartupSequence(dataDirectory: dataDirectory)
-        setupStatusItem()
         syncLaunchAtLoginState()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        executionRouter.sharedScanner.stop()
+        if executionRouter.source == .legacy {
+            legacyWorkQueue.cancelAll()
+            bootstrapNetworkTask?.cancel()
+            lifecycleController.stop()
+        }
+    }
+
+    func cancelPendingLegacyActions() { legacyWorkQueue.cancelAll() }
+
+    /// The raw WebKit compatibility port also routes through the chosen source.
+    func handleRuntimeBridgeAction(_ action: String, payload: [String: Any]) {
+        switch action {
+        case "start_quick_scan", "start_complete_scan", "start_dragnet_scan":
+            let preset = action == "start_complete_scan" ? "complete" : action == "start_dragnet_scan" ? "dragnet" : "quick"
+            startScanFromNativeShell(target: payload["target"] as? String ?? "", scanKind: preset, vpnHelper: payload["vpnHelper"] as? Bool ?? false)
+        case "stop_scan", "cancel_job":
+            stopSwiftManagedScan(observedID: (payload["source_job_id"] as? String).flatMap(UUID.init(uuidString:)))
+        case "pause_job", "resume_job":
+            guard let raw = payload["source_job_id"] as? String, let id = UUID(uuidString: raw),
+                  let kind = (payload["job_type"] as? String).flatMap(SharedJobKind.init(rawValue:)) else {
+                executionRouter.reject("Refresh the shared job before pausing or resuming its observed source run."); return
+            }
+            executionRouter.shared(action == "pause_job" ? .pause(kind, id) : .resume(kind, id))
+        default:
+            executionRouter.reject("This bridge action is unavailable for the selected execution source.")
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -136,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if statusItem == nil { statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength) }
         guard let button = statusItem?.button else { return }
         button.imagePosition = .imageOnly
         button.toolTip = "NmapUI"
@@ -151,7 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let preferencesItem = NSMenuItem(title: "Preferences...", action: #selector(openPreferences), keyEquivalent: ",")
 
-        let restartItem = NSMenuItem(title: "Refresh Native State", action: #selector(restartRuntime), keyEquivalent: "r")
+        let restartItem = NSMenuItem(title: executionRouter.source == .shared ? "Refresh Shared Scanner" : "Refresh Legacy State", action: #selector(restartRuntime), keyEquivalent: "r")
 
         let dataDirectoryItem = NSMenuItem(title: "Open Data Folder", action: #selector(openDataDirectory), keyEquivalent: "")
 
@@ -173,6 +273,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onUninstallItem: uninstallItem,
             onQuitItem: quitItem
         )
+        menu.delegate = self
+        dataDirectoryItem.isEnabled = executionRouter.allowsLegacy
+        loginItem.isEnabled = executionRouter.allowsLegacy
+        if executionRouter.source == .shared {
+            let items: [(String, Selector, Int)] = [
+                ("Start canonical discovery / scan", #selector(startSharedMenuScan), 7101),
+                ("Stop observed shared scan", #selector(stopSharedMenuScan(_:)), 7102),
+                ("Pause observed shared scan", #selector(pauseSharedMenuScan(_:)), 7103),
+                ("Resume observed shared scan", #selector(resumeSharedMenuScan(_:)), 7104)
+            ]
+            menu.insertItem(.separator(), at: 3)
+            for (index, item) in items.enumerated() {
+                let action = NSMenuItem(title: item.0, action: item.1, keyEquivalent: "")
+                action.target = self; action.tag = item.2; action.isEnabled = false
+                menu.insertItem(action, at: 4 + index)
+            }
+        }
         statusItem?.menu = menu
         runtimeMenuPresenter.configureStatusItem(
             statusItem,
@@ -184,7 +301,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let model = executionRouter.sharedScanner
+        let state = model.controlState
+        let id = state.jobs[.scan]?.sourceJobID
+        for tag in 7101...7104 {
+            guard let item = menu.item(withTag: tag) else { continue }
+            item.representedObject = id?.uuidString
+            guard executionRouter.allowsShared else { item.isEnabled = false; continue }
+            do {
+                if tag == 7101 { try state.validateStart(target: model.scanTarget) }
+                else {
+                    guard let id else { item.isEnabled = false; continue }
+                    try state.validateControl(.scan, observedID: id, action: tag == 7102 ? "cancel_job" : tag == 7103 ? "pause_job" : "resume_job")
+                }
+                item.isEnabled = true
+            } catch { item.isEnabled = false }
+        }
+    }
+    @objc private func startSharedMenuScan() { sharedMenuAction(.start, observedID: nil) }
+    @objc private func stopSharedMenuScan(_ sender: NSMenuItem) { sharedMenuAction(.stop, observedID: (sender.representedObject as? String).flatMap(UUID.init(uuidString:))) }
+    @objc private func pauseSharedMenuScan(_ sender: NSMenuItem) { sharedMenuAction(.pause, observedID: (sender.representedObject as? String).flatMap(UUID.init(uuidString:))) }
+    @objc private func resumeSharedMenuScan(_ sender: NSMenuItem) { sharedMenuAction(.resume, observedID: (sender.representedObject as? String).flatMap(UUID.init(uuidString:))) }
+    func sharedMenuAction(_ action: SharedMenuAction, observedID: UUID?) {
+        if action == .start {
+            executionRouter.shared(.start(target: executionRouter.sharedScanner.scanTarget, skipHostDiscovery: executionRouter.sharedScanner.skipHostDiscovery))
+            return
+        }
+        guard let observedID else { executionRouter.reject("Refresh the scan before controlling its observed source run."); return }
+        switch action {
+        case .start: break
+        case .stop: executionRouter.shared(.cancel(.scan, observedID))
+        case .pause: executionRouter.shared(.pause(.scan, observedID))
+        case .resume: executionRouter.shared(.resume(.scan, observedID))
+        }
+    }
+
     private func syncLaunchAtLoginState() {
+        guard permitLegacy(.launchAtLogin) else { return }
         launchAtLoginController.syncLaunchAtLoginState(runtimeMenuPresenter)
     }
 
@@ -201,23 +355,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openDataDirectory() {
+        guard permitLegacy(.archive) else { return }
         appCommandController.openDataDirectory()
     }
 
-    @objc private func restartRuntime() {
+    @objc private func restartRuntime() { refreshSelectedRuntime() }
+
+    func refreshSelectedRuntime() {
+        if executionRouter.allowsShared {
+            executionRouter.sharedScanner.refreshNow()
+            executionRouter.shared(.reconnect)
+            return
+        }
+        guard permitLegacy(.capabilities) else { return }
         refreshNativeStateAfterPreferenceChange()
     }
 
     @objc func savePreferences() {
+        guard permitLegacy(.preferences) else { return }
         savePreferencesAndRefreshNativeState()
     }
 
     @objc func resetPreferences() {
+        guard permitLegacy(.preferences) else { return }
         preferencesStore.resetToDefaults()
         refreshNativeStateAfterPreferenceChange()
     }
 
     @objc private func toggleLaunchAtLogin() {
+        guard permitLegacy(.launchAtLogin) else { return }
         launchAtLoginController.toggleLaunchAtLogin()
         syncLaunchAtLoginState()
     }
@@ -231,10 +397,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func chooseDataDirectory() {
+        guard permitLegacy(.preferences) else { return }
         chooseDataDirectoryForSwiftUI()
     }
 
     private func savePreferencesAndRefreshNativeState() {
+        guard permitLegacy(.preferences) else { return }
         if preferencesStore.save() {
             refreshNativeStateAfterPreferenceChange()
         } else {
@@ -243,12 +411,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshNativeStateAfterPreferenceChange() {
+        guard permitLegacy(.preferences) else { return }
         RuntimeDiagnosticsLogger.log("Native preferences saved; legacy runtime restart is not required")
         refreshRuntimeCapabilities()
         markNativeRuntimeReady()
     }
 
+    /// Shared/stale WebKit requests never enter the Legacy dispatcher.
+    /// Return true when the source router consumed or rejected the request.
+    func routeNonLegacyBridge(_ request: RuntimeClientRequestEnvelope) -> Bool {
+        if executionRouter.allowsLegacy { return false }
+        guard executionRouter.allowsShared else {
+            executionRouter.reject("Choose an execution source, or finish the pending restart. No bridge action was replayed.")
+            return true
+        }
+        func text(_ key: String) -> String? {
+            guard case .string(let value)? = request.payload[key] else { return nil }
+            return value
+        }
+        func flag(_ key: String) -> Bool {
+            guard case .bool(let value)? = request.payload[key] else { return false }
+            return value
+        }
+        switch request.event {
+        case .startQuickScan, .startCompleteScan, .startDragnetScan:
+            let preset = request.event == .startQuickScan ? "quick" : request.event == .startCompleteScan ? "complete" : "dragnet"
+            executionRouter.start(target: text("target") ?? "", preset: preset, vpnHelper: flag("vpnHelper"), skipHostDiscovery: flag("skip_host_discovery"), legacyEffect: {})
+        case .stopScan:
+            executionRouter.stop(observedID: text("source_job_id").flatMap(UUID.init(uuidString:)), legacyEffect: {})
+        case .getInitialData, .getHistory, .getReports:
+            executionRouter.sharedScanner.refreshNow()
+        default:
+            executionRouter.reject("This legacy bridge action has not been migrated to the shared engine. Use Shared scanner controls; no local action was taken.")
+        }
+        return true
+    }
+
     func startQuickScanFromNativeShell() {
+        if !executionRouter.allowsLegacy {
+            executionRouter.start(target: executionRouter.sharedScanner.scanTarget, preset: "quick", vpnHelper: false, legacyEffect: {})
+            return
+        }
         let target = sessionState.runtimeNetworkState?.cidr
             ?? sessionState.runtimeAutoScanSnapshot.target.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             ?? "192.168.1.0/24"
@@ -256,6 +459,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func startScanFromNativeShell(target: String, scanKind: String, vpnHelper: Bool) {
+        executionRouter.start(target: target, preset: scanKind, vpnHelper: vpnHelper) {
+            startLegacyScanFromShell(target: target, scanKind: scanKind, vpnHelper: vpnHelper)
+        }
+    }
+    private func startLegacyScanFromShell(target: String, scanKind: String, vpnHelper: Bool) {
+        guard permitLegacy(.scan) else { return }
         guard !sessionState.runtimeScanSession.isScanning else {
             RuntimeDiagnosticsLogger.log("Ignoring duplicate native scan request while a scan is already active")
             return
@@ -295,6 +504,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func startSwiftManagedScan(target: String, usePn: Bool, vpnHelper: Bool, scanKind: String) async -> ScanCoordinator.ScanResult {
+        guard permitLegacy(.scan) else {
+            return ScanCoordinator.ScanResult(phase: .phase1, duration: "0.00", xmlPath: nil, summary: nil, completed: false, error: "Local scans require Legacy compatibility mode.")
+        }
+        guard let scanLock = ScanRunLock.acquire(in: RuntimeSettingsStore.currentDataDirectoryURL()), executionRouter.allowsLegacy else {
+            return ScanCoordinator.ScanResult(phase: .phase1, duration: "0.00", xmlPath: nil, summary: nil, completed: false, error: "Another Legacy scan or execution-source change owns the scan lock.")
+        }
+        activeScanLock = scanLock
+        defer { if activeScanLock === scanLock { activeScanLock = nil } }
+
         scanGeneration &+= 1
         let generation = scanGeneration
         let normalizedTarget = normalizedScanTarget(target)
@@ -348,12 +566,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sessionState.scanFeedback = message
             return ScanCoordinator.ScanResult(phase: .phase1, duration: "0.00", xmlPath: nil, summary: nil, completed: false, error: message)
         }
-        guard let scanLock = ScanRunLock.acquire(in: RuntimeSettingsStore.currentDataDirectoryURL()) else {
-            let message = "Another scan is already running. Wait for it to finish before starting a new scan."
-            sessionState.scanFeedback = message
-            return ScanCoordinator.ScanResult(phase: .phase1, duration: "0.00", xmlPath: nil, summary: nil, completed: false, error: message)
-        }
-        activeScanLock = scanLock
         var completionWarnings: [String] = []
         if scanKind != "quick", GowitnessManager.resolvedBinaryURL() == nil {
             sessionState.scanFeedback = "Installing required GoWitness screenshot capability..."
@@ -572,6 +784,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         status: String,
         error: String?
     ) async -> ReportGenerator.GeneratedReport? {
+        guard permitLegacy(.report) else { return nil }
         let dataDirectory = RuntimeSettingsStore.currentDataDirectoryURL()
         let profile = sessionState.runtimeCustomerProfile
             ?? RuntimeCustomerProfile.current(
@@ -712,12 +925,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func emitPrivilegeHelperStatus() {
+        guard permitLegacy(.helperStatus) else { return }
         helperStatusRefreshTask?.cancel()
         helperStatusRefreshTask = Task { [weak self] in
+            guard let self, !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
             let result = await Task.detached(priority: .utility) {
                 (RuntimeCapabilities.current(), PrivilegeHelperClient.isCurrentHelperReachable)
             }.value
-            guard let self, !Task.isCancelled else { return }
+            guard !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
             self.sessionState.runtimeCapabilities = result.0
             RuntimeMetadataStore.persistCapabilities(
                 result.0,
@@ -737,23 +952,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshRuntimeCapabilities() {
+        guard permitLegacy(.capabilities) else { return }
         lifecycleController.refreshCapabilities()
     }
 
     @MainActor
     func installPrivilegeHelperFromSettings() {
-        Task {
+        guard permitLegacy(.installHelper) else { return }
+        legacyWorkQueue.enqueue { [weak self] in
+            guard let self, !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
             do {
                 try await PrivilegeElevationController.ensurePrivilegedHelperReady(interactive: true)
+                guard !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
                 RuntimeDiagnosticsLogger.log("Privilege helper installed from Settings")
             } catch {
+                guard !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
                 PrivilegeElevationController.presentHelperInstallFailure(error)
             }
-            emitPrivilegeHelperStatus()
+            self.emitPrivilegeHelperStatus()
         }
     }
 
     func openReportPath(_ path: String) {
+        guard permitLegacy(.archive) else { return }
         let dataDirectory = RuntimeSettingsStore.currentDataDirectoryURL()
         let resolvedURL: URL?
         if path.hasPrefix("file:") {
@@ -797,13 +1018,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     func connectGoogleDriveFromSettings() {
-        Task { @MainActor in
+        guard permitLegacy(.drive) else { return }
+        legacyWorkQueue.enqueue { [weak self] in
+            guard let self, !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
             await self.performGoogleDriveConnect()
         }
     }
 
     @MainActor
     func disconnectGoogleDriveFromSettings() {
+        guard permitLegacy(.drive) else { return }
         let dataDirectory = RuntimeSettingsStore.currentDataDirectoryURL()
         let result = GoogleDriveService.disconnect(dataDirectory: dataDirectory)
         RuntimeDiagnosticsLogger.log("Google Drive disconnect success=\(result.success) status=\(result.status ?? "none")")
@@ -821,6 +1045,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func saveGoogleDriveSettingsFromNative(enabled: Bool, folderID: String) {
+        guard permitLegacy(.drive) else { return }
         let dataDirectory = RuntimeSettingsStore.currentDataDirectoryURL()
         sessionState.updateGoogleDriveSettings(enabled: enabled, folderId: folderID, dataDirectory: dataDirectory)
         sessionState.emitGoogleDriveStatus()
@@ -828,6 +1053,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func saveGoogleDriveCredentialsFromNative(_ credentialsJSON: String) {
+        guard permitLegacy(.drive) else { return }
         let result = GoogleDriveService.saveCredentials(credentialsJSON, dataDirectory: RuntimeSettingsStore.currentDataDirectoryURL())
         RuntimeDiagnosticsLogger.log("Google Drive OAuth credentials save success=\(result.success)")
         presentGoogleDriveMessage(result.status ?? result.error ?? "Could not save Google Drive credentials.", isError: !result.success)
@@ -835,6 +1061,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func saveAppSettingsFromWeb(_ payload: [String: Any]) {
+        guard permitLegacy(.preferences) else { return }
         let dataDirectory = RuntimeSettingsStore.currentDataDirectoryURL()
         let saveReportsDesktop = payload["saveReportsDesktop"] as? Bool ?? false
         RuntimeMetadataStore.persistConfigSection(
@@ -851,6 +1078,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performGoogleDriveConnect() async {
+        guard !Task.isCancelled, executionRouter.allowsLegacy else { return }
         let dataDirectory = RuntimeSettingsStore.currentDataDirectoryURL()
         do {
             let session = try GoogleDriveOAuthSession.start()
@@ -874,7 +1102,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            let callback = try await session.waitForCallback(timeoutSeconds: 180)
+            let callback = try await withTaskCancellationHandler {
+                try await session.waitForCallback(timeoutSeconds: 180)
+            } onCancel: {
+                session.cancel(with: .authorizationDenied)
+            }
+            guard !Task.isCancelled, executionRouter.allowsLegacy else { return }
             let exchange = GoogleDriveService.exchangeCode(
                 code: callback.code,
                 state: callback.state,
@@ -895,6 +1128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 presentGoogleDriveMessage(exchange.error ?? "Failed to complete Google Drive authorization.", isError: true)
             }
         } catch {
+            guard !Task.isCancelled, executionRouter.allowsLegacy else { return }
             presentGoogleDriveMessage(error.localizedDescription, isError: true)
             sessionState.emitGoogleDriveStatus()
         }
@@ -912,7 +1146,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func stopSwiftManagedScan() {
+    func stopSwiftManagedScan(observedID: UUID? = nil) {
+        executionRouter.stop(observedID: observedID) { stopLegacyScan() }
+    }
+    private func stopLegacyScan() {
+        guard permitLegacy(.stop) else { return }
         RuntimeDiagnosticsLogger.log("Stop scan requested")
         scanGeneration &+= 1
         activeScanCoordinator?.cancel()
@@ -961,6 +1199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func emitCurrentRuntimeSnapshotToWebView() {
+        guard permitLegacy(.bridge) else { return }
         RuntimeDiagnosticsLogger.log("Emitting current runtime snapshot to web dashboard")
         if let networkState = sessionState.runtimeNetworkState {
             WebPortalViewCoordinatorBridge.shared.applyNetworkSnapshot(networkState)
@@ -980,6 +1219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func updateCustomerPrefix(_ prefix: String) {
+        guard permitLegacy(.customers) else { return }
         sessionState.updateCustomerProfilePrefix(
             prefix,
             networkState: sessionState.runtimeNetworkState,
@@ -990,6 +1230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func createCustomer(_ name: String) {
+        guard permitLegacy(.customers) else { return }
         do {
             try sessionState.createCustomer(name: name, networkState: sessionState.runtimeNetworkState, dataDirectory: RuntimeSettingsStore.currentDataDirectoryURL())
             sessionState.emitCustomerProfile()
@@ -998,6 +1239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func selectCustomer(_ id: UUID?) {
+        guard permitLegacy(.customers) else { return }
         do {
             try sessionState.selectCustomer(id, networkState: sessionState.runtimeNetworkState, dataDirectory: RuntimeSettingsStore.currentDataDirectoryURL())
             sessionState.emitCustomerProfile()
@@ -1005,15 +1247,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func installGowitness() {
-        Task { @MainActor in
-            sessionState.scanFeedback = "Downloading GoWitness \(GowitnessManager.version)..."
+        guard permitLegacy(.installTools) else { return }
+        legacyWorkQueue.enqueue { [weak self] in
+            guard let self, !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
+            self.sessionState.scanFeedback = "Downloading GoWitness \(GowitnessManager.version)..."
             do {
                 let binary = try await GowitnessManager.install()
-                sessionState.runtimeToolchain = RuntimeToolchain.current()
-                refreshRuntimeCapabilities()
-                sessionState.scanFeedback = "GoWitness \(GowitnessManager.version) installed at \(binary.path)"
+                guard !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
+                self.sessionState.runtimeToolchain = RuntimeToolchain.current()
+                self.refreshRuntimeCapabilities()
+                self.sessionState.scanFeedback = "GoWitness \(GowitnessManager.version) installed at \(binary.path)"
             } catch {
-                sessionState.scanFeedback = error.localizedDescription
+                guard !Task.isCancelled, self.executionRouter.allowsLegacy else { return }
+                self.sessionState.scanFeedback = error.localizedDescription
                 RuntimeDiagnosticsLogger.error("GoWitness installation failed: \(error.localizedDescription)")
             }
         }
@@ -1027,7 +1273,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func syncRuntimeMenuState() {
         runtimeMenuPresenter.syncRuntimeMenuState(
             isReady: sessionState.runtimeIsReady,
-            statusText: sessionState.runtimeStatusText
+            statusText: sessionState.runtimeStatusText,
+            sourceLabel: executionRouter.source == .shared ? "Shared" : executionRouter.source == .legacy ? "Legacy compatibility" : "Source",
+            allowsLegacyControls: executionRouter.allowsLegacy
         )
     }
 

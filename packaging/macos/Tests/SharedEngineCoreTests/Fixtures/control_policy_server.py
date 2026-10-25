@@ -55,6 +55,13 @@ server = LiteralLoopbackHTTPServer(("127.0.0.1", 0), Handler)
 def stop(*_): raise SystemExit(0)
 signal.signal(signal.SIGTERM, stop)
 if mode == "delayed-ready": time.sleep(.3)
+if mode == "heartbeat-ready":
+    release = Path(os.environ["NMAPUI_CONTROL_READY_RELEASE"])
+    deadline = time.monotonic() + 5
+    while not release.exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError("MainActor could not release fixture readiness")
+        time.sleep(.01)
 print(json.dumps({"port": server.server_port, "root": root.name}), flush=True)
 try: server.serve_forever()
 finally:

@@ -22,6 +22,22 @@ if os.environ.get("NMAPUI_CONTROL_FIXTURE_WORKER") == "1":
     sys.path.insert(0, os.environ["NMAPUI_SHARED_ENGINE_SOURCE"])
     import app as engine
     engine.settings_state["scan_rules"]["scan_only_mode"] = True
+    if os.environ.get("NMAPUI_CONTROL_FIXTURE_HTTP_READY") == "1":
+        # UI attachment exercises the real readiness/auth/history/report routes.
+        # A heartbeat spy replaces scheduling; no scheduler thread is started.
+        class DisabledSchedulerHeartbeat:
+            def is_alive(self): return True
+        import nmapui.app_runtime_bindings as runtime_bindings_module
+        runtime_bindings_module.start_auto_scan_thread_runtime = lambda **_deps: DisabledSchedulerHeartbeat()
+        engine.start_auto_scan_thread()
+        engine.startup_state.update(startup_complete=True, dependency_checks_skipped=True,
+                                    recovery={"ok": True}, errors=[])
+        fixture_folder = Path(os.environ["NMAPUI_DATA_DIR"]) / "scans/Shared fixture/report one"
+        fixture_folder.mkdir(parents=True)
+        (fixture_folder / "scan_report.pdf").write_bytes(b"%PDF-1.4\nshared-ui-fixture\n%%EOF\n")
+        engine.runtime_store.upsert_report_artifact(scan_path="Shared fixture/report one", customer_id="fixture", target="127.0.0.1",
+            html_path=None, xml_path=None, pdf_path="scan_report.pdf", payload={"timestamp": "2026-10-25T12:00:00Z", "target": "127.0.0.1",
+            "customer_name": "Shared fixture", "host_count": 1, "status": "completed"})
     # The actual handler, registry and cancellable subprocess workflow remain.
     def application(environ, start_response):
         root = Path(os.environ["NMAPUI_CONTROL_FIXTURE_ROOT"])

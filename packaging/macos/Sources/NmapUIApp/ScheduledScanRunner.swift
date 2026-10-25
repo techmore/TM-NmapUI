@@ -7,9 +7,27 @@ enum ScheduledScanRunner {
         CommandLine.arguments.contains("--scheduled-scan")
     }
 
+    struct Admission: Sendable {
+        let directory: URL
+        let lock: ScanRunLock
+    }
+    static func admit(store: ExecutionSourceStore = .live) -> Admission? {
+        guard store.resolve().source == .legacy else { return nil }
+        let directory = store.legacyDataDirectory
+        guard let lock = ScanRunLock.acquire(in: directory), store.resolve().source == .legacy else { return nil }
+        return Admission(directory: directory, lock: lock)
+    }
+
     static func runAndExit() async {
+        // Admission precedes logging/configuration/network/helper access. The
+        // retained real scan lock serializes this runner with source changes.
+        guard let admission = admit() else {
+            try? FileHandle.standardError.write(contentsOf: Data("Native scheduled scan did not run: choose Legacy compatibility, and wait for any active Legacy scan/source change. Schedule configuration is preserved.\n".utf8))
+            exit(0)
+        }
+        let dataDirectory = admission.directory
+        defer { _ = admission.lock }
         RuntimeDiagnosticsLogger.log("Scheduled scan invocation starting")
-        let dataDirectory = RuntimeSettingsStore.currentDataDirectoryURL()
         RuntimeDiagnosticsLogger.configure(dataDirectory: dataDirectory)
         try? FileManager.default.createDirectory(
             at: dataDirectory.appendingPathComponent("logs", isDirectory: true),
@@ -58,12 +76,6 @@ enum ScheduledScanRunner {
             RuntimeDiagnosticsLogger.error("Scheduled scan aborted: \(error.localizedDescription)")
             exit(4)
         }
-
-        guard let scanLock = ScanRunLock.acquire(in: dataDirectory) else {
-            RuntimeDiagnosticsLogger.log("Scheduled scan skipped: another scan is already active")
-            exit(0)
-        }
-        defer { _ = scanLock }
 
         guard PrivilegeHelperClient.isCurrentHelperReachable else {
             RuntimeDiagnosticsLogger.error("Scheduled scan aborted: privileged helper is not installed/running")
