@@ -1,3 +1,6 @@
+let historyLoadGeneration = 0;
+let historyHasLoaded = false;
+
 function renderHistoryState(message, isError = false) {
     const historyList = document.getElementById("history-list");
     historyList.replaceChildren();
@@ -5,6 +8,27 @@ function renderHistoryState(message, isError = false) {
     paragraph.className = isError ? "text-red-600" : "text-olive-600";
     paragraph.textContent = message;
     historyList.appendChild(paragraph);
+}
+
+function renderHistoryLoadError() {
+    const historyList = document.getElementById("history-list");
+    document.getElementById("history-load-error")?.remove();
+    if (!historyHasLoaded) historyList.replaceChildren();
+    const notice = document.createElement("div");
+    notice.id = "history-load-error";
+    notice.className = "rounded-lg border border-red-200 bg-red-50 p-3 text-red-700";
+    notice.setAttribute("role", "alert");
+    const message = document.createElement("p");
+    message.textContent = historyHasLoaded
+        ? "Could not refresh saved scan history. Previously loaded history may be out of date."
+        : "Could not load saved scan history.";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "mt-2 action-button action-button-secondary action-button-compact";
+    retry.textContent = "Retry saved history";
+    retry.addEventListener("click", () => loadScanHistory());
+    notice.append(message, retry);
+    historyList.prepend(notice);
 }
 
 function createHistoryDiffSummary(diffSummary) {
@@ -186,6 +210,7 @@ function displayScanHistory(scans) {
 }
 
 async function loadScanHistory(isInitialLoad = false) {
+    const generation = ++historyLoadGeneration;
     const modal = document.getElementById("history-modal");
     const filter = document.getElementById("history-customer-filter");
     const dateFilter = document.getElementById("history-date-filter").value;
@@ -198,9 +223,16 @@ async function loadScanHistory(isInitialLoad = false) {
 
     try {
         const response = await fetch("/api/runtime/history");
+        if (!response.ok) throw new Error(`History request failed (${response.status})`);
         const data = await response.json();
+        if (!Array.isArray(data.history) || data.history.some(scan => !scan || typeof scan !== "object" || Array.isArray(scan))) {
+            throw new Error("Invalid saved history response");
+        }
+        // Filter changes can overlap. Only the newest read may replace the
+        // list or report an error; a slow earlier response is stale evidence.
+        if (generation !== historyLoadGeneration) return;
 
-        let scans = data.history || [];
+        let scans = data.history;
         populateCustomerFilter(scans, customerFilter);
 
         const activeFilter = filter.value;
@@ -215,9 +247,11 @@ async function loadScanHistory(isInitialLoad = false) {
         }
 
         displayScanHistory(scans);
+        historyHasLoaded = true;
     } catch (error) {
+        if (generation !== historyLoadGeneration) return;
         console.error("Error loading scan history:", error);
-        renderHistoryState("Error loading scan history", true);
+        renderHistoryLoadError();
     }
 }
 
@@ -247,6 +281,7 @@ function showHistoryModal() {
 }
 
 function hideHistoryModal() {
+    ++historyLoadGeneration;
     document.getElementById("history-modal").classList.add("hidden");
 }
 
