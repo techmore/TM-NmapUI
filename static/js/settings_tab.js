@@ -2,6 +2,7 @@ let settingsTabInitialized = false;
 let settingsTabLoaded = false;
 let settingsState = null;
 let googleDriveAuthStatus = null;
+let googleDriveActionFeedback = false;
 
 function setSettingsStatus(message, isError = false) {
     const status = document.getElementById('settings-tab-status');
@@ -140,7 +141,11 @@ function renderRuntimeSummary(summary) {
     if (settingsArpScanVersion) settingsArpScanVersion.textContent = `ARP-Scan: ${toolVersions.arp_scan || 'Not found'}`;
 }
 
-function setSyncStatus(elementId, message, isError = false) {
+function setSyncStatus(elementId, message, isError = false, background = false) {
+    if (elementId === 'settings-google-drive-status') {
+        if (background && googleDriveActionFeedback) return;
+        if (!background) googleDriveActionFeedback = true;
+    }
     const element = document.getElementById(elementId);
     if (!element) {
         return;
@@ -340,7 +345,7 @@ async function loadGoogleDriveAuthStatus() {
         throw new Error(`Failed to load Google Drive status (${response.status})`);
     }
     googleDriveAuthStatus = await response.json();
-    setSyncStatus('settings-google-drive-status', googleDriveAuthStatus.status || 'Not connected', false);
+    setSyncStatus('settings-google-drive-status', googleDriveAuthStatus.status || 'Not connected', false, true);
     updateGoogleDriveAuthButtons();
 }
 
@@ -369,6 +374,13 @@ async function loadSettingsTab(force = false) {
 }
 
 async function connectGoogleDrive() {
+    // Open during the user gesture, before waiting for the HTTP authorization URL.
+    const authWindow = window.open('about:blank', '_blank');
+    if (!authWindow) {
+        setSyncStatus('settings-google-drive-status', 'Allow pop-ups for NmapUI, then click Connect Google Drive again.', true);
+        return;
+    }
+    authWindow.opener = null;
     setSyncStatus('settings-google-drive-status', 'Starting Google Drive authorization...');
     try {
         if (!googleDriveAuthStatus?.configured) {
@@ -379,10 +391,15 @@ async function connectGoogleDrive() {
         if (!response.ok || !payload.auth_url) {
             throw new Error(payload.error || `Failed to start Google Drive auth (${response.status})`);
         }
-        window.open(payload.auth_url, '_blank', 'noopener,noreferrer');
-        setSyncStatus('settings-google-drive-status', 'Google Drive authorization opened in a new tab.');
+        const authUrl = new URL(payload.auth_url);
+        if (authUrl.origin !== 'https://accounts.google.com' || authUrl.pathname !== '/o/oauth2/v2/auth') {
+            throw new Error('The runtime returned an invalid Google authorization URL');
+        }
+        authWindow.location.replace(authUrl.href);
+        setSyncStatus('settings-google-drive-status', 'Complete sign-in in the browser window that opened.');
         waitForGoogleDriveConnection();
     } catch (error) {
+        authWindow.close();
         console.error('Error starting Google Drive auth:', error);
         setSyncStatus('settings-google-drive-status', error.message || 'Failed to start Google Drive auth.', true);
     }
@@ -394,6 +411,7 @@ async function waitForGoogleDriveConnection(timeoutMs = 90000, intervalMs = 4000
         await new Promise((resolve) => setTimeout(resolve, intervalMs));
         await loadGoogleDriveAuthStatus();
         if (googleDriveAuthStatus?.connected) {
+            setSyncStatus('settings-google-drive-status', 'Google Drive is connected.');
             await loadSettingsTab(true);
             return;
         }
@@ -409,6 +427,7 @@ async function disconnectGoogleDriveAccount() {
             throw new Error(payload.error || `Failed to disconnect Google Drive (${response.status})`);
         }
         await loadGoogleDriveAuthStatus();
+        setSyncStatus('settings-google-drive-status', payload.status || 'Google Drive disconnected.');
     } catch (error) {
         console.error('Error disconnecting Google Drive:', error);
         setSyncStatus('settings-google-drive-status', error.message || 'Failed to disconnect Google Drive.', true);
