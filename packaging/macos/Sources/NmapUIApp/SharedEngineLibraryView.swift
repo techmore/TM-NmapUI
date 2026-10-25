@@ -19,14 +19,16 @@ final class SharedEngineLibraryModel: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var operation: Task<Void, Never>?
     private(set) var generation = 0
-    private let reportStore = SharedEngineReportStore()
+    private let reportStore: SharedEngineReportStore
     private let openDocument: (URL) -> Bool
     private let revealDocument: (URL) -> Void
 
     init(openDocument: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) },
-         revealDocument: @escaping (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }) {
+         revealDocument: @escaping (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) },
+         reportStore: SharedEngineReportStore = SharedEngineReportStore()) {
         self.openDocument = openDocument
         self.revealDocument = revealDocument
+        self.reportStore = reportStore
     }
 
     func attach() {

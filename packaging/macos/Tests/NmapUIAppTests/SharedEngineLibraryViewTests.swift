@@ -50,7 +50,9 @@ struct SharedEngineLibraryViewTests {
         let fixture = try LibraryFixture(mode: "valid")
         defer { fixture.stop() }
         var opened: URL?
-        let model = SharedEngineLibraryModel(openDocument: { opened = $0; return true }, revealDocument: { _ in Issue.record("Unexpected fallback viewer") })
+        let cacheRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+        let model = SharedEngineLibraryModel(openDocument: { opened = $0; return true }, revealDocument: { _ in Issue.record("Unexpected fallback viewer") }, reportStore: SharedEngineReportStore(root: cacheRoot))
         model.address = fixture.address
         model.username = "fixture-user"
         model.password = "fixture-contraseña-🔐"
