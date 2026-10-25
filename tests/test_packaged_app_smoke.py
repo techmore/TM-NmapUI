@@ -147,6 +147,13 @@ def test_build_script_output_launches_and_serves_health(tmp_path):
         assert readiness["startup"]["dependencies_ok"] is True
         assert readiness["startup"]["traceroute_initialized"] is False
         assert readiness["auto_scan_thread_alive"] is True
+        status_url = f"http://127.0.0.1:{port}/api/runtime/status"
+        with pytest.raises(HTTPError) as denied:
+            urlopen(status_url, timeout=5)
+        assert denied.value.code == 401
+        with urlopen(Request(status_url, headers={"Authorization": f"Basic {authorization}"}), timeout=5) as response:
+            assert response.headers["Cache-Control"] == "no-store"
+            assert json.load(response)["has_active_jobs"] is False
         launch_log.flush()
         startup_log = launch_log_path.read_text(encoding="utf-8", errors="replace")
         assert "Skipping public traceroute during service startup" in startup_log

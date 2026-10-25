@@ -82,8 +82,9 @@ def test_maintenance_route_requires_local_auth_and_matching_browser_origin(monke
     assert client.post(path, headers=headers, json={"token": token}).json["token"] == token
     assert client.post(path, headers=headers, json={"token": "0" * 32}).status_code == 409
     assert client.post(path, headers=headers, json={"token": "invalid"}).status_code == 400
-    assert client.get("/api/runtime/status").json["maintenance_active"] is True
-    assert token not in str(client.get("/api/runtime/status").json)
+    assert client.get("/api/runtime/status").status_code == 401
+    assert client.get("/api/runtime/status", headers=headers).json["maintenance_active"] is True
+    assert token not in str(client.get("/api/runtime/status", headers=headers).json)
     assert client.delete(path, headers=headers, json={"token": "0" * 32}).status_code == 409
     assert client.delete(path, headers=headers, json={"token": token}).status_code == 200
     assert registry.start("owner", "scan")
