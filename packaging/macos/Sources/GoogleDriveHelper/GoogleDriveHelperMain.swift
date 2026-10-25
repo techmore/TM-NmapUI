@@ -49,64 +49,31 @@ private func writeJSON<T: Encodable>(_ value: T, to path: URL) throws {
 }
 
 private enum SecureState {
-    private static let service = "com.techmore.nmapui.google-drive"
-
-    static func data(root: URL, account: String) -> Data? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account + ":" + root.standardizedFileURL.path,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-        return result as? Data
+    static func data(root: URL, account: String) throws -> Data? {
+        try DriveKeychain.data(root: root, account: account)
     }
-
     static func set(_ data: Data, root: URL, account: String) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account + ":" + root.standardizedFileURL.path,
-        ]
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-        ]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var insert = query
-            attributes.forEach { insert[$0.key] = $0.value }
-            guard SecItemAdd(insert as CFDictionary, nil) == errSecSuccess else { throw HelperError.invalidPayload("Could not store Google Drive state in Keychain") }
-        } else if status != errSecSuccess {
-            throw HelperError.invalidPayload("Could not update Google Drive state in Keychain")
-        }
+        try DriveKeychain.set(data, root: root, account: account)
     }
-
     static func remove(root: URL, account: String) throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account + ":" + root.standardizedFileURL.path,
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw HelperError.invalidPayload("Could not remove Google Drive state from Keychain") }
+        try DriveKeychain.remove(root: root, account: account)
     }
 }
 
-private func loadCredentials(root: URL, paths: (credentials: URL, token: URL, key: URL)) -> [String: String] {
-    if let data = SecureState.data(root: root, account: "credentials"), let value = try? JSONDecoder().decode([String: String].self, from: data) { return value }
-    guard let value = readJSON([String: String].self, from: paths.credentials) else { return [:] }
-    if let data = try? JSONEncoder().encode(value) { try? SecureState.set(data, root: root, account: "credentials") }
-    return value
+private func loadState<T: Decodable>(_ type: T.Type, root: URL, account: String, legacy: URL) throws -> T? {
+    try DriveStateLoader.load(type, secure: { try SecureState.data(root: root, account: account) }, legacy: {
+        try DriveStateLoader.legacyData(at: legacy)
+    }, persist: { try SecureState.set($0, root: root, account: account) }, removeLegacy: {
+        try FileManager.default.removeItem(at: legacy)
+    })
 }
 
-private func loadToken(root: URL, paths: (credentials: URL, token: URL, key: URL)) -> TokenState? {
-    if let data = SecureState.data(root: root, account: "token"), let value = try? JSONDecoder().decode(TokenState.self, from: data) { return value }
-    guard let value = readJSON(TokenState.self, from: paths.token) else { return nil }
-    if let data = try? JSONEncoder().encode(value) { try? SecureState.set(data, root: root, account: "token") }
-    return value
+private func loadCredentials(root: URL, paths: (credentials: URL, token: URL, key: URL)) throws -> [String: String] {
+    try loadState([String: String].self, root: root, account: "credentials", legacy: paths.credentials) ?? [:]
+}
+
+private func loadToken(root: URL, paths: (credentials: URL, token: URL, key: URL)) throws -> TokenState? {
+    try loadState(TokenState.self, root: root, account: "token", legacy: paths.token)
 }
 
 private func saveToken(_ value: TokenState, root: URL, paths: (credentials: URL, token: URL, key: URL)) throws {
@@ -322,14 +289,14 @@ private func revokeGoogleToken(_ token: String) throws {
 }
 
 private func ensureAccessToken(root: URL, paths: (credentials: URL, token: URL, key: URL), forceRefresh: Bool = false) throws -> String {
-    guard let tokenState = loadToken(root: root, paths: paths) else {
+    guard let tokenState = try loadToken(root: root, paths: paths) else {
         throw HelperError.invalidPayload("Google Drive is not connected.")
     }
     if !forceRefresh, DrivePolicy.accessUsable(tokenState.accessToken, expiresAt: tokenState.expiresAt), let accessToken = tokenState.accessToken {
         return accessToken
     }
     if let refreshToken = tokenState.refreshToken, !refreshToken.isEmpty {
-        let credentials = loadCredentials(root: root, paths: paths)
+        let credentials = try loadCredentials(root: root, paths: paths)
         guard let clientId = credentials["client_id"], let clientSecret = credentials["client_secret"] else {
             throw HelperError.invalidPayload("Google Drive OAuth credentials file not found. Upload your credentials.json from the Google Cloud Console.")
         }
@@ -470,8 +437,8 @@ struct GoogleDriveHelper {
             guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { throw HelperError.invalidPayload("Another Drive command is in progress") }
             switch command {
             case "status":
-                let credentials = loadCredentials(root: root, paths: paths)
-                let tokenState = loadToken(root: root, paths: paths)
+                let credentials = try loadCredentials(root: root, paths: paths)
+                let tokenState = try loadToken(root: root, paths: paths)
                 let configured = (credentials["client_id"]?.isEmpty == false) && (credentials["client_secret"]?.isEmpty == false)
                 let connected = DrivePolicy.accessUsable(tokenState?.accessToken, expiresAt: tokenState?.expiresAt)
                 let refreshable = tokenState?.refreshToken?.isEmpty == false
@@ -488,7 +455,7 @@ struct GoogleDriveHelper {
                     throw HelperError.invalidPayload("Credentials must contain a JSON object")
                 }
                 try DriveCredentialPolicy.replace(credentials, current: {
-                    loadCredentials(root: root, paths: paths)
+                    try loadCredentials(root: root, paths: paths)
                 }, clearAuthorization: {
                     try SecureState.remove(root: root, account: "token")
                     for legacy in [paths.token, paths.key] where FileManager.default.fileExists(atPath: legacy.path) {
@@ -502,7 +469,7 @@ struct GoogleDriveHelper {
                 exit(0)
 
             case "auth-url":
-                let credentials = loadCredentials(root: root, paths: paths)
+                let credentials = try loadCredentials(root: root, paths: paths)
                 guard let clientId = credentials["client_id"], !clientId.isEmpty,
                       let _ = credentials["client_secret"], !redirectURI.isEmpty else {
                     printJSON(HelperResponse(success: false, status: nil, error: "Google Drive OAuth credentials file not found. Upload your credentials.json from the Google Cloud Console.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
@@ -513,7 +480,7 @@ struct GoogleDriveHelper {
                 let verifier = try randomURLSafeToken(byteCount: 48)
                 let challenge = sha256URLSafe(verifier)
                 let pending = PendingAuth(state: stateToken, codeVerifier: verifier, redirectUri: redirectURI, createdAt: ISO8601DateFormatter().string(from: Date()))
-                var authState = loadToken(root: root, paths: paths) ?? TokenState()
+                var authState = try loadToken(root: root, paths: paths) ?? TokenState()
                 authState.pendingAuth = pending
                 try saveToken(authState, root: root, paths: paths)
                 let authURL = try DrivePolicy.authorizationURL(clientID: clientId, redirect: redirectURI, state: stateToken, challenge: challenge)
@@ -521,25 +488,24 @@ struct GoogleDriveHelper {
                 exit(0)
 
             case "disconnect":
-                var revocationError: Error?
-                if let tokenState = loadToken(root: root, paths: paths) {
-                    var tokens = [String]()
-                    if let refreshToken = tokenState.refreshToken, !refreshToken.isEmpty { tokens.append(refreshToken) }
-                    if tokens.isEmpty, let accessToken = tokenState.accessToken, !accessToken.isEmpty { tokens.append(accessToken) }
-                    for token in Set(tokens) {
-                        do { try revokeGoogleToken(token) } catch { revocationError = error }
+                let confirmed = try DriveDisconnectionPolicy.disconnect(tokens: {
+                    guard let tokenState = try loadToken(root: root, paths: paths) else { return [] }
+                    if let token = tokenState.refreshToken, !token.isEmpty { return [token] }
+                    if let token = tokenState.accessToken, !token.isEmpty { return [token] }
+                    return []
+                }, revoke: revokeGoogleToken, clearLocal: {
+                    try SecureState.remove(root: root, account: "token")
+                    try SecureState.remove(root: root, account: "credentials")
+                    for legacy in [paths.token, paths.credentials, paths.key] {
+                        do { try FileManager.default.removeItem(at: legacy) }
+                        catch let error as CocoaError where error.code == .fileNoSuchFile { continue }
                     }
-                }
-                try SecureState.remove(root: root, account: "token")
-                try SecureState.remove(root: root, account: "credentials")
-                try? FileManager.default.removeItem(at: paths.token)
-                try? FileManager.default.removeItem(at: paths.credentials)
-                try? FileManager.default.removeItem(at: paths.key)
-                printJSON(HelperResponse(success: revocationError == nil, status: "Google Drive disconnected locally", error: revocationError == nil ? nil : "Local credentials removed; Google token revocation failed. Revoke access in your Google account.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
-                exit(revocationError == nil ? 0 : 1)
+                })
+                printJSON(HelperResponse(success: confirmed, status: "Google Drive disconnected locally", error: confirmed ? nil : "Local credentials removed; Google token revocation could not be confirmed. Revoke access in your Google account.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
+                exit(confirmed ? 0 : 1)
 
             case "exchange-code":
-                let tokenState = loadToken(root: root, paths: paths)
+                let tokenState = try loadToken(root: root, paths: paths)
                 guard let _ = tokenState?.pendingAuth else {
                     printJSON(HelperResponse(success: false, status: nil, error: "Invalid or expired Google Drive auth state.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
                     exit(1)
@@ -548,7 +514,7 @@ struct GoogleDriveHelper {
                 var consumed = tokenState!
                 let pending = try DrivePendingAuth.consume(&consumed.pendingAuth, received: state)
                 try saveToken(consumed, root: root, paths: paths)
-                let credentials = loadCredentials(root: root, paths: paths)
+                let credentials = try loadCredentials(root: root, paths: paths)
                 guard let clientId = credentials["client_id"], let clientSecret = credentials["client_secret"] else {
                     printJSON(HelperResponse(success: false, status: nil, error: "Google Drive OAuth credentials file not found. Upload your credentials.json from the Google Cloud Console.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
                     exit(1)

@@ -252,10 +252,11 @@ public enum DriveCredentialPolicy {
         return ["client_id": client, "client_secret": secret]
     }
     /// Production wires these closures to its existing Keychain and legacy-file adapters.
-    public static func replace(_ candidate: [String: String], current: () -> [String: String],
+    public static func replace(_ candidate: [String: String], current: () throws -> [String: String],
                                clearAuthorization: () throws -> Void, save: ([String: String]) throws -> Void) throws {
         let validated = try self.validated(candidate)
-        let previous = try? self.validated(current())
+        let loaded = try current()
+        let previous = try? self.validated(loaded)
         if previous != validated { try clearAuthorization() }
         try save(validated)
     }

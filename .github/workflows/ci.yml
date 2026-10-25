@@ -153,6 +153,9 @@ jobs:
           # interpreter whose dependencies were installed above.
           python -c 'import os, sys; p = os.path.realpath(sys.executable); f = open(os.environ["GITHUB_ENV"], "a"); f.write(f"NMAPUI_SHARED_ENGINE_FIXTURE_PYTHON={p}\nNMAPUI_SHARED_ENGINE_CANONICAL_PYTHON={p}\n")'
       - name: Test full native Swift package
+        env:
+          NMAPUI_RUN_ISOLATED_KEYCHAIN_TESTS: "1"
+          NMAPUI_KEYCHAIN_TEST_ENVIRONMENT: ${{ runner.environment }}
         run: swift test --package-path packaging/macos --scratch-path "$NMAPUI_NATIVE_BUILD_DIR"
       - name: Verify offline reports preserve layout and block decoy scripts
         run: |

@@ -243,3 +243,22 @@ never removes the scanner's shared scheduler lock. Quit the selected copy first;
 review stale markers manually. Temporary-destination installer smoke checks
 preserve the completed resource seal and nested helper identities without
 launching the app or registering services.
+
+### Drive secure-state failures
+
+The native Drive helper distinguishes a missing Keychain item from a locked,
+denied, unavailable or corrupt item. Only a genuinely missing item can migrate
+legacy state; migration saves successfully to Keychain before removing the
+legacy JSON. Reads are limited to 1 MiB, and migration or cleanup failures are
+reported. Status, credential replacement and uploads cannot silently select an
+older account after a Keychain read error. Explicit Disconnect still attempts
+local deletion when a token cannot be read or revoked, and separately reports
+unconfirmed Google revocation; failed local deletion is not reported as success.
+
+`DriveKeychainTests` inject Security results for local tests. Its actual Keychain
+round trip runs only when explicitly enabled in the GitHub-hosted macOS job,
+with every item query scoped to a newly created private Keychain. It verifies
+write/read/update, root/account separation, deletion and unchanged search-list
+metadata after deleting its owned Keychain. It does not read or write default
+Keychain items, authorize Google, upload account data or prove real consent and
+revocation. Local runs skip this hosted-only test.
