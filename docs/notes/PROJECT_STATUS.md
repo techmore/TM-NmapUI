@@ -6,7 +6,13 @@ Current work is published in [draft PR #254](https://github.com/techmore/TM-Nmap
 The cross-platform evidence ledger is
 [RELEASE_READINESS_2026-10-25.md](RELEASE_READINESS_2026-10-25.md).
 It tracks web, native macOS, native elementary OS, Drive, Daedalus packaging and
-installed-host gates separately. The next release has not been qualified or tagged.
+installed-host gates separately. Shared engine `46a18a27` passed all four hosted
+jobs; elementary `70ba34b` and the exact-engine Daedalus integration also passed
+their final hosted checks. Full SwiftUI stabilization is in separate draft
+[PR #255](https://github.com/techmore/TM-NmapUI/pull/255), with native Drive
+hardening stacked in [PR #256](https://github.com/techmore/TM-NmapUI/pull/256).
+Installed-host, signing and real OAuth gates remain open. The next release has
+not been qualified or tagged.
 
 ## October 25 repository audit
 
