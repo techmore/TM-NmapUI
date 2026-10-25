@@ -147,3 +147,10 @@ The shared Monitoring Hub display lives in `static/js/monitoring_hub.js` for the
 Flask page. Desktop Flask startup skips public traceroute by default; an explicit
 `NMAPUI_STARTUP_TRACEROUTE=true` still opts in. Readiness requires the scanner and
 scheduler, independently of optional public topology discovery.
+
+Build/bundle/install replacement now refuses active or unverified destinations.
+It never signals processes from a stale PID marker or command substring, and it
+never removes the scanner's shared scheduler lock. Quit the selected copy first;
+review stale markers manually. Temporary-destination installer smoke checks
+preserve the completed resource seal and nested helper identities without
+launching the app or registering services.

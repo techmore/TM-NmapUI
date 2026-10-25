@@ -272,15 +272,16 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'pkill -f "NmapUI.app" 2>/dev/null || true' not in build_script
     assert 'RUNTIME_PID_FILE_REL="Contents/Resources/nmapui-runtime.pid"' in build_script
     assert 'SHUTDOWN_MARKER_REL="Contents/Resources/nmapui-shutdown"' in build_script
-    assert 'AUTO_SCAN_LOCK_REL="Contents/Resources/data/auto_scan_scheduler.lock"' in build_script
+    assert 'AUTO_SCAN_LOCK_REL=' not in build_script
+    assert '/usr/bin/pkill' not in build_script
+    assert '"$RUNTIME_DATA_DIR/auto_scan_scheduler.lock"' not in build_script
     assert "shell_escape() {" in build_script
     assert "applescript_escape() {" in build_script
-    assert "kill_runtime_tree() {" in build_script
-    assert "purge_bundle_artifacts() {" in build_script
+    assert "assert_bundles_stopped() {" in build_script
+    assert 'python3 "$PACKAGING_DIR/assert_bundle_stopped.py" "$@" || exit 1' in build_script
     assert "remove_bundle_path() {" in build_script
     assert "stage_google_drive_credentials() {" in build_script
-    assert 'purge_bundle_artifacts "$APP_NAME"' in build_script
-    assert 'purge_bundle_artifacts "$INSTALLED_APP_NAME"' in build_script
+    assert 'assert_bundles_stopped "$APP_NAME" "$INSTALLED_APP_NAME"' in build_script
     assert 'rm -rf "$BUILD_DIR"' in build_script
     assert 'rm -rf "$APP_NAME"' in build_script
     assert 'remove_bundle_path "$INSTALLED_APP_NAME"' in build_script

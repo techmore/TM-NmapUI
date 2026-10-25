@@ -136,7 +136,7 @@ jobs:
       - name: Test full native Swift package
         run: swift test --package-path packaging/macos --scratch-path "$NMAPUI_NATIVE_BUILD_DIR"
       - name: Verify numeric versions and optimized native bundle
-        run: python -m pytest -q -s --basetemp "$RUNNER_TEMP/nmapui-native-pytest" tests/test_macos_bundle_version.py tests/test_native_bundle.py
+        run: python -m pytest -q -s --basetemp "$RUNNER_TEMP/nmapui-native-pytest" tests/test_macos_bundle_version.py tests/test_native_bundle.py tests/test_macos_build_preflight.py
       - name: Upload native diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
