@@ -5,6 +5,12 @@ import Testing
 
 @Suite("Shared engine HTTP client", .serialized)
 struct SharedEngineClientTests {
+    @Test("literal-loopback fixture starts when reverse DNS is forbidden")
+    func fixtureWithoutDNS() async throws {
+        let fixture = try await FlaskFixture(mode: "forbid-dns")
+        defer { fixture.stop() }
+        #expect(try await fixture.client().snapshot().version == "v2026.10.25")
+    }
     @Test("a fixture child that exits before readiness fails promptly")
     func fixtureExited() async throws {
         let start = Date()

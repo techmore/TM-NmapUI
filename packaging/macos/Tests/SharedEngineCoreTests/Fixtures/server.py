@@ -4,8 +4,13 @@ import json
 import os
 import sys
 import time
+import faulthandler
+print("Fixture stage: python-start", file=sys.stderr, flush=True)
+faulthandler.dump_traceback_later(10)
 from flask import Flask, Response, jsonify, request
-from werkzeug.serving import WSGIRequestHandler, make_server
+from werkzeug.serving import WSGIRequestHandler
+from loopback_server import LoopbackFixtureServer
+print("Fixture stage: flask-imported", file=sys.stderr, flush=True)
 
 app = Flask(__name__)
 mode = os.environ.get("SHARED_FIXTURE_MODE", "valid")
@@ -108,8 +113,15 @@ class QuietHandler(WSGIRequestHandler):
         pass
 
 
-server = make_server("127.0.0.1", 0, app, request_handler=QuietHandler, threaded=True)
+if mode == "forbid-dns":
+    import socket
+    def forbidden_lookup(*_):
+        raise AssertionError("literal-loopback fixture attempted reverse DNS")
+    socket.getfqdn = forbidden_lookup
+print("Fixture stage: binding-loopback", file=sys.stderr, flush=True)
+server = LoopbackFixtureServer("127.0.0.1", 0, app, handler=QuietHandler)
 if mode == "delayed-ready":
     time.sleep(0.3)
 print(json.dumps({"port": server.server_port}), flush=True)
+faulthandler.cancel_dump_traceback_later()
 server.serve_forever()
