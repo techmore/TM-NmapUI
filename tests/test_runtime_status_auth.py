@@ -86,6 +86,23 @@ def test_insecure_auth_configuration_does_not_expose_status(status_app, monkeypa
     assert "Private customer" not in response.get_data(as_text=True)
 
 
+@pytest.mark.parametrize("bind_host", ["", " ", "\t"])
+def test_blank_bind_cannot_acknowledge_default_credentials(status_app, monkeypatch, bind_host):
+    app, snapshots = status_app
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
+    monkeypatch.setenv("NMAPUI_ALLOW_DEFAULT_CREDENTIALS", "true")
+    monkeypatch.setenv("NMAPUI_HOST", bind_host)
+    monkeypatch.setenv("NMAPUI_PASSWORD", auth.DEFAULT_AUTH_PASSWORD)
+    value = base64.b64encode(f"scanner-雪:{auth.DEFAULT_AUTH_PASSWORD}".encode()).decode()
+    response = app.test_client().get(
+        "/api/runtime/status", headers={"Authorization": f"Basic {value}"},
+        environ_overrides={"REMOTE_ADDR": "192.0.2.50"},
+    )
+    assert response.status_code == 503
+    assert not auth.default_credentials_allowed()
+    assert snapshots == []
+
+
 def test_public_health_probes_do_not_require_scan_status_access(status_app):
     app, snapshots = status_app
     client = app.test_client()
