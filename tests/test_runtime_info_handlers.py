@@ -849,7 +849,11 @@ def test_connect_emits_persisted_active_job_status_without_active_owner(monkeypa
         def get_runtime_snapshot(self, key):
             return None
 
-        def list_jobs(self, statuses=None, limit=50):
+        def list_jobs(self, statuses=None, job_type=None, limit=50):
+            assert statuses == ("running", "cancelling")
+            assert limit == 1
+            if job_type != "report":
+                return []
             return [
                 {
                     "job_id": "owner-sid:report",

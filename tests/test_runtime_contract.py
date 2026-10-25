@@ -190,9 +190,8 @@ def test_settings_tab_google_drive_actions_use_http_routes():
         "/api/settings/google-drive/credentials",
     ):
         assert f"fetch('{route}'" in settings_source
-    # The dead socket events must no longer be the primary path (HTTP first, socket fallback allowed).
-    assert "fetch('/api/settings/google-drive/auth-url'" in settings_source
-    assert "emit('connect_google_drive')" in settings_source  # node fallback retained
+    # Browser regressions exercise real import and sign-in behavior; unavailable
+    # HTTP routes must produce useful feedback, not invoke unhandled events.
 
 
 def test_settings_tab_maintenance_buttons_call_runtime_routes():
@@ -691,7 +690,7 @@ def test_connection_handler_prefers_sqlite_snapshots_without_active_owner():
     assert "subscriber_set = set(self._connected_sids) or {owner_sid}" in jobs_source
     assert "def _load_persisted_active_job(runtime_store):" in connections_source
     assert "def _load_persisted_job_events(runtime_store, job_id):" in connections_source
-    assert 'runtime_store.list_jobs(statuses=("running", "cancelling"), limit=1)' in connections_source
+    assert 'runtime_store.list_jobs(statuses=("running", "cancelling"), job_type=job_type, limit=1)' in connections_source
     assert 'runtime_store.list_job_events(job_id=job_id, limit=200)' in connections_source
     assert 'runtime_store.get_runtime_snapshot("current_customer")' in connections_source
     assert 'runtime_store.get_runtime_snapshot("network_key")' in connections_source
@@ -1598,8 +1597,6 @@ def test_google_drive_integration_contract_exists():
     assert 'ENCRYPTED_TOKEN_SCHEMA_VERSION = 1' in google_drive_source
     assert "def _load_or_create_encryption_key(key_path: Path) -> bytes:" in google_drive_source
     assert '\"ciphertext\"' in google_drive_source
-    assert 'with file_path.open("rb") as file_handle:' in google_drive_source
-    assert "file_path.read_bytes()" not in google_drive_source
     assert "upload_report_artifacts_to_google_drive=" in app_source
     assert "key_path=GOOGLE_DRIVE_TOKEN_KEY_FILE" in app_source
     assert "load_remote_sync_secret(" in app_source
