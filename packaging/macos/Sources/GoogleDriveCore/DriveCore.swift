@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum DriveFailure: Error, LocalizedError {
     case invalid(String)
@@ -79,6 +80,29 @@ public final class DriveUploader {
         guard chunkSize > 0, chunkSize % (256 * 1024) == 0, maximumRequests > 0 else { throw DriveFailure.invalid("Invalid upload bounds.") }
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
+        func fingerprint(_ info: stat) -> [Int64] {
+            [Int64(info.st_dev), Int64(info.st_ino), info.st_size,
+             Int64(info.st_mtimespec.tv_sec), Int64(info.st_mtimespec.tv_nsec),
+             Int64(info.st_ctimespec.tv_sec), Int64(info.st_ctimespec.tv_nsec)]
+        }
+        var original = stat()
+        guard fstat(handle.fileDescriptor, &original) == 0, (original.st_mode & S_IFMT) == S_IFREG else {
+            throw DriveFailure.invalid("Report must be a regular file.")
+        }
+        let identity = fingerprint(original)
+        func validateSource() throws {
+            var descriptor = stat()
+            var path = stat()
+            let pathStatus = file.withUnsafeFileSystemRepresentation { pointer in
+                pointer.map { fstatat(AT_FDCWD, $0, &path, AT_SYMLINK_NOFOLLOW) } ?? -1
+            }
+            guard fstat(handle.fileDescriptor, &descriptor) == 0, pathStatus == 0,
+                  (path.st_mode & S_IFMT) == S_IFREG,
+                  fingerprint(descriptor) == identity, fingerprint(path) == identity else {
+                throw DriveFailure.invalid("Report changed during upload.")
+            }
+        }
+        try validateSource()
         let total = try handle.seekToEnd()
         guard total > 0, total <= UInt64(chunkSize) * UInt64(maximumRequests) else { throw DriveFailure.invalid("Report exceeds upload bounds or is empty.") }
         var requests = 0
@@ -87,6 +111,7 @@ public final class DriveUploader {
             while true {
                 requests += 1
                 guard requests <= maximumRequests else { throw DriveFailure.invalid("Drive upload request limit reached.") }
+                try validateSource()
                 var req = URLRequest(url: url)
                 req.httpMethod = method; req.httpBody = body; req.timeoutInterval = 60
                 headers.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
@@ -101,6 +126,7 @@ public final class DriveUploader {
         guard (200...299).contains(start.status), let location = start.headers["location"] else { throw DriveFailure.invalid("Could not start Drive resumable upload (HTTP \(start.status)).") }
         let session = try DrivePolicy.sessionURL(location)
         var offset: UInt64 = 0
+        var highestSent: UInt64 = 0
         var failures = 0
         var probe = false
         while true {
@@ -108,18 +134,24 @@ public final class DriveUploader {
             let body: Data
             if probe { body = Data() } else {
                 try handle.seek(toOffset: offset)
-                body = try handle.read(upToCount: min(chunkSize, Int(total - offset))) ?? Data()
-                guard !body.isEmpty else { throw DriveFailure.invalid("Report changed during upload.") }
+                let expected = min(chunkSize, Int(total - offset))
+                body = try handle.read(upToCount: expected) ?? Data()
+                guard body.count == expected else { throw DriveFailure.invalid("Report changed during upload.") }
             }
+            try validateSource()
+            if !probe { highestSent = max(highestSent, offset + UInt64(body.count)) }
             let range = probe ? "bytes */\(total)" : "bytes \(offset)-\(offset + UInt64(body.count) - 1)/\(total)"
             let response: DriveResponse
             do { response = try request(session, method: "PUT", body: body, headers: ["Content-Range": range, "Content-Type": "application/octet-stream"]) }
             catch {
+                if error is DriveFailure { throw error }
                 failures += 1
                 guard failures <= 3, requests < maximumRequests else { throw error }
                 sleep(pow(2, Double(failures - 1))); probe = true; continue
             }
+            try validateSource()
             if (200...299).contains(response.status) {
+                guard highestSent == total else { throw DriveFailure.invalid("Drive reported completion before the entire report was sent.") }
                 guard let result = try JSONSerialization.jsonObject(with: response.body) as? [String: Any],
                       let id = result["id"] as? String, !id.isEmpty else { throw DriveFailure.invalid("Drive completion response lacks file ID.") }
                 return result
@@ -130,7 +162,7 @@ public final class DriveUploader {
                     guard range.hasPrefix("bytes=0-"), let last = UInt64(range.dropFirst(8)), last < total else { throw DriveFailure.invalid("Invalid Drive upload acknowledgement.") }
                     acknowledged = last + 1
                 }
-                let maximumAcknowledged = probe ? min(total, sentFrom + UInt64(chunkSize)) : sentFrom + UInt64(body.count)
+                let maximumAcknowledged = probe ? highestSent : sentFrom + UInt64(body.count)
                 guard acknowledged >= offset, acknowledged <= maximumAcknowledged else { throw DriveFailure.invalid("Drive acknowledgement outside sent range.") }
                 if acknowledged == offset { failures += 1 } else { failures = 0 }
                 guard failures <= 3, acknowledged < total else { throw DriveFailure.invalid("Drive upload made no progress or lacks completion.") }
@@ -181,5 +213,32 @@ public enum DriveTokenRefresher {
             throw DriveRefreshError.failed
         }
         return (access, payload["refresh_token"] as? String, lifetime)
+    }
+}
+
+public enum DriveCallbackParseResult: Equatable {
+    case awaitingHeaders, invalid, denied, failed
+    case authorized(code: String, state: String)
+}
+public enum DriveCallbackRequest {
+    public static let maximumBytes = 16 * 1024
+    public static func parse(_ data: Data, path: String, expectedState: String?) -> DriveCallbackParseResult {
+        guard data.count <= maximumBytes else { return .invalid }
+        guard data.range(of: Data("\r\n\r\n".utf8)) != nil else { return .awaitingHeaders }
+        guard let text = String(data: data, encoding: .utf8), let line = text.components(separatedBy: "\r\n").first else { return .invalid }
+        let parts = line.split(separator: " ", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "GET", parts[2] == "HTTP/1.1" || parts[2] == "HTTP/1.0",
+              parts[1].hasPrefix("/"), !parts[1].hasPrefix("//"),
+              let url = URLComponents(string: String(parts[1])), url.scheme == nil, url.host == nil,
+              url.fragment == nil, url.path == path, let expectedState, !expectedState.isEmpty else { return .invalid }
+        let items = url.queryItems ?? []
+        func value(_ name: String) -> String? {
+            let matches = items.filter { $0.name == name }
+            return matches.count == 1 ? matches[0].value : nil
+        }
+        guard value("state") == expectedState else { return .invalid }
+        if let error = value("error"), !error.isEmpty, !items.contains(where: { $0.name == "code" }) { return error == "access_denied" ? .denied : .failed }
+        guard !items.contains(where: { $0.name == "error" }), let code = value("code"), !code.isEmpty else { return .invalid }
+        return .authorized(code: code, state: expectedState)
     }
 }

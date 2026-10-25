@@ -10,6 +10,25 @@ final class DriveCoreTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: file) }
         return file
     }
+    func testCallbackHeadersCanArriveOneByteAtATime() {
+        let request = Data("GET /google-drive/oauth2callback?code=a%2Bb&state=expected HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n".utf8)
+        for length in 0..<request.count {
+            XCTAssertEqual(DriveCallbackRequest.parse(Data(request.prefix(length)), path: "/google-drive/oauth2callback", expectedState: "expected"), .awaitingHeaders)
+        }
+        XCTAssertEqual(DriveCallbackRequest.parse(request, path: "/google-drive/oauth2callback", expectedState: "expected"), .authorized(code: "a+b", state: "expected"))
+    }
+    func testCallbackDenialAndMalformedRequests() {
+        func parse(_ target: String, method: String = "GET") -> DriveCallbackParseResult {
+            DriveCallbackRequest.parse(Data("\(method) \(target) HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n".utf8), path: "/google-drive/oauth2callback", expectedState: "expected")
+        }
+        XCTAssertEqual(parse("/google-drive/oauth2callback?error=access_denied&state=expected"), .denied)
+        XCTAssertEqual(parse("/google-drive/oauth2callback?error=server_error&state=expected"), .failed)
+        XCTAssertEqual(parse("/google-drive/oauth2callback?error=access_denied&state=wrong"), .invalid)
+        XCTAssertEqual(parse("/google-drive/oauth2callback?code=x&state=expected&state=expected"), .invalid)
+        XCTAssertEqual(parse("/google-drive/oauth2callback/extra?code=x&state=expected"), .invalid)
+        XCTAssertEqual(parse("/google-drive/oauth2callback?code=x&state=expected", method: "POST"), .invalid)
+        XCTAssertEqual(DriveCallbackRequest.parse(Data(repeating: 1, count: DriveCallbackRequest.maximumBytes + 1), path: "/google-drive/oauth2callback", expectedState: "expected"), .invalid)
+    }
     func testRefreshHTTPEncodingRotationAndRevocation() throws {
         let result = try DriveTokenRefresher.refresh(clientID: "client", clientSecret: "secret+ &", refreshToken: "refresh") { request in
             XCTAssertEqual(request.url?.absoluteString, "https://oauth2.googleapis.com/token")
@@ -107,6 +126,42 @@ final class DriveCoreTests: XCTestCase {
             }
         })
         XCTAssertEqual(try uploader.upload(file: file, metadata: [:])["id"] as? String, "file-1")
+    }
+    func testPrematureCompletionDuringChunkOrProbeIsRejected() throws {
+        let file = try fixture(600000)
+        for useProbe in [false, true] {
+            var calls = 0
+            let uploader = DriveUploader(chunkSize: 262144, token: { _ in "token" }, sleep: { _ in }, send: { _ in
+                calls += 1
+                if calls == 1 { return DriveResponse(200, headers: ["Location": self.session]) }
+                if calls == 2 && useProbe { throw URLError(.networkConnectionLost) }
+                return self.complete
+            })
+            XCTAssertThrowsError(try uploader.upload(file: file, metadata: [:]))
+            XCTAssertEqual(calls, useProbe ? 3 : 2)
+        }
+    }
+    func testSourceTruncationMutationAndReplacementAreRejected() throws {
+        for mutation in 0..<3 {
+            let file = try fixture(300000)
+            var calls = 0
+            let uploader = DriveUploader(chunkSize: 262144, token: { _ in "token" }, sleep: { _ in }, send: { _ in
+                calls += 1
+                if calls == 1 { return DriveResponse(200, headers: ["Location": self.session]) }
+                if mutation == 0 {
+                    let writer = try FileHandle(forWritingTo: file)
+                    try writer.truncate(atOffset: 1); try writer.close()
+                } else if mutation == 1 {
+                    let writer = try FileHandle(forWritingTo: file)
+                    try writer.write(contentsOf: Data([1])); try writer.close()
+                } else {
+                    try Data(repeating: 1, count: 300000).write(to: file, options: .atomic)
+                }
+                return DriveResponse(308, headers: ["Range": "bytes=0-262143"])
+            })
+            XCTAssertThrowsError(try uploader.upload(file: file, metadata: [:]))
+            XCTAssertEqual(calls, 2)
+        }
     }
     func testNoProgressAndRequestBounds() throws {
         let file = try fixture(1)

@@ -1,4 +1,5 @@
 import Foundation
+import GoogleDriveCore
 import Network
 
 private final class StartState: @unchecked Sendable {
@@ -17,6 +18,8 @@ final class GoogleDriveOAuthSession: @unchecked Sendable {
         case timeout
         case invalidCallback
         case alreadyFinished
+        case authorizationDenied
+        case authorizationFailed
 
         var errorDescription: String? {
             switch self {
@@ -24,6 +27,8 @@ final class GoogleDriveOAuthSession: @unchecked Sendable {
             case .timeout: return "Timed out waiting for Google sign-in."
             case .invalidCallback: return "Google returned an incomplete OAuth callback."
             case .alreadyFinished: return "OAuth callback already completed."
+            case .authorizationFailed: return "Google sign-in failed. Google Drive was not connected."
+            case .authorizationDenied: return "Google sign-in was denied or cancelled. Google Drive was not connected."
             }
         }
     }
@@ -91,10 +96,10 @@ final class GoogleDriveOAuthSession: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func acceptsState(_ state: String) -> Bool {
+    private func expectedCallbackState() -> String? {
         lock.lock()
         defer { lock.unlock() }
-        return !finished && expectedState == state
+        return finished ? nil : expectedState
     }
 
     func waitForCallback(timeoutSeconds: TimeInterval = 180) async throws -> Callback {
@@ -140,52 +145,39 @@ final class GoogleDriveOAuthSession: @unchecked Sendable {
 
     private func handle(connection: NWConnection) {
         connection.start(queue: DispatchQueue.global(qos: .userInitiated))
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, _, _ in
-            guard let self else {
-                connection.cancel()
-                return
-            }
-            guard let data, let request = String(data: data, encoding: .utf8) else {
-                self.respond(connection: connection, status: 400, body: "Bad Request")
-                return
-            }
+        // A slow or incomplete local request cannot retain a connection indefinitely.
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 10) {
+            connection.cancel()
+        }
+        receiveHeaders(connection: connection, accumulated: Data())
+    }
 
-            let firstLine = request.split(separator: "\r\n", maxSplits: 1).first.map(String.init) ?? ""
-            let parts = firstLine.split(separator: " ")
-            guard parts.count == 3, parts[0] == "GET" else {
-                self.respond(connection: connection, status: 400, body: "Bad Request")
-                return
+    private func receiveHeaders(connection: NWConnection, accumulated: Data) {
+        let remaining = DriveCallbackRequest.maximumBytes - accumulated.count
+        guard remaining > 0 else { respond(connection: connection, status: 400, body: "Request too large"); return }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: remaining) { [weak self] data, _, complete, error in
+            guard let self else { connection.cancel(); return }
+            var buffer = accumulated
+            if let data { buffer.append(data) }
+            switch DriveCallbackRequest.parse(buffer, path: self.path, expectedState: self.expectedCallbackState()) {
+            case .awaitingHeaders:
+                if error != nil || complete || buffer.count >= DriveCallbackRequest.maximumBytes {
+                    self.respond(connection: connection, status: 400, body: "Incomplete callback")
+                } else {
+                    self.receiveHeaders(connection: connection, accumulated: buffer)
+                }
+            case .invalid:
+                self.respond(connection: connection, status: 400, body: "Invalid callback")
+            case .failed:
+                self.respond(connection: connection, status: 200, body: "Google sign-in failed. Return to NmapUI.")
+                self.fail(.authorizationFailed)
+            case .denied:
+                self.respond(connection: connection, status: 200, body: "Google sign-in was denied or cancelled. Return to NmapUI.")
+                self.fail(.authorizationDenied)
+            case .authorized(let code, let state):
+                self.respond(connection: connection, status: 200, body: "Google sign-in received. Return to NmapUI to check whether the connection succeeded.")
+                self.finish(Callback(code: code, state: state))
             }
-            let target = String(parts[1])
-            guard let url = URL(string: "http://localhost\(target)") else {
-                self.respond(connection: connection, status: 400, body: "Bad Request")
-                return
-            }
-            guard url.path == self.path else {
-                self.respond(connection: connection, status: 404, body: "Not Found")
-                return
-            }
-
-            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-            let code = items.first(where: { $0.name == "code" })?.value
-            let state = items.first(where: { $0.name == "state" })?.value
-            guard items.filter({ $0.name == "code" }).count == 1, items.filter({ $0.name == "state" }).count == 1,
-                  let code, let state, !code.isEmpty, !state.isEmpty, self.acceptsState(state) else {
-                self.respond(connection: connection, status: 400, body: "Missing code/state")
-                return
-            }
-
-            self.respond(
-                connection: connection,
-                status: 200,
-                body: """
-                <html><body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 2rem; color: #2f341c;">
-                <h1>Google sign-in received</h1>
-                <p>Return to NmapUI to check whether the connection succeeded.</p>
-                </body></html>
-                """
-            )
-            self.finish(Callback(code: code, state: state))
         }
     }
 
