@@ -168,6 +168,12 @@ def test_ci_workflow_covers_browser_and_packaged_smoke_jobs():
     assert "pytest -q tests/test_browser_regressions.py" in ci_source
     assert "pytest -q tests/test_packaged_app_smoke.py" in ci_source
     assert "actions/upload-artifact@v4" in ci_source
+    assert "native-macos:" in ci_source
+    assert 'swift test --package-path packaging/macos --scratch-path "$NMAPUI_NATIVE_BUILD_DIR"' in ci_source
+    assert "tests/test_macos_bundle_version.py tests/test_native_bundle.py" in ci_source
+    assert 'NMAPUI_RUN_NATIVE_BUNDLE_SMOKE: "1"' in ci_source
+    assert "NMAPUI_BUILD_CONFIGURATION: release" in ci_source
+    assert "cancel-in-progress: true" in ci_source
 
 
 def test_template_uses_shared_report_status_module():
@@ -200,8 +206,8 @@ def test_wrapper_contract_uses_single_supported_launcher():
     build_script = (ROOT / "build.sh").read_text()
 
     assert 'PACKAGING_DIR="$ROOT_DIR/packaging/macos"' in build_script
-    assert 'APP_VERSION="$(tr -d \'\\r\\n\' < "$ROOT_DIR/VERSION")"' in build_script
-    assert 'echo "ERROR: VERSION file is empty" >&2' in build_script
+    assert 'VERSION_METADATA="$(python3 "$PACKAGING_DIR/bundle_version.py" "$ROOT_DIR/VERSION")" || exit 1' in build_script
+    assert build_script.index('VERSION_METADATA=') < build_script.index('SDK=$(xcrun')
     assert "ROOT_RUNTIME_PY=(" in build_script
     assert "customer_fingerprint_matcher.py" in build_script
     assert "customer_fingerprint_store.py" in build_script
@@ -238,7 +244,9 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'MIGRATION_SOURCE_DB="$NMAPUI_MIGRATE_DB_FROM"' in build_script
     assert 'MIGRATION_SOURCE_DB="$INSTALLED_RUNTIME_DB"' in build_script
     assert 'echo "Host architecture: $HOST_ARCH"' in build_script
-    assert "<string>$APP_VERSION</string>" in build_script
+    assert "<string>$BUNDLE_BUILD_VERSION</string>" in build_script
+    assert "<string>$BUNDLE_SHORT_VERSION</string>" in build_script
+    assert "<string>$APP_VERSION</string>" not in build_script
     assert "<string>NmapUI</string>" in build_script
     assert "<string>com.techmore.nmapui</string>" in build_script
     assert 'echo "Target: $SWIFT_TARGET"' in build_script
@@ -254,7 +262,7 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'if [[ "${NMAPUI_SKIP_OPEN:-}" == "1" ]]; then' in build_script
     assert 'echo "Skipping application auto-open because NMAPUI_SKIP_OPEN=1"' in build_script
     assert 'open "$INSTALLED_APP_NAME"' in build_script
-    assert 'pkill -f "NmapUI.app" 2>/dev/null || true' in build_script
+    assert 'pkill -f "NmapUI.app" 2>/dev/null || true' not in build_script
     assert 'RUNTIME_PID_FILE_REL="Contents/Resources/nmapui-runtime.pid"' in build_script
     assert 'SHUTDOWN_MARKER_REL="Contents/Resources/nmapui-shutdown"' in build_script
     assert 'AUTO_SCAN_LOCK_REL="Contents/Resources/data/auto_scan_scheduler.lock"' in build_script
@@ -1727,3 +1735,18 @@ def test_template_uses_dom_helpers_for_asset_modal_and_history_rendering():
     assert "serviceDiv.innerHTML =" not in template
     assert "cveDiv.innerHTML =" not in template
     assert "historyList.innerHTML = scans.map" not in template
+
+
+def test_native_and_flask_pages_keep_matching_client_transports_and_unmasked_browser_checks():
+    native = (ROOT / "index.html").read_text()
+    flask = (ROOT / "templates/index.html").read_text()
+    for module in ("scan_runtime", "settings_tab", "customer_ui", "auto_scan_ui", "site_chrome"):
+        assert f'/static/js/native/{module}.js' in native
+        assert f'/static/js/{module}.js' in flask
+        assert f'/static/js/native/{module}.js' not in flask
+        assert (ROOT / "static/js/native" / f"{module}.js").is_file()
+    assert '/static/js/monitoring_hub.js' in flask
+    browser = (ROOT / "tests/test_browser_regressions.py").read_text()
+    assert "@pytest.mark.xfail" not in browser
+    assert "socketio.test_client(" not in browser
+    assert 'client.connect(browser_server["base_url"], transports=["polling"])' in browser

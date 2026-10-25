@@ -50,3 +50,8 @@ var appURL: URL {
 ## Removed Prototype
 
 The older relay and API-key prototype is no longer part of the supported wrapper path. If remote report forwarding is needed later, it should be built as a separate feature with explicit authentication, loopback-only binding, and release coverage.
+
+The retained Flask wrapper uses the selected local runtime URL (the default
+local loopback URL is `http://127.0.0.1:9000`). Native SwiftUI does not need that
+listener. For Flask runtime-store migration, use
+`scripts/backfill_runtime_store.py --help` before changing stored data.

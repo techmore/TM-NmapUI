@@ -47,19 +47,23 @@ def _get_browser(playwright):
     try:
         return playwright.chromium.launch(headless=True)
     except Exception as error:  # pragma: no cover - only exercised in gated mode
-        pytest.skip(f"Playwright Chromium is not available: {error}")
+        pytest.fail(f"Browser coverage enabled but Chromium is not available: {error}")
+
+
+def _connect_socket(browser_server):
+    # In-process Flask test_client replaces packet senders and breaks real browsers.
+    import socketio
+    client = socketio.Client(handle_sigint=False, reconnection=False, request_timeout=5)
+    client.connect(browser_server["base_url"], transports=["polling"])
+    return client
 
 
 def _get_socket_sid(client):
-    client.emit("whoami")
-    for event in client.get_received():
-        if event["name"] == "whoami":
-            return event["args"][0]["sid"]
-    raise AssertionError("whoami event did not return a socket session id")
+    return client.get_sid("/")
 
 
 @pytest.fixture(scope="session")
-def browser_server():
+def browser_server(tmp_path_factory):
     _require_browser_regression_enabled()
 
     os.environ.setdefault("NMAPUI_TRUST_LOCAL_UI", "true")
@@ -71,7 +75,33 @@ def browser_server():
     # token; disable socket auth for browser regressions.
     os.environ.setdefault("NMAPUI_SOCKET_AUTH_DISABLED", "true")
 
+    port = _find_free_port()
+    os.environ["NMAPUI_PORT"] = str(port)
+    os.environ["NMAPUI_DATA_DIR"] = str(tmp_path_factory.mktemp("browser-runtime"))
+    # Install public-request stubs before app import (which may warm caches).
+    import requests
+    original_requests_get = requests.get
+    class ResponseStub:
+        text = "203.0.113.10"
+        def raise_for_status(self): pass
+        def json(self):
+            return {"tag_name": (ROOT / "VERSION").read_text().strip(), "html_url": "https://example.invalid/release", "body": "", "assets": []}
+    def isolated_get(url, *args, **kwargs):
+        if url not in {"https://api.ipify.org", "https://api.github.com/repos/techmore/TM-NmapUI/releases/latest", "https://api.github.com/repos/techmore/NmapUI/releases/latest"}:
+            raise AssertionError(f"Unexpected external browser test request: {url}")
+        return ResponseStub()
+    requests.get = isolated_get
     app_module = importlib.import_module("app")
+    from nmapui.client_state import DEFAULT_NETWORK_KEY
+    original_traceroute = app_module.run_traceroute_runtime
+    def isolated_traceroute(*, target, sid=None, deps):
+        key = {**DEFAULT_NETWORK_KEY, "target": target, "total_hops": 1,
+               "hops": [{"ip": target, "is_private": False}],
+               "public_hops": [{"ip": target, "is_private": False}], "exit_ip": target}
+        app_module.set_network_key_state(key, sid=sid)
+        return key
+    app_module.run_traceroute_runtime = isolated_traceroute
+    app_module.requests.get = isolated_get
 
     if not hasattr(app_module, "_browser_test_whoami_registered"):
         from flask import request
@@ -83,7 +113,6 @@ def browser_server():
 
         app_module._browser_test_whoami_registered = True
 
-    port = _find_free_port()
     server_thread = threading.Thread(
         target=lambda: app_module.socketio.run(
             app_module.app,
@@ -98,10 +127,14 @@ def browser_server():
 
     _wait_for_url(f"http://127.0.0.1:{port}/api/health/live", timeout=90)
 
-    yield {
-        "app_module": app_module,
-        "base_url": f"http://127.0.0.1:{port}",
-    }
+    try:
+        yield {
+            "app_module": app_module,
+            "base_url": f"http://127.0.0.1:{port}",
+        }
+    finally:
+        app_module.run_traceroute_runtime = original_traceroute
+        app_module.requests.get = original_requests_get
 
 
 @pytest.fixture
@@ -118,7 +151,8 @@ def playwright_browser():
 
 
 @pytest.fixture
-def scan_fixture():
+def scan_fixture(browser_server):
+    SCANS_DIR = browser_server["app_module"].SCANS_DIR
     fixture_id = uuid.uuid4().hex[:8]
     customer_name = f"Browser Regression {fixture_id}"
     customer_root = SCANS_DIR / customer_name
@@ -158,6 +192,8 @@ def scan_fixture():
             "status": "completed",
             "completed_successfully": True,
             "diff_summary": diff_summary,
+            "asset_snapshot": ([{"ip": "198.51.100.10", "ports": "80,443"}, {"ip": "198.51.100.12", "ports": "22"}]
+                               if diff_summary else [{"ip": "198.51.100.10", "ports": "80"}]),
         }
         (scan_dir / "metadata.json").write_text(__import__("json").dumps(metadata, indent=2))
         (scan_dir / "scan_web.html").write_text(
@@ -191,6 +227,8 @@ def scan_fixture():
         for scan_dir in (primary_dir, baseline_dir):
             if scan_dir.exists():
                 remove_scan_metadata_index_entry(SCANS_DIR, scan_dir)
+                if runtime_store is not None:
+                    runtime_store.delete_report_artifact(str(scan_dir.relative_to(SCANS_DIR)))
         if customer_root.exists():
             shutil.rmtree(customer_root, ignore_errors=True)
 
@@ -222,6 +260,7 @@ def test_history_tab_renders_diff_summary(browser_server, playwright_browser, sc
 
     page.goto(browser_server["base_url"], wait_until="domcontentloaded")
     page.locator("#tab-history-btn").click()
+    page.locator("#history-focus-all-btn").click()
 
     history_list = page.locator("#history-tab-list")
     fixture_card = history_list.locator("article").filter(
@@ -235,17 +274,19 @@ def test_history_tab_renders_diff_summary(browser_server, playwright_browser, sc
     context.close()
 
 
-@pytest.mark.xfail(reason="#230: mixed test_client + browser socket interplay; protocol bridge in progress", strict=False)
 def test_history_tab_compares_selected_scan_pair(browser_server, playwright_browser, scan_fixture):
     context = playwright_browser.new_context()
     page = context.new_page()
 
     page.goto(browser_server["base_url"], wait_until="domcontentloaded")
     page.locator("#tab-history-btn").click()
+    page.locator("#history-focus-all-btn").click()
 
-    history_cards = page.locator("#history-tab-list article")
-    history_cards.first.get_by_role("button", name="Select Base").click()
-    history_cards.nth(1).get_by_role("button", name="Compare to Base").click()
+    history_cards = page.locator("#history-tab-list article").filter(
+        has=page.locator("h3", has_text=scan_fixture["customer_name"])
+    )
+    history_cards.nth(1).get_by_role("button", name="Select Base").click()
+    history_cards.first.get_by_role("button", name="Compare to Base").click()
 
     page.locator("#history-compare-panel").wait_for()
     page.locator("#history-compare-summary").get_by_text("new host(s)").wait_for()
@@ -255,10 +296,9 @@ def test_history_tab_compares_selected_scan_pair(browser_server, playwright_brow
     context.close()
 
 
-@pytest.mark.xfail(reason="#230: mixed test_client + browser socket interplay; protocol bridge in progress", strict=False)
 def test_second_tab_replays_active_report_state(browser_server, playwright_browser):
     app_module = browser_server["app_module"]
-    owner_client = app_module.socketio.test_client(app_module.app)
+    owner_client = _connect_socket(browser_server)
     owner_sid = _get_socket_sid(owner_client)
 
     app_module.set_current_customer_state(
@@ -318,10 +358,9 @@ def test_second_tab_replays_active_report_state(browser_server, playwright_brows
         context.close()
 
 
-@pytest.mark.xfail(reason="#230: mixed test_client + browser socket interplay; protocol bridge in progress", strict=False)
 def test_second_tab_replays_active_scan_state(browser_server, playwright_browser):
     app_module = browser_server["app_module"]
-    owner_client = app_module.socketio.test_client(app_module.app)
+    owner_client = _connect_socket(browser_server)
     owner_sid = _get_socket_sid(owner_client)
 
     app_module.set_current_customer_state(
@@ -384,7 +423,6 @@ def test_second_tab_replays_active_scan_state(browser_server, playwright_browser
         context.close()
 
 
-@pytest.mark.xfail(reason="#230: mixed test_client + browser socket interplay; protocol bridge in progress", strict=False)
 def test_existing_open_tabs_receive_live_report_state(browser_server, playwright_browser):
     app_module = browser_server["app_module"]
     browser = playwright_browser
@@ -397,7 +435,7 @@ def test_existing_open_tabs_receive_live_report_state(browser_server, playwright
             page.goto(browser_server["base_url"], wait_until="domcontentloaded")
             page.locator("#scan-target").wait_for()
 
-        owner_client = app_module.socketio.test_client(app_module.app)
+        owner_client = _connect_socket(browser_server)
         owner_sid = _get_socket_sid(owner_client)
         try:
             app_module.set_last_scan_target_state(value="198.51.100.0/24", sid=owner_sid)
@@ -443,7 +481,6 @@ def test_existing_open_tabs_receive_live_report_state(browser_server, playwright
         context.close()
 
 
-@pytest.mark.xfail(reason="#230: mixed test_client + browser socket interplay; protocol bridge in progress", strict=False)
 def test_existing_open_tabs_receive_live_scan_state(browser_server, playwright_browser):
     app_module = browser_server["app_module"]
     browser = playwright_browser
@@ -456,7 +493,7 @@ def test_existing_open_tabs_receive_live_scan_state(browser_server, playwright_b
             page.goto(browser_server["base_url"], wait_until="domcontentloaded")
             page.locator("#scan-target").wait_for()
 
-        owner_client = app_module.socketio.test_client(app_module.app)
+        owner_client = _connect_socket(browser_server)
         owner_sid = _get_socket_sid(owner_client)
         try:
             app_module.set_last_scan_target_state(value="198.51.100.0/24", sid=owner_sid)
@@ -494,5 +531,56 @@ def test_existing_open_tabs_receive_live_scan_state(browser_server, playwright_b
             app_module.broadcaster.end_job(owner_sid, job_type="scan")
             app_module.job_registry.complete(owner_sid, "scan", status="completed")
             owner_client.disconnect()
+    finally:
+        context.close()
+
+
+def test_flask_settings_persist_auto_monitor_and_import_drive_credentials(browser_server, playwright_browser):
+    """Flask controls must call existing APIs, independently of the native bridge."""
+    from copy import deepcopy
+    import json
+    from nmapui.settings import DEFAULT_APP_SETTINGS
+
+    settings = deepcopy(DEFAULT_APP_SETTINGS)
+    saved = []
+    imported = []
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    def settings_api(route):
+        if route.request.method == "POST":
+            payload = route.request.post_data_json
+            saved.append(payload)
+            route.fulfill(json={"success": True, "settings": payload})
+        else:
+            route.fulfill(json=settings)
+
+    def credentials_api(route):
+        imported.append(route.request.post_data_json)
+        route.fulfill(json={"success": True, "status": "Test credentials imported"})
+
+    page.route("**/api/settings", settings_api)
+    page.route("**/api/runtime/settings-summary", lambda route: route.fulfill(json={"persisted_counts": {"report_artifacts": 3}}))
+    page.route("**/api/settings/google-drive/status", lambda route: route.fulfill(json={"success": True, "configured": bool(imported), "connected": False,
+        "status": "Test credentials imported" if imported else "Credentials missing"}))
+    page.route("**/api/settings/google-drive/credentials", credentials_api)
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.wait_for_function("() => window.socket && window.socket.connected && typeof window.initializeSettingsTab === 'function'")
+        page.locator("#tab-settings-btn").click()
+        page.wait_for_function("() => settingsTabLoaded === true")
+        page.locator("#settings-auto-monitor-time").fill("02:30")
+        page.locator("#settings-auto-monitor-recurrence").select_option("monthly")
+        page.locator("#save-settings-btn").click()
+        page.wait_for_function("() => document.getElementById('settings-tab-status').textContent.includes('saved')")
+        assert saved and saved[-1]["auto_monitor"]["defaults"]["time"] == "02:30"
+        assert saved[-1]["auto_monitor"]["defaults"]["recurrence"] == "monthly"
+        credentials = {"installed": {"client_id": "test-only", "client_secret": "test-only"}}
+        page.locator("#settings-google-drive-credentials-file").set_input_files({
+            "name": "credentials.json", "mimeType": "application/json", "buffer": json.dumps(credentials).encode(),
+        })
+        page.wait_for_function("() => document.getElementById('settings-google-drive-status').textContent.includes('imported')")
+        assert imported == [{"credentials": credentials}]
+        assert page.evaluate("localStorage.getItem('gemini-nmap-settings')") is None
     finally:
         context.close()

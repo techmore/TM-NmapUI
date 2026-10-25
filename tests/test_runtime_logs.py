@@ -1,5 +1,6 @@
 import base64
 import subprocess
+import pytest
 
 from flask import Flask
 
@@ -831,8 +832,12 @@ def test_runtime_history_compare_prefers_runtime_artifact_payloads(monkeypatch):
     assert payload["diff_summary"]["new_ports"] == ["443 (https)"]
 
 
-def test_startup_checks_append_runtime_log_entries():
+@pytest.mark.parametrize("startup_traceroute", [True, False])
+def test_startup_checks_append_runtime_log_entries(monkeypatch, startup_traceroute):
+    monkeypatch.setenv("NMAPUI_STARTUP_TRACEROUTE", str(startup_traceroute).lower())
+    monkeypatch.setenv("NMAPUI_ENABLE_NETWORK_FINGERPRINT", "true")
     entries = []
+    probes = []
 
     class RuntimeStoreStub:
         def append_log(self, **kwargs):
@@ -852,7 +857,7 @@ def test_startup_checks_append_runtime_log_entries():
             "load_auto_scan_config": lambda config: None,
             "load_current_assignment": lambda: None,
             "logger": type("LoggerStub", (), {"info": lambda self, *a, **k: None})(),
-            "run_traceroute": lambda target: {"target": target, "total_hops": 3},
+            "run_traceroute": lambda target: probes.append(target) or {"target": target, "total_hops": 3},
             "safe_emit": lambda *args, **kwargs: None,
             "startup_state": {},
             "tool_versions": type("ToolVersionsStub", (), {"set_version": lambda self, key, value: None})(),
@@ -865,9 +870,10 @@ def test_startup_checks_append_runtime_log_entries():
 
     assert [entry["message"] for entry in entries] == [
         "Startup checks started",
-        "Startup network initialization completed",
+        "Startup network initialization completed" if startup_traceroute else "Startup network initialization skipped",
         "Startup checks completed",
     ]
+    assert probes == (["1.1.1.1"] if startup_traceroute else [])
 
 
 def test_traceroute_appends_success_runtime_log():

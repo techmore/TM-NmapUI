@@ -157,3 +157,14 @@ HTML and PDF reports are generated after each scan. Reports include:
 ## License
 
 MIT
+
+The retained Flask wrapper uses the selected local runtime URL (the default
+local loopback URL is `http://127.0.0.1:9000`). Native SwiftUI does not need that
+listener. For Flask runtime-store migration, use
+`scripts/backfill_runtime_store.py --help` before changing stored data.
+
+For the retained Flask wrapper, `NMAPUI_SWIFT_TARGET` overrides its compiler
+target; `NMAPUI_APPLICATIONS_DIR` selects installation into `/Applications`,
+`~/Applications`, or an isolated test destination. Export the runtime store with
+`/api/runtime/export` before enabling `NMAPUI_MIGRATE_DB=1 ./build.sh`;
+`NMAPUI_MIGRATE_DB_FROM` selects an explicit source SQLite database.
