@@ -10,6 +10,47 @@ final class DriveCoreTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: file) }
         return file
     }
+    func testCredentialReplacementPreservesInvalidImportAndClearsChangedGrant() throws {
+        var stored = ["client_id": "old", "client_secret": "secret"]
+        var authorization: String? = "old-account-access-and-pending-pkce"
+        var events: [String] = []
+        func replace(_ candidate: [String: String]) throws {
+            try DriveCredentialPolicy.replace(candidate, current: { stored }, clearAuthorization: {
+                events.append("clear")
+                authorization = nil
+            }, save: { value in events.append("save"); stored = value })
+        }
+        for candidate in [[:], ["client_id": "new"], ["client_id": " ", "client_secret": "secret"]] {
+            XCTAssertThrowsError(try replace(candidate))
+            XCTAssertEqual(stored["client_id"], "old")
+            XCTAssertNotNil(authorization)
+            XCTAssertTrue(events.isEmpty)
+        }
+        try replace(stored)
+        XCTAssertEqual(events, ["save"])
+        XCTAssertNotNil(authorization)
+        events.removeAll()
+        try replace(["client_id": "new", "client_secret": "new-secret"])
+        XCTAssertEqual(events, ["clear", "save"])
+        XCTAssertNil(authorization)
+        XCTAssertEqual(stored["client_id"], "new")
+    }
+    func testCredentialClearFailureCannotInstallNewClient() throws {
+        var saves = 0
+        XCTAssertThrowsError(try DriveCredentialPolicy.replace(["client_id": "new", "client_secret": "secret"], current: { ["client_id": "old", "client_secret": "secret"] }, clearAuthorization: { throw DriveFailure.invalid("Storage failure") }, save: { _ in saves += 1 }))
+        XCTAssertEqual(saves, 0)
+    }
+    func testNewAuthorizationNeverInheritsPreviousAccountRefreshToken() throws {
+        let previousRefresh = "previous-account"
+        let response: [String: Any] = ["access_token": "new-account", "expires_in": 3600.0]
+        let exchanged = try DriveAuthorizationTokens.decode(response)
+        XCTAssertEqual(exchanged.access, "new-account")
+        XCTAssertNil(exchanged.refresh)
+        XCTAssertNotEqual(exchanged.refresh, previousRefresh)
+        let explicit = try DriveAuthorizationTokens.decode(response.merging(["refresh_token": "new-refresh"]) { _, new in new })
+        XCTAssertEqual(explicit.refresh, "new-refresh")
+        XCTAssertThrowsError(try DriveAuthorizationTokens.decode(["access_token": "", "expires_in": 3600.0]))
+    }
     func testCallbackHeadersCanArriveOneByteAtATime() {
         let request = Data("GET /google-drive/oauth2callback?code=a%2Bb&state=expected HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n".utf8)
         for length in 0..<request.count {

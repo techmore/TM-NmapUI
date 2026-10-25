@@ -242,3 +242,36 @@ public enum DriveCallbackRequest {
         return .authorized(code: code, state: expectedState)
     }
 }
+
+public enum DriveCredentialPolicy {
+    public static func validated(_ value: [String: String]) throws -> [String: String] {
+        guard let client = value["client_id"]?.trimmingCharacters(in: .whitespacesAndNewlines), !client.isEmpty,
+              let secret = value["client_secret"]?.trimmingCharacters(in: .whitespacesAndNewlines), !secret.isEmpty else {
+            throw DriveFailure.invalid("OAuth credentials require a nonempty client_id and client_secret.")
+        }
+        return ["client_id": client, "client_secret": secret]
+    }
+    /// Production wires these closures to its existing Keychain and legacy-file adapters.
+    public static func replace(_ candidate: [String: String], current: () -> [String: String],
+                               clearAuthorization: () throws -> Void, save: ([String: String]) throws -> Void) throws {
+        let validated = try self.validated(candidate)
+        let previous = try? self.validated(current())
+        if previous != validated { try clearAuthorization() }
+        try save(validated)
+    }
+}
+public struct DriveAuthorizationTokens {
+    public let access: String
+    public let refresh: String?
+    public let expiresAt: String
+    public static func decode(_ payload: [String: Any], now: Date = Date()) throws -> DriveAuthorizationTokens {
+        guard let access = payload["access_token"] as? String, !access.isEmpty,
+              let lifetime = payload["expires_in"] as? Double, lifetime.isFinite, lifetime > 60, lifetime <= 86400 else {
+            throw DriveFailure.invalid("Invalid Google authorization token response.")
+        }
+        // An authorization-code response establishes a new grant. Never inherit another account's token.
+        let refresh = (payload["refresh_token"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return DriveAuthorizationTokens(access: access, refresh: refresh,
+            expiresAt: ISO8601DateFormatter().string(from: now.addingTimeInterval(lifetime)))
+    }
+}

@@ -487,7 +487,16 @@ struct GoogleDriveHelper {
                 guard let credentials = try? JSONDecoder().decode([String: String].self, from: payloadData) else {
                     throw HelperError.invalidPayload("Credentials must contain a JSON object")
                 }
-                try SecureState.set(JSONEncoder().encode(credentials), root: root, account: "credentials")
+                try DriveCredentialPolicy.replace(credentials, current: {
+                    loadCredentials(root: root, paths: paths)
+                }, clearAuthorization: {
+                    try SecureState.remove(root: root, account: "token")
+                    for legacy in [paths.token, paths.key] where FileManager.default.fileExists(atPath: legacy.path) {
+                        try FileManager.default.removeItem(at: legacy)
+                    }
+                }, save: { validated in
+                    try SecureState.set(JSONEncoder().encode(validated), root: root, account: "credentials")
+                })
                 try? FileManager.default.removeItem(at: paths.credentials)
                 printJSON(HelperResponse(success: true, status: "Google Drive credentials saved", error: nil, configured: nil, connected: nil, expiresAt: nil, authURL: nil))
                 exit(0)
@@ -560,9 +569,8 @@ struct GoogleDriveHelper {
                     printJSON(HelperResponse(success: false, status: nil, error: (payload["error_description"] as? String) ?? (payload["error"] as? String) ?? "Failed to exchange Google Drive auth code.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
                     exit(1)
                 }
-                guard let lifetime = payload["expires_in"] as? Double, lifetime.isFinite, lifetime > 60, lifetime <= 86400 else { throw HelperError.invalidPayload("Invalid Google token expiry") }
-                let expiresIn = Int(lifetime)
-                let updatedState = TokenState(schemaVersion: 1, ciphertext: nil, refreshToken: (payload["refresh_token"] as? String) ?? tokenState?.refreshToken, accessToken: payload["access_token"] as? String, expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(TimeInterval(expiresIn))), pendingAuth: nil)
+                let exchanged = try DriveAuthorizationTokens.decode(payload)
+                let updatedState = TokenState(schemaVersion: 1, ciphertext: nil, refreshToken: exchanged.refresh, accessToken: exchanged.access, expiresAt: exchanged.expiresAt, pendingAuth: nil)
                 try saveToken(updatedState, root: root, paths: paths)
                 printJSON(HelperResponse(success: true, status: "Google Drive connected", error: nil, configured: nil, connected: nil, expiresAt: updatedState.expiresAt, authURL: nil))
                 exit(0)

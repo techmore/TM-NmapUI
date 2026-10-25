@@ -97,7 +97,7 @@ enum GoogleDriveService {
                 status: json["status"] as? String,
                 error: json["error"] as? String,
                 authURL: nil,
-                configured: true,
+                configured: (json["success"] as? Bool) == true ? true : nil,
                 connected: nil
             )
         } catch {
