@@ -1,4 +1,14 @@
-# Project status — 2026-09-29
+# Project status — 2026-10-25
+
+## October 25 repository audit
+
+Local `main` was fast-forwarded from `ead49881` to `bec25d94` (22 commits).
+PR #240 merged October 12 as `0fc510e2`; there are no open PRs at this audit.
+The September implementation narrative and checkpoint below are historical,
+including references to #240 being draft and the old branch divergence counts.
+Current findings, dependency changes, branch dispositions and validation are in
+[REPOSITORY_AUDIT_2026-10-25.md](REPOSITORY_AUDIT_2026-10-25.md).
+The installed-host and unattended-operation release gates still apply.
 
 ## Product direction
 
@@ -356,7 +366,7 @@ serialize with scheduler updates so a stale browser form cannot erase a just-
 completed run. Unit and staged-worker tests cover these paths; installed-host
 crash, power-loss and multi-process behavior still need verification.
 
-## Where work stopped
+## Historical September checkpoint
 
 - `main` / `origin/main`: `2828bd36`, PR #239 merged August 24. Latest CI passed
   unit/contract, browser regression and packaged Mac smoke jobs:
