@@ -45,13 +45,34 @@ cd packaging/macos
 swift build
 ```
 
-To assemble a launchable `.app` bundle:
+To assemble a native `.app` without launching or installing it:
 
 ```bash
-cd packaging/macos
-./bundle.sh
-open build/NmapUI.app
+APP_BUNDLE=/tmp/nmapui-native/NmapUI.app \
+BUILD_DIR=/tmp/nmapui-native-swift-build \
+CODESIGN_IDENTITY=- ./bundle.sh
 ```
+
+`NMAPUI_BUILD_CONFIGURATION=release` selects an optimized build (default:
+`debug`). Temporary assets follow the bundle output directory. The bundle
+contains all four SwiftPM products, the resource bundle, icon, report styles
+and runtime assets. `codesign --verify --deep --strict /path/NmapUI.app` verifies
+its local signatures. Ad-hoc signing (`-`) provides local integrity checks;
+Developer ID signing, notarization and installed-helper authorization require
+separate distribution qualification.
+
+`bundle_version.py` validates VERSION before build/cleanup. Marketing metadata
+is numeric `YYYY.M.D`; build metadata is `YYYY.M.P`, where
+`P = (day - 1) * 1440 + hour * 60 + minute`. Historical `.HH_MM` and `.HH.MM`
+suffixes retain chronological ordering, and date-only versions mean midnight.
+For example, `v2026.3.14.00_10` becomes marketing `2026.3.14` and build
+`2026.3.18730`. Advance VERSION before redistributing changed binaries.
+The raw product version stays in `NmapUIProductVersion`, bundled `VERSION`,
+and native UI/runtime identity; `NmapUISourceRevision` records the source commit.
+
+The native app currently requests privileged-helper authorization shortly after
+startup, even with empty temporary state. Do not launch it merely to preview a
+bundle when service authorization or host changes are outside the task scope.
 
 To install the bundle into Applications:
 

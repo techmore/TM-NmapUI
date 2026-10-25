@@ -3,6 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Reject invalid product metadata before compiling or signing any executable.
+python3 "$SCRIPT_DIR/bundle_version.py" "$SCRIPT_DIR/../../VERSION" >/dev/null
 cd "$SCRIPT_DIR"
 
 CONFIGURATION="${1:-release}"
