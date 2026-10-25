@@ -7,7 +7,9 @@ Only upstream Sources, Package.swift and MIT LICENSE are vendored.
 upstream test target; add one URLSessionConfiguration option, copied when
 configured and on **every** session reset. Protocol, codec, queue and reconnect
 logic remain upstream. Default configuration remains upstream-compatible.
-`PROVENANCE.json` records original and distributed file digests.
+`PROVENANCE.json` records original and distributed file digests. Upstream
+whitespace is retained byte for byte; local attributes exempt only these sources
+and the unified patch context from whitespace lint.
 
 NmapUI supplies fresh ephemeral configuration with no credential/cookie/cache
 stores or ambient proxies, rejects redirects and authentication challenges,
