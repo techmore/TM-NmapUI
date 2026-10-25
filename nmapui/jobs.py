@@ -297,6 +297,8 @@ class ClientJobRegistry:
     def __init__(self, runtime_store=None, max_active_jobs=None):
         self._jobs = {}
         self._lock = threading.Lock()
+        # Never hold _lock while waiting for a transport publisher.
+        self.status_publication_lock = threading.RLock()
         # Wakes workflow threads parked at a pause checkpoint on resume,
         # cancel and shutdown.
         self._pause_cond = threading.Condition(self._lock)

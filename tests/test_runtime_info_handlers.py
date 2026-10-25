@@ -540,7 +540,9 @@ def test_connect_replays_active_scan_events_to_new_tab(monkeypatch):
     ]
     assert contract_events[4][1] == "job_status"
     assert contract_events[4][2]["job_type"] == "scan"
-    assert [e for e in contract_events[5:]] == [
+    assert contract_events[-1][1] == "job_status"
+    assert contract_events[-1][2]["job_type"] == "scan"
+    assert [e for e in contract_events[5:-1]] == [
         (observed["subscribe"][1], "scan_feedback", "Scanning..."),
         (observed["subscribe"][1], "scan_progress", {"pct": 50}),
     ]
@@ -679,7 +681,9 @@ def test_connect_replays_active_report_events_to_new_tab(monkeypatch):
     contract_events = [e for e in emitted if e[1] not in bridge_events]
     assert contract_events[4][1] == "job_status"
     assert contract_events[4][2]["job_type"] == "report"
-    assert [e for e in contract_events[5:]] == [
+    assert contract_events[-1][1] == "job_status"
+    assert contract_events[-1][2]["job_type"] == "report"
+    assert [e for e in contract_events[5:-1]] == [
         (observed["subscribe"][1], "scan_feedback", "Generating PDF report..."),
         (
             observed["subscribe"][1],
