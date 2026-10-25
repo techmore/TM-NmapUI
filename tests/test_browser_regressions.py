@@ -141,6 +141,58 @@ def test_settings_http_controls_work_before_socket_and_bind_once_after_connect(b
         context.close()
 
 
+@pytest.fixture
+def tls_browser_server(browser_server):
+    """An owned TLS listener around the real app, with a temporary certificate."""
+    from werkzeug.serving import make_server
+
+    app_module = browser_server["app_module"]
+    server = make_server("127.0.0.1", 0, app_module.app, threaded=True, ssl_context="adhoc")
+    origin = f"https://127.0.0.1:{server.server_port}"
+    engine = app_module.socketio.server.eio
+    original_origins = engine.cors_allowed_origins
+    engine.cors_allowed_origins = [*original_origins, origin]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield origin
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        engine.cors_allowed_origins = original_origins
+
+
+@pytest.mark.parametrize("bootstrap", ["template_bootstrap.js", "app_bootstrap.js"])
+def test_https_socket_uses_page_origin_and_serves_real_job_request(
+    tls_browser_server, playwright_browser, bootstrap,
+):
+    context = playwright_browser.new_context(ignore_https_errors=True)
+    # Both supported entry points share the real template's DOM. Substitute
+    # only the legacy entry point's production bootstrap, without mocking io.
+    if bootstrap == "app_bootstrap.js":
+        context.route("**/static/js/template_bootstrap.js", lambda route: route.fulfill(
+            body=(ROOT / "static/js" / bootstrap).read_text(), content_type="application/javascript"))
+    page = context.new_page()
+    socket_urls = []
+    page.on("request", lambda request: socket_urls.append(request.url)
+            if "/socket.io/" in request.url else None)
+    try:
+        page.goto(tls_browser_server, wait_until="domcontentloaded")
+        page.wait_for_function("() => window.socket && window.socket.connected")
+        assert page.evaluate("window.socket.io.uri") == tls_browser_server
+        page.evaluate("""() => {
+            window.tlsJobSnapshots = [];
+            window.socket.on('job_status', job => window.tlsJobSnapshots.push(job.job_type));
+            window.socket.emit('get_job_status');
+        }""")
+        page.wait_for_function("() => ['scan', 'report'].every(kind => window.tlsJobSnapshots.includes(kind))")
+        assert socket_urls
+        assert all(url.startswith(tls_browser_server + "/socket.io/") for url in socket_urls)
+    finally:
+        context.close()
+
+
 def _require_browser_regression_enabled():
     if os.environ.get("NMAPUI_RUN_BROWSER_REGRESSION") != "1":
         pytest.skip("Set NMAPUI_RUN_BROWSER_REGRESSION=1 to run browser regression coverage")

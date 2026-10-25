@@ -22,7 +22,7 @@ const __socketReady = new Promise((resolve) => { __socketReadyResolve = resolve;
     } catch (err) {
         console.warn('Could not fetch socket token.');
     }
-    const socket = io.connect(`http://${document.domain}:${location.port}`, {
+    const socket = io.connect(window.location.origin, {
         auth: { token },
         query: { token }
     });
