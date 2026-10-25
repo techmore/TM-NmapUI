@@ -660,8 +660,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dataDirectory: URL
     ) async {
         let status = GoogleDriveService.status(dataDirectory: dataDirectory)
-        guard status.connected else {
-            RuntimeDiagnosticsLogger.log("Skipping Google Drive upload: not connected (\(status.status))")
+        // An expired token can still refresh during upload; status remains network-free.
+        guard status.success && status.configured else {
+            RuntimeDiagnosticsLogger.log("Skipping Google Drive upload: credentials unavailable (\(status.status))")
             return
         }
 
