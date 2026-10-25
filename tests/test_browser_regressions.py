@@ -1732,13 +1732,35 @@ def test_results_table_shows_empty_state_until_hosts_arrive(browser_server, play
 
 @pytest.mark.parametrize("job_type", ["scan", "report"])
 @pytest.mark.parametrize("terminal", ["completed", "cancelled"])
-def test_terminal_job_status_cannot_be_reopened_by_late_same_run_events(browser_server, playwright_browser, job_type, terminal):
+def test_terminal_job_status_cannot_be_reopened_by_late_same_run_events(browser_server, playwright_browser, monkeypatch, job_type, terminal):
     """Real Socket.IO packets may arrive terminal, idle, then stale cancelling/running."""
+    # Bootstrap requests the real registry's idle snapshot asynchronously. It
+    # must finish before this test injects a synthetic running job that does
+    # not exist in that registry, or a legitimate idle response can clear it.
+    handlers = browser_server["app_module"].socketio.server.handlers["/"]
+    original_status_handler = handlers["get_job_status"]
+    initial_snapshot_sent = threading.Event()
+
+    def status_with_receipt(*args, **kwargs):
+        result = original_status_handler(*args, **kwargs)
+        initial_snapshot_sent.set()
+        return result
+
+    monkeypatch.setitem(handlers, "get_job_status", status_with_receipt)
     context = playwright_browser.new_context()
     page = context.new_page()
     try:
         page.goto(browser_server["base_url"], wait_until="domcontentloaded")
         page.wait_for_function("() => window.socket?.connected && window.socket.listeners('job_status').length >= 3")
+        assert initial_snapshot_sent.wait(timeout=10), "Bootstrap did not request its job snapshot"
+        # An acknowledged request drains the already-enqueued snapshot over
+        # the actual transport. This uses neither sleeps nor mocked packets.
+        page.evaluate("""() => new Promise((resolve, reject) => {
+            window.socket.timeout(10000).emit('get_job_status', error => {
+                if (error) reject(new Error('Startup snapshot acknowledgement timed out'));
+                else resolve();
+            });
+        })""")
         sid = page.evaluate("window.socket.id")
         page.evaluate("""() => {
             window.lastTestJobReceipt = null;
