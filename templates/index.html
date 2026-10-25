@@ -1602,14 +1602,16 @@
     <div class="page-shell">
 
     <script>
-        // Wire tab switching immediately (pure DOM) so tab clicks work while the
-        // socket is still connecting. Data loads handle their own readiness.
+        // DOM and HTTP controls work before socket-token retrieval or transport startup.
+        function initializeTemplateDOM() {
+            if (typeof initializeReportsTab === 'function') initializeReportsTab();
+            if (typeof initializeSettingsTab === 'function') initializeSettingsTab();
+            if (typeof initializeSiteChrome === 'function') initializeSiteChrome();
+        }
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', () => {
-                if (typeof initializeReportsTab === 'function') initializeReportsTab();
-            });
-        } else if (typeof initializeReportsTab === 'function') {
-            initializeReportsTab();
+            document.addEventListener('DOMContentLoaded', initializeTemplateDOM, { once: true });
+        } else {
+            initializeTemplateDOM();
         }
 
         // Set current date and time.
@@ -1653,9 +1655,6 @@
             }
             if (typeof TableSorter === 'function') {
                 window.tableSorter = new TableSorter('discovery-table');
-            }
-            if (typeof initializeSiteChrome === 'function') {
-                initializeSiteChrome();
             }
             if (typeof initializeUpdateModal === 'function') {
                 initializeUpdateModal(socket, {

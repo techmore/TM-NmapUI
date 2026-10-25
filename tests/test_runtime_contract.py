@@ -307,7 +307,7 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'mkdir -p "$NMAPUI_DATA_DIR" "$NMAPUI_LOG_DIR"' in build_script
     assert 'stage_google_drive_credentials' in build_script
     assert "export NMAPUI_ALLOW_UNSAFE_WERKZEUG=true" in build_script
-    assert "export NMAPUI_TRUST_LOCAL_UI=true" in build_script
+    assert 'export NMAPUI_TRUST_LOCAL_UI="${NMAPUI_TRUST_LOCAL_UI:-true}"' in build_script
     assert 'BUNDLE_PLAYWRIGHT_BROWSERS="$APP_NAME/Contents/Resources/playwright-browsers"' in build_script
     assert 'PLAYWRIGHT_BROWSERS_PATH="$BUNDLE_PLAYWRIGHT_BROWSERS" python -m playwright install chromium' in build_script
     assert 'export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright-browsers"' in build_script

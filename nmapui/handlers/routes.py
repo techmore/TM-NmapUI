@@ -118,10 +118,11 @@ def register_core_routes(app, deps):
         return jsonify(payload), status_code
 
     @app.route("/api/runtime/status")
+    @require_auth
     def runtime_status():
         snapshot = job_registry.snapshot()
         active_jobs = snapshot["active_jobs"]
-        return jsonify(
+        response = jsonify(
             {
                 "has_active_jobs": snapshot["has_active_jobs"],
                 "active_job_types": sorted(
@@ -130,6 +131,8 @@ def register_core_routes(app, deps):
                 "active_jobs": active_jobs,
             }
         )
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.route("/api/runtime/settings-summary")
     def runtime_settings_summary():
