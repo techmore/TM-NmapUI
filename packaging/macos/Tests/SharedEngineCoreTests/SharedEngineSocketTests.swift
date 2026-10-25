@@ -64,9 +64,10 @@ struct SharedEngineSocketTests {
             try await wait("canonical target validation error") { client.state.lastError?.localizedCaseInsensitiveContains("invalid target") == true }
             #expect(fixture.invocations.count == 1)
             #expect(client.state.startOutcome == .uncertain)
+            // Unscoped error events cannot prove which mutation failed. Wait
+            // for both new canonical status receipts before acknowledging.
+            try await wait("fresh post-error reconciliation") { client.state.connection == .ready }
             #expect(throws: SharedControlError.busy) { try client.startScan(target: "127.0.0.1") }
-            // Unscoped error events cannot prove which mutation failed. Verify
-            // current status, then explicitly acknowledge before a fresh start.
             try client.acknowledgeUncertainStart()
             // Reconnecting before a second run also demonstrates no mutation replay.
             try await client.reconnect(); try await wait("second reconnect") { client.state.connection == .ready }

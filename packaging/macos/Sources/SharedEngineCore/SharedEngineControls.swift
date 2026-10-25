@@ -96,7 +96,16 @@ public struct SharedControlState: Equatable, Sendable {
         if synchronized.count == SharedJobKind.allCases.count { connection = .ready }
         if job.jobType == .scan, let id = job.sourceJobID, id != submittedAfterSourceID { startOutcome = .none }
     }
-    public mutating func receiveError(_ message: String) { lastError = String(message.prefix(500)); if startOutcome == .submitting { startOutcome = .uncertain } }
+    public mutating func receiveError(_ message: String) {
+        lastError = String(message.prefix(500))
+        if startOutcome == .submitting {
+            startOutcome = .uncertain
+            // This event has no command/source correlation. Require both new
+            // status receipts before explicit acknowledgement can reopen Start.
+            connection = .synchronizing
+            synchronized.removeAll()
+        }
+    }
     public func requireReady() throws {
         guard connection != .disconnected && connection != .authenticating else { throw SharedControlError.disconnected }
         guard connection == .ready else { throw SharedControlError.synchronizing }
