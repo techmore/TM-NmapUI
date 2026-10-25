@@ -74,3 +74,9 @@ def test_real_native_bundle_versions_resources_and_signatures(tmp_path):
         assert f"Identifier={identifier}\n" in signature.stderr
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)
     assert not (tmp_path / "isolated-data").exists(), "Bundling must not launch the app/runtime"
+
+
+def test_swift_entrypoints_use_portable_main_attribute_filenames():
+    # Classic SwiftPM treats main.swift as top-level code; @main needs another filename.
+    for source in (PACKAGING / "Sources").rglob("main.swift"):
+        assert "@main" not in source.read_text(), source
