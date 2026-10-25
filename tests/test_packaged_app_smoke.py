@@ -1,4 +1,6 @@
 import os
+import plistlib
+import runpy
 import base64
 from contextlib import closing
 from pathlib import Path
@@ -90,6 +92,14 @@ def test_build_script_output_launches_and_serves_health(tmp_path):
     assert APP_BUNDLE.exists()
     assert RUN_SCRIPT.exists()
     bundled_resources = APP_BUNDLE / "Contents" / "Resources"
+    raw_version, short_version, build_version = runpy.run_path(
+        str(ROOT / "packaging/macos/bundle_version.py")
+    )["bundle_versions"]((ROOT / "VERSION").read_text())
+    with (APP_BUNDLE / "Contents/Info.plist").open("rb") as plist_file:
+        bundle_metadata = plistlib.load(plist_file)
+    assert bundle_metadata["CFBundleShortVersionString"] == short_version
+    assert bundle_metadata["CFBundleVersion"] == build_version
+    assert (bundled_resources / "VERSION").read_text().strip() == raw_version
     bundled_web_report_xsl = (bundled_resources / "nmap-modern.xsl").read_text(encoding="utf-8")
     bundled_pdf_report_xsl = (bundled_resources / "nmap-pdf-olive-legacy.xsl").read_text(
         encoding="utf-8"

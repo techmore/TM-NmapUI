@@ -32,14 +32,12 @@ cleanup_temp_migration_db() {
     fi
 }
 trap cleanup_temp_migration_db EXIT
+# Validate before SDK discovery, process cleanup, or creating build artifacts.
+# Read structured data; never source/evaluate product version text as shell code.
+VERSION_METADATA="$(python3 "$PACKAGING_DIR/bundle_version.py" "$ROOT_DIR/VERSION")" || exit 1
+IFS=$'\t' read -r APP_VERSION BUNDLE_SHORT_VERSION BUNDLE_BUILD_VERSION <<< "$VERSION_METADATA"
 SDK=$(xcrun --show-sdk-path --sdk macosx)
 HOST_ARCH="$(uname -m)"
-APP_VERSION="$(tr -d '\r\n' < "$ROOT_DIR/VERSION")"
-
-if [[ -z "$APP_VERSION" ]]; then
-    echo "ERROR: VERSION file is empty" >&2
-    exit 1
-fi
 
 if [[ -n "${NMAPUI_SWIFT_TARGET:-}" ]]; then
     SWIFT_TARGET="$NMAPUI_SWIFT_TARGET"
@@ -455,9 +453,9 @@ cat > "$APP_NAME/Contents/Info.plist" << EOF
     <key>CFBundleIdentifier</key>
     <string>com.techmore.nmapui</string>
     <key>CFBundleVersion</key>
-    <string>$APP_VERSION</string>
+    <string>$BUNDLE_BUILD_VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>$APP_VERSION</string>
+    <string>$BUNDLE_SHORT_VERSION</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSPrincipalClass</key>

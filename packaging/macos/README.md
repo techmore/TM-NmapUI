@@ -59,3 +59,27 @@ files and port listeners never grant ownership of another process.
 ## Support Contract
 
 Only `NmapUIMenuBarLauncher.swift` is supported. Older popover and relay prototypes have been removed from the tracked build path so the wrapper release flow and port contract stay deterministic (fixed at port 9000). The built bundle is installed as `NmapUI.app`.
+
+## Bundle versions
+
+The product `VERSION` remains unchanged in the bundled runtime and UI. Before
+building or cleaning existing artifacts, `build.sh` validates it as a real
+calendar date in `vYYYY.M.D` format, optionally followed by `.HH_MM` or `.HH.MM`
+(24-hour time). Invalid dates, times, whitespace and shell/XML text fail closed.
+
+Apple's [marketing version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring)
+is the numeric `YYYY.M.D`. The [build version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion)
+is `YYYY.M.P`, where `P = (day - 1) * 1440 + hour * 60 + minute`.
+This keeps three numeric components and increases chronologically, including
+historical time suffixes. A date without a time means midnight; equivalent
+`.HH_MM` and `.HH.MM` spellings identify the same build. For example:
+
+| Product VERSION | Marketing version | Build version |
+| --- | --- | --- |
+| `v2026.3.14.00_10` | `2026.3.14` | `2026.3.18730` |
+| `v2026.4.26.4.00` | `2026.4.26` | `2026.4.36240` |
+| `v2026.10.25` | `2026.10.25` | `2026.10.34560` |
+
+Rebuilding the same VERSION is reproducible. Before distributing a changed
+build, advance VERSION; use a later time suffix for another build on the same
+date. This mapping does not select a release channel or qualify a release.

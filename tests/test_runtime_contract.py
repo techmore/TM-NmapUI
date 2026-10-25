@@ -265,8 +265,8 @@ def test_wrapper_contract_uses_single_supported_launcher():
     build_script = (ROOT / "build.sh").read_text()
 
     assert 'PACKAGING_DIR="$ROOT_DIR/packaging/macos"' in build_script
-    assert 'APP_VERSION="$(tr -d \'\\r\\n\' < "$ROOT_DIR/VERSION")"' in build_script
-    assert 'echo "ERROR: VERSION file is empty" >&2' in build_script
+    assert 'VERSION_METADATA="$(python3 "$PACKAGING_DIR/bundle_version.py" "$ROOT_DIR/VERSION")" || exit 1' in build_script
+    assert build_script.index('VERSION_METADATA=') < build_script.index('SDK=$(xcrun')
     assert "ROOT_RUNTIME_PY=(" in build_script
     assert "customer_fingerprint_matcher.py" in build_script
     assert "customer_fingerprint_store.py" in build_script
@@ -303,7 +303,9 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'MIGRATION_SOURCE_DB="$NMAPUI_MIGRATE_DB_FROM"' in build_script
     assert 'MIGRATION_SOURCE_DB="$INSTALLED_RUNTIME_DB"' in build_script
     assert 'echo "Host architecture: $HOST_ARCH"' in build_script
-    assert "<string>$APP_VERSION</string>" in build_script
+    assert "<string>$BUNDLE_BUILD_VERSION</string>" in build_script
+    assert "<string>$BUNDLE_SHORT_VERSION</string>" in build_script
+    assert "<string>$APP_VERSION</string>" not in build_script
     assert "<string>NmapUI</string>" in build_script
     assert "<string>com.techmore.nmapui</string>" in build_script
     assert 'echo "Target: $SWIFT_TARGET"' in build_script
