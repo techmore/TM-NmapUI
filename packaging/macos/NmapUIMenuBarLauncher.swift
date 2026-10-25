@@ -8,6 +8,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var pythonProcess: Process?
     var statusPollTimer: Timer?
+    var statusPollTask: URLSessionDataTask?
+    var statusPollGeneration = UUID()
+    var browserOpenGeneration: UUID?
+    var browserOpenTask: URLSessionDataTask?
     var hadActiveJob = false
     var completedIndicatorUntil: Date?
     var lockFileURL: URL?
@@ -21,8 +25,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         URL(string: "http://127.0.0.1:\(runtimePort)/api/runtime/status")!
     }
 
+    var runtimeReadinessURL: URL {
+        appURL.appendingPathComponent("api/health/ready")
+    }
+
     // Menu items that need dynamic state updates
     var openItem: NSMenuItem!
+    var activityItem: NSMenuItem!
     var startItem: NSMenuItem!
     var stopItem: NSMenuItem!
     var restartItem: NSMenuItem!
@@ -70,6 +79,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let menu = NSMenu()
         menu.delegate = self
+        // These states are supplied explicitly; AppKit must not re-enable
+        // controls for a daemon the wrapper does not own.
+        menu.autoenablesItems = false
+
+        activityItem = NSMenuItem(title: "Starting NmapUI", action: nil, keyEquivalent: "")
+        activityItem.isEnabled = false
+        menu.addItem(activityItem)
+        menu.addItem(NSMenuItem.separator())
 
         openItem = NSMenuItem(title: "Open NmapUI", action: #selector(openNmapUI(_:)), keyEquivalent: "o")
         openItem.target = self
@@ -77,15 +94,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        startItem = NSMenuItem(title: "Start Flask", action: #selector(startNmapUI(_:)), keyEquivalent: "s")
+        startItem = NSMenuItem(title: "Start Scanner", action: #selector(startNmapUI(_:)), keyEquivalent: "s")
         startItem.target = self
         menu.addItem(startItem)
 
-        stopItem = NSMenuItem(title: "Stop Flask", action: #selector(stopNmapUI(_:)), keyEquivalent: "")
+        stopItem = NSMenuItem(title: "Stop Scanner", action: #selector(stopNmapUI(_:)), keyEquivalent: "")
         stopItem.target = self
         menu.addItem(stopItem)
 
-        restartItem = NSMenuItem(title: "Restart Flask", action: #selector(restartNmapUI(_:)), keyEquivalent: "r")
+        restartItem = NSMenuItem(title: "Restart Scanner", action: #selector(restartNmapUI(_:)), keyEquivalent: "r")
         restartItem.target = self
         menu.addItem(restartItem)
 
@@ -107,8 +124,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let running = isFlaskRunning
         openItem.isEnabled = true          // always available; will start+wait if needed
         startItem.isEnabled = !running
-        stopItem.isEnabled = running
-        restartItem.isEnabled = true
+        let ownsRuntime = pythonProcess?.isRunning == true
+        stopItem.isEnabled = ownsRuntime
+        restartItem.isEnabled = ownsRuntime || !running
+        let managedDetail = running && !ownsRuntime ? "This scanner is managed by its service; this app only displays its status." : nil
+        stopItem.toolTip = managedDetail
+        restartItem.toolTip = managedDetail
     }
 
     // MARK: - Flask lifecycle
@@ -144,7 +165,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func startFlask() {
-        guard !isFlaskRunning else { return }
+        // A listener may be the managed daemon, not our child. It still needs
+        // the attachment/status-poll path below.
+        guard pythonProcess?.isRunning != true else { return }
         isQuitting = false
 
         guard let resourcesPath, let runScriptPath else { return }
@@ -158,7 +181,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             launchedWithPrivileges = false
             pythonProcess = nil
             startStatusPolling()
-            updateStatusIcon(state: .active(jobTypes: []), detail: "Managed by NmapUI daemon")
+            updateStatusIcon(state: .starting, detail: "Reading managed scanner status")
             print("Attached to the NmapUI daemon already listening on port \(fixedRuntimePort)")
             return
         }
@@ -201,53 +224,69 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    // Kill the tracked process and any stray app.py processes (e.g. from a
-    // previous run or if pythonProcess is stale after a crash/restart).
+    // Only signal the live child this wrapper launched and its descendants.
+    // A listener on the same port is not evidence of process ownership.
     func stopFlask(wait: Bool = true) {
-        writeShutdownMarker()
+        browserOpenGeneration = nil
+        browserOpenTask?.cancel()
+        browserOpenTask = nil
         stopStatusPolling()
-        let ownedProcess = pythonProcess
-        if let process = ownedProcess, process.isRunning {
-            process.terminate()
-            if wait { process.waitUntilExit() }
+        if pythonProcess?.isRunning == true {
+            writeShutdownMarker()
+            // The bounded helper captures descendants before terminating the
+            // parent, so an uncooperative child cannot strand the UI in wait.
+            stopTrackedRuntimeProcesses(wait: wait)
+            removeRuntimeMarkers()
         }
         pythonProcess = nil
         launchedWithPrivileges = false
-
-        // Only stop processes this app started. A daemon-managed server is
-        // owned by launchd and must be left alone.
-        if ownedProcess != nil {
-            stopTrackedRuntimeProcesses(wait: wait)
-        }
-        removeRuntimeMarkers()
 
         print("NmapUI stopped")
         updateStatusIcon(state: .idle, detail: "NmapUI stopped")
     }
 
-    // Poll the selected localhost port until Flask responds (or timeout), then open browser
+    struct RuntimeReadiness: Decodable {
+        let ready: Bool
+    }
+
+    static func isReadyResponse(data: Data?, response: URLResponse?) -> Bool {
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let data, let payload = try? JSONDecoder().decode(RuntimeReadiness.self, from: data) else { return false }
+        return payload.ready
+    }
+
+    // Poll actual application readiness. An unrelated HTTP listener or a timed
+    // out startup must not open an arbitrary/broken page and claim readiness.
     func waitForFlaskThenOpen(timeout: TimeInterval = 15) {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let deadline = Date().addingTimeInterval(timeout)
-            var ready = false
-            while Date() < deadline {
-                var request = URLRequest(url: self.appURL)
-                request.timeoutInterval = 1
-                let sema = DispatchSemaphore(value: 0)
-                URLSession.shared.dataTask(with: request) { _, response, _ in
-                    if let http = response as? HTTPURLResponse, http.statusCode < 500 {
-                        ready = true
-                    }
-                    sema.signal()
-                }.resume()
-                sema.wait()
-                if ready { break }
-                Thread.sleep(forTimeInterval: 0.5)
-            }
+        guard browserOpenGeneration == nil else { return }
+        let generation = UUID()
+        browserOpenGeneration = generation
+        pollReadinessThenOpen(generation: generation, deadline: Date().addingTimeInterval(timeout))
+    }
+
+    func pollReadinessThenOpen(generation: UUID, deadline: Date) {
+        guard browserOpenGeneration == generation, !isQuitting else { return }
+        var request = URLRequest(url: runtimeReadinessURL)
+        request.timeoutInterval = 1
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        browserOpenTask = URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
             DispatchQueue.main.async {
-                NSWorkspace.shared.open(self.appURL)
+                guard let self, self.browserOpenGeneration == generation, !self.isQuitting else { return }
+                self.browserOpenTask = nil
+                if Self.isReadyResponse(data: data, response: response) {
+                    self.browserOpenGeneration = nil
+                    NSWorkspace.shared.open(self.appURL)
+                } else if Date() >= deadline {
+                    self.browserOpenGeneration = nil
+                    self.updateStatusIcon(state: .error, detail: "Scanner is not ready; retry Open NmapUI")
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        self?.pollReadinessThenOpen(generation: generation, deadline: deadline)
+                    }
+                }
             }
         }
+        browserOpenTask?.resume()
     }
 
     // MARK: - Menu actions
@@ -299,16 +338,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case idle
         case starting
         case active(jobTypes: [String])
-        case completed
+        case paused
+        case recentActivity
         case error
     }
 
     struct RuntimeStatus: Decodable {
         struct ActiveJob: Decodable {
+            struct Details: Decodable {
+                let message: String?
+            }
             let sid: String?
             let job_type: String?
             let status: String?
-            let details: [String: String]?
+            let details: Details?
+            let paused: Bool?
+            let pause_requested: Bool?
         }
 
         let has_active_jobs: Bool
@@ -330,6 +375,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func stopStatusPolling() {
         statusPollTimer?.invalidate()
         statusPollTimer = nil
+        statusPollGeneration = UUID()
+        statusPollTask?.cancel()
+        statusPollTask = nil
         hadActiveJob = false
         completedIndicatorUntil = nil
     }
@@ -338,6 +386,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if isQuitting {
             return
         }
+        // A stalled response cannot accumulate parallel requests or later
+        // overwrite a newer lifecycle/polling generation.
+        guard statusPollTask == nil else { return }
         guard isFlaskRunning else {
             updateStatusIcon(state: .idle, detail: "NmapUI stopped")
             return
@@ -345,9 +396,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         var request = URLRequest(url: runtimeStatusURL)
         request.timeoutInterval = 1.5
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let environment = ProcessInfo.processInfo.environment
+        if let username = environment["NMAPUI_USERNAME"], !username.isEmpty,
+           let password = environment["NMAPUI_PASSWORD"], !password.isEmpty {
+            let credentials = Data("\(username):\(password)".utf8).base64EncodedString()
+            request.setValue("Basic \(credentials)", forHTTPHeaderField: "Authorization")
+        }
+        let generation = statusPollGeneration
 
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        statusPollTask = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
+                guard let self, self.statusPollGeneration == generation, !self.isQuitting else { return }
+                self.statusPollTask = nil
                 if let _ = error {
                     self.updateStatusIcon(state: .starting, detail: "Waiting for local server")
                     return
@@ -359,7 +420,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     let data = data,
                     let runtimeStatus = try? JSONDecoder().decode(RuntimeStatus.self, from: data)
                 else {
-                    self.updateStatusIcon(state: .error, detail: "Unable to read runtime status")
+                    let statusCode = (response as? HTTPURLResponse)?.statusCode
+                    self.updateStatusIcon(state: .error, detail: statusCode == 401 ? "Scanner status requires credentials; open NmapUI" : "Unable to read runtime status")
                     return
                 }
 
@@ -367,8 +429,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if runtimeStatus.has_active_jobs {
                     self.hadActiveJob = true
                     self.completedIndicatorUntil = nil
+                    let allPaused = !runtimeStatus.active_jobs.isEmpty && runtimeStatus.active_jobs.allSatisfy { $0.paused == true }
                     self.updateStatusIcon(
-                        state: .active(jobTypes: runtimeStatus.active_job_types),
+                        state: allPaused ? .paused : .active(jobTypes: runtimeStatus.active_job_types),
                         detail: self.activityDetail(from: runtimeStatus)
                     )
                     return
@@ -380,18 +443,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
 
                 if let completedUntil = self.completedIndicatorUntil, completedUntil > now {
-                    self.updateStatusIcon(state: .completed, detail: "Recent scan or report completed")
+                    // Disappearance from active_jobs does not establish success:
+                    // cancelled and failed jobs become inactive too.
+                    self.updateStatusIcon(state: .recentActivity, detail: "Recent scan or report ended; review results")
                 } else {
                     self.completedIndicatorUntil = nil
                     self.updateStatusIcon(state: .idle, detail: "NmapUI idle")
                 }
             }
-        }.resume()
+        }
+        statusPollTask?.resume()
     }
 
     func activityDetail(from runtimeStatus: RuntimeStatus) -> String {
         if let job = runtimeStatus.active_jobs.first,
-           let message = job.details?["message"],
+           job.paused == true {
+            return "Scan paused; resume or cancel in NmapUI"
+        }
+        if let job = runtimeStatus.active_jobs.first,
+           job.pause_requested == true {
+            return "Pausing scan at the next checkpoint"
+        }
+        if let job = runtimeStatus.active_jobs.first,
+           let message = job.details?.message,
            !message.isEmpty {
             return message
         }
@@ -406,7 +480,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func updateStatusIcon(state: ActivityIndicatorState, detail: String) {
-        guard let button = statusItem.button else { return }
+        guard let button = statusItem?.button else { return }
+        activityItem?.title = String(detail.prefix(100))
+        activityItem?.toolTip = detail
 
         let symbolName: String
         let accessibility: String
@@ -421,9 +497,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .active(let jobTypes):
             symbolName = "dot.radiowaves.left.and.right"
             accessibility = "NmapUI active: " + (jobTypes.isEmpty ? "job running" : jobTypes.joined(separator: ", "))
-        case .completed:
-            symbolName = "checkmark.circle.fill"
-            accessibility = "NmapUI recent activity completed"
+        case .recentActivity:
+            symbolName = "clock"
+            accessibility = "NmapUI recent activity ended"
+        case .paused:
+            symbolName = "pause.circle"
+            accessibility = "NmapUI scan paused"
         case .error:
             symbolName = "exclamationmark.triangle.fill"
             accessibility = "NmapUI status unavailable"
@@ -431,6 +510,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibility)
         button.toolTip = detail
+        button.setAccessibilityLabel(accessibility + ". " + detail)
     }
 
     // MARK: - Privileged start/stop
@@ -467,76 +547,70 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func stopRuntimeShellCommand(wait: Bool) -> String {
-        let resourcesPathValue = resourcesPath ?? ""
-        let runScriptPathValue = runScriptPath ?? ""
         let runtimePIDFilePathValue = runtimePIDFilePath ?? ""
         let shutdownMarkerPathValue = shutdownMarkerPath ?? ""
-        let runtimePortValue = String(runtimePort)
-        let waitFlag = wait ? "1" : "0"
+        // Do not trust a PID file, a command substring, or the runtime port to
+        // establish ownership. Process.isRunning refers to our actual child.
+        let targetPID = pythonProcess?.isRunning == true ? pythonProcess!.processIdentifier : 0
         return """
-        RESOURCES_PATH=\(shellEscaped(resourcesPathValue))
-        RUN_SCRIPT_PATH=\(shellEscaped(runScriptPathValue))
         PID_FILE=\(shellEscaped(runtimePIDFilePathValue))
         SHUTDOWN_MARKER=\(shellEscaped(shutdownMarkerPathValue))
-        RUNTIME_PORT=\(shellEscaped(runtimePortValue))
-        WAIT_FLAG=\(waitFlag)
-        kill_tree() {
+        ROOT_PID=\(targetPID)
+        PIDS=()
+        STARTS=()
+        collect_tree() {
           local target_pid="$1"
-          if [[ -z "$target_pid" ]]; then
-            return
+          local freeze="${2:-false}"
+          local identity
+          identity="$(/bin/ps -p "$target_pid" -o lstart= 2>/dev/null)"
+          [[ -n "$identity" ]] || return
+          # Freeze parents before enumerating children so they cannot replace a
+          # terminated child between our final snapshot and forced shutdown.
+          if [[ "$freeze" == true ]]; then
+            /bin/kill -STOP "$target_pid" 2>/dev/null || return
           fi
           local child_pid
           while IFS= read -r child_pid; do
             [[ -z "$child_pid" ]] && continue
-            kill_tree "$child_pid"
+            collect_tree "$child_pid" "$freeze"
           done < <(/usr/bin/pgrep -P "$target_pid" 2>/dev/null || true)
-          /bin/kill -TERM "$target_pid" 2>/dev/null || true
+          PIDS+=("$target_pid")
+          STARTS+=("$identity")
         }
-        force_kill_tree() {
-          local target_pid="$1"
-          if [[ -z "$target_pid" ]]; then
-            return
-          fi
-          local child_pid
-          while IFS= read -r child_pid; do
-            [[ -z "$child_pid" ]] && continue
-            force_kill_tree "$child_pid"
-          done < <(/usr/bin/pgrep -P "$target_pid" 2>/dev/null || true)
-          /bin/kill -KILL "$target_pid" 2>/dev/null || true
+        same_process() {
+          local index="$1"
+          local current
+          current="$(/bin/ps -p "${PIDS[$index]}" -o lstart= 2>/dev/null)"
+          [[ -n "$current" && "$current" == "${STARTS[$index]}" ]]
         }
-        if [[ -n "$SHUTDOWN_MARKER" ]]; then
-          /usr/bin/touch "$SHUTDOWN_MARKER" 2>/dev/null || true
-        fi
-        if [[ -f "$PID_FILE" ]]; then
-          TARGET_PID="$(/bin/cat "$PID_FILE" 2>/dev/null | /usr/bin/tr -cd '0-9')"
-          if [[ -n "$TARGET_PID" ]]; then
-            kill_tree "$TARGET_PID"
-            if [[ "$WAIT_FLAG" == "1" ]]; then
-              /bin/sleep 2
-              force_kill_tree "$TARGET_PID"
+        if [[ "$ROOT_PID" -gt 1 ]]; then
+          collect_tree "$ROOT_PID"
+          for index in "${!PIDS[@]}"; do
+            if same_process "$index"; then
+              /bin/kill -CONT "${PIDS[$index]}" 2>/dev/null || true
+              /bin/kill -TERM "${PIDS[$index]}" 2>/dev/null || true
             fi
+          done
+          # Even a child that ignores TERM gets only this bounded grace period.
+          /bin/sleep 2
+          # Include children born during TERM handling. Walk the original list
+          # parent-first, retaining any original children already reparented.
+          # Each recursive snapshot stops the parent before inspecting children.
+          initial_count="${#PIDS[@]}"
+          for ((index=initial_count-1; index>=0; index--)); do
+            if same_process "$index"; then
+              collect_tree "${PIDS[$index]}" true
+            fi
+          done
+          for index in "${!PIDS[@]}"; do
+            if same_process "$index"; then
+              /bin/kill -KILL "${PIDS[$index]}" 2>/dev/null || true
+            fi
+          done
+          if [[ -n "$PID_FILE" && -n "$SHUTDOWN_MARKER" ]]; then
+            /bin/rm -f "$PID_FILE" "$SHUTDOWN_MARKER"
           fi
         fi
-        if [[ -n "$RUNTIME_PORT" ]]; then
-          while IFS= read -r listener_pid; do
-            [[ -z "$listener_pid" ]] && continue
-            kill_tree "$listener_pid"
-            if [[ "$WAIT_FLAG" == "1" ]]; then
-              /bin/sleep 1
-              force_kill_tree "$listener_pid"
-            fi
-          done < <(/usr/sbin/lsof -tiTCP:"$RUNTIME_PORT" -sTCP:LISTEN 2>/dev/null || true)
-        fi
-        /usr/bin/pkill -TERM -f "$RUN_SCRIPT_PATH" 2>/dev/null || true
-        /usr/bin/pkill -TERM -f "$RESOURCES_PATH/app.py" 2>/dev/null || true
-        /usr/bin/pkill -TERM -f "$RESOURCES_PATH/.venv/bin/python3" 2>/dev/null || true
-        if [[ "$WAIT_FLAG" == "1" ]]; then
-          /bin/sleep 1
-          /usr/bin/pkill -KILL -f "$RUN_SCRIPT_PATH" 2>/dev/null || true
-          /usr/bin/pkill -KILL -f "$RESOURCES_PATH/app.py" 2>/dev/null || true
-          /usr/bin/pkill -KILL -f "$RESOURCES_PATH/.venv/bin/python3" 2>/dev/null || true
-        fi
-        /bin/rm -f "$PID_FILE" "$SHUTDOWN_MARKER"
         """
     }
 

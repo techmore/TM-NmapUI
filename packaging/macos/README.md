@@ -9,6 +9,9 @@ A lightweight macOS menu bar application that launches the bundled NmapUI server
 - Starts and stops the bundled Python app process
 - Runs as a menu bar app with no dock icon
 - Uses a single supported Swift entrypoint: `NmapUIMenuBarLauncher.swift`
+- Shows scanner activity and paused/pausing state in the menu and VoiceOver label
+- Attaches to an existing scanner service without launching a second runtime;
+  Stop/Restart controls apply only to the runtime this wrapper owns
 
 ## Files
 
@@ -34,6 +37,17 @@ A lightweight macOS menu bar application that launches the bundled NmapUI server
 `build.sh` compiles the wrapper, creates the app bundle, copies the Python resources, and opens the app.
 
 The app appears as a network icon in the menu bar. Use the menu to start, stop, or open NmapUI.
+When activity ends, the recent-activity clock means the work is no longer active;
+open NmapUI to review whether the scan or report succeeded, failed or was cancelled.
+The status reader accepts mixed-type runtime metadata, polls one request at a
+time and discards responses from an earlier start/stop cycle. Strict-auth
+installations can supply `NMAPUI_USERNAME` and `NMAPUI_PASSWORD` to the launcher.
+Without them, the status reader reports that credentials are needed; opening
+NmapUI still provides the browser sign-in. Browser sessions are not shared with
+the native status reader.
+Shutdown allows the owned runtime a two-second TERM grace period, then freezes
+its remaining process tree before collecting and killing descendants. PID marker
+files and port listeners never grant ownership of another process.
 
 ## How It Works
 

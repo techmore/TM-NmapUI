@@ -401,12 +401,10 @@ def test_wrapper_launcher_quit_path_tracks_and_stops_runtime_tree():
     assert 'if isQuitting {' in launcher_source
     assert 'isQuitting = true' in launcher_source
     assert 'stopFlask(wait: true)' in launcher_source
-    assert 'RUNTIME_PORT=\\(shellEscaped(runtimePortValue))' in launcher_source
-    assert 'done < <(/usr/sbin/lsof -tiTCP:"$RUNTIME_PORT" -sTCP:LISTEN 2>/dev/null || true)' in launcher_source
-    assert 'TARGET_PID="$(/bin/cat "$PID_FILE" 2>/dev/null | /usr/bin/tr -cd \'0-9\')"' in launcher_source
-    assert '/usr/bin/pkill -TERM -f "$RUN_SCRIPT_PATH" 2>/dev/null || true' in launcher_source
-    assert '/usr/bin/pkill -TERM -f "$RESOURCES_PATH/app.py" 2>/dev/null || true' in launcher_source
-    assert '/usr/bin/pkill -TERM -f "$RESOURCES_PATH/.venv/bin/python3" 2>/dev/null || true' in launcher_source
+    assert 'let targetPID = pythonProcess?.isRunning == true ? pythonProcess!.processIdentifier : 0' in launcher_source
+    assert 'func pollReadinessThenOpen(generation: UUID, deadline: Date)' in launcher_source
+    assert '/usr/bin/pkill' not in launcher_source
+    assert '/usr/sbin/lsof' not in launcher_source
     assert '/bin/rm -f "$PID_FILE" "$SHUTDOWN_MARKER"' in launcher_source
     assert "/Applications/NmapUI.app/Contents/Resources/app.py" not in launcher_source
 
@@ -999,9 +997,9 @@ def test_runtime_status_route_and_menu_bar_indicator_contract():
     assert "pickAvailableRuntimePort" in launcher_source
     assert "startStatusPolling()" in launcher_source
     assert "pollRuntimeStatus()" in launcher_source
-    assert "Recent scan or report completed" in launcher_source
+    assert "Recent scan or report ended; review results" in launcher_source
     assert 'symbolName = "dot.radiowaves.left.and.right"' in launcher_source
-    assert 'symbolName = "checkmark.circle.fill"' in launcher_source
+    assert 'symbolName = "clock"' in launcher_source
 
 
 def test_release_paths_prefer_dot_venv():
