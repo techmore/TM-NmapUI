@@ -174,6 +174,13 @@ def test_ci_workflow_covers_browser_and_packaged_smoke_jobs():
     assert 'NMAPUI_RUN_NATIVE_BUNDLE_SMOKE: "1"' in ci_source
     assert "NMAPUI_BUILD_CONFIGURATION: release" in ci_source
     assert "cancel-in-progress: true" in ci_source
+    import yaml
+    workflow = yaml.safe_load(ci_source)
+    # runner context is unavailable until execution steps, not in jobs.*.env.
+    for job in workflow["jobs"].values():
+        assert all("${{ runner." not in str(value) for value in job.get("env", {}).values())
+    assert 'NMAPUI_NATIVE_BUILD_DIR=$RUNNER_TEMP/' in ci_source
+    assert '>> "$GITHUB_ENV"' in ci_source
 
 
 def test_template_uses_shared_report_status_module():
