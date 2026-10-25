@@ -7,6 +7,23 @@ created by this preflight. Preserve the known-good alpha tag and existing
 runtime data. This assessment follows the owner's request to inspect branches,
 issues and the Actions queue before the next release.
 
+## Integrated qualification update
+
+PR #254 merged into `main` at `2ba2287c386e1306a38842f7af256d1ec9b2d527`,
+whose tree matches the qualified checkpoint. Preflight PR #259 integrated at
+`0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9`. All four integrated-source jobs
+passed in [40244555753](https://github.com/techmore/TM-NmapUI/actions/runs/40244555753):
+889 unit/contract tests (45 skips), 39 browser/PDF tests, five Mac packaging
+checks and staged/installed Ubuntu lifecycle checks. Dependency audits and
+asset reproduction passed. This is the next immutable downstream checkpoint;
+elementary, Daedalus and native fixture repins are in progress.
+
+Native library #257 at `375be6cd` and controls #258 at `ce5e6bcd` also completed
+all four hosted checks in runs 40243950317 and 40244263029 respectively.
+App-wide native source routing remains a separate work in progress. The table
+below preserves the earlier inspection snapshot; its pending check states
+are historical, rather than the current release decision.
+
 ## Branch and merge assessment
 
 Snapshot of the nine remote branches, with `main` at `bec25d94`:
