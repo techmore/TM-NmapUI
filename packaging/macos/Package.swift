@@ -25,6 +25,8 @@ let package = Package(
         )
     ],
     targets: [
+        .target(name: "SharedEngineCore", path: "Sources/SharedEngineCore"),
+        .testTarget(name: "SharedEngineCoreTests", dependencies: ["SharedEngineCore"], path: "Tests/SharedEngineCoreTests", exclude: ["Fixtures"]),
         .target(name: "GoogleDriveCore", path: "Sources/GoogleDriveCore"),
         .testTarget(name: "GoogleDriveCoreTests", dependencies: ["GoogleDriveCore"], path: "Tests/GoogleDriveCoreTests"),
         .target(
@@ -33,7 +35,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "NmapUIApp",
-            dependencies: ["RuntimeContracts", "GoogleDriveCore"],
+            dependencies: ["RuntimeContracts", "GoogleDriveCore", "SharedEngineCore"],
             path: "Sources/NmapUIApp",
             exclude: [
                 "Resources/Info.plist"
@@ -59,7 +61,7 @@ let package = Package(
         ),
         .testTarget(
             name: "NmapUIAppTests",
-            dependencies: ["NmapUIApp", "NmapPrivilegedHelper", "RuntimeContracts"],
+            dependencies: ["NmapUIApp", "NmapPrivilegedHelper", "RuntimeContracts", "SharedEngineCore"],
             path: "Tests/NmapUIAppTests"
         )
     ]

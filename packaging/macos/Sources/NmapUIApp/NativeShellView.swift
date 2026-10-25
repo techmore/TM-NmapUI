@@ -8,6 +8,7 @@ import RuntimeContracts
 /// compatibility events, but scan controls do not depend on JavaScript.
 struct NativeShellView: View {
     @ObservedObject var sessionState: AppSessionState
+    @StateObject private var sharedEngineLibrary = SharedEngineLibraryModel()
     let onQuickScan: () -> Void
     let onStartScan: (String, String, Bool) -> Void
     let onOpenReport: (String) -> Void
@@ -38,6 +39,7 @@ struct NativeShellView: View {
                 case "Customers": customersSection
                 case "Logs": logsSection
                 case "Settings": settingsSection
+                case "Shared scanner": SharedEngineLibraryView(model: sharedEngineLibrary)
                 default:
                     statsCard
                     if sessionState.runtimeScanSession.isScanning { scanProgressCard }
@@ -91,6 +93,8 @@ struct NativeShellView: View {
             tabBar
             networkStatusBar
             capabilityStatusBar
+            Text("Native scanner controls · review the connected scanner in the Shared scanner tab")
+                .font(.caption).foregroundStyle(NativePalette.olive600)
             scanToolbar
         }
         .padding(.horizontal, 28)
@@ -101,7 +105,7 @@ struct NativeShellView: View {
 
     private var tabBar: some View {
         HStack(spacing: 6) {
-            ForEach(["Dashboard", "History", "Reports", "Customers", "Logs", "Settings"], id: \.self) { tab in
+            ForEach(["Dashboard", "History", "Reports", "Customers", "Logs", "Settings", "Shared scanner"], id: \.self) { tab in
                 Button(tab) { selectedTab = tab }
                     .buttonStyle(OliveButtonStyle(
                         fill: selectedTab == tab ? NativePalette.olive600 : .clear,
@@ -401,7 +405,7 @@ struct NativeShellView: View {
     }
 
     private var historySection: some View {
-        NativeCard("Scan history") {
+        NativeCard("Native archive · scan history") {
             Text("Review prior scans, compare network context, and reopen historical artifacts.")
                 .font(.callout).foregroundStyle(NativePalette.olive600)
             if sessionState.runtimeDataSnapshot.history.isEmpty { Text("No archived scans yet.").foregroundStyle(NativePalette.olive600) }
@@ -410,7 +414,7 @@ struct NativeShellView: View {
     }
 
     private var reportsSection: some View {
-        NativeCard("Reports") {
+        NativeCard("Native archive · reports") {
             Text("Open archived scan reports without relying on transient scan notifications.")
                 .font(.callout).foregroundStyle(NativePalette.olive600)
             if sessionState.runtimeDataSnapshot.reports.isEmpty { Text("Reports will appear here after a successful scan.").foregroundStyle(NativePalette.olive600) }

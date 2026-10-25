@@ -134,6 +134,59 @@ listener. For Flask runtime-store migration, use
 
 ## Verification and compatibility clients
 
+### Shared scanner review in SwiftUI
+
+The **Shared scanner** tab connects explicitly to an existing scanner on this Mac.
+Enter `http://127.0.0.1:9000` (or `http://[::1]:PORT`) and, when required, its
+username/password, then choose **Attach / check access**. Credentials stay in
+memory for the attachment; the address and credentials are not saved. Strict
+authentication works with `NMAPUI_TRUST_LOCAL_UI=false`. This tab never starts a
+host service or changes its authentication settings.
+
+The view shows actual shared-engine activity, saved scan history and report
+artifacts, updating every ten seconds only after attachment. Leaving the tab
+detaches it. Disconnected observations remain visibly out of date, and artifact
+actions stay disabled until a fresh attachment succeeds. Native scanner controls,
+the **Native archive**, customer records and native LaunchAgent schedules remain
+separate; this view neither starts shared scans nor imports or changes schedules.
+
+PDF/XML/HTML actions download using the same authenticated connection before
+opening a private local copy in the default document viewer. Every redirect is
+refused; only literal loopback HTTP endpoints and validated relative artifact
+paths are accepted. JSON responses are limited to 2 MiB and each report to 64 MiB.
+Private copies use an owner-only cache, with a 128 MiB limit per live library
+session. Copies survive Detach, are removed when the owning session is disposed,
+and validated crash leftovers from inactive processes are pruned on a later
+download. Unrecognized files, symlinks and active sessions are never pruned.
+
+Offline HTML gets a restrictive policy before all original document bytes and
+retains applicable server policy. Only the server's SHA-256-authorized runtime
+or no scripts are accepted. HTTP-only sandbox/frame-ancestor protections cannot
+be reproduced by a meta policy; the offline policy separately disables network,
+forms, objects and base URLs. Unsupported policies fail explicitly with PDF/XML
+as alternatives. HTML is opened externally, never in a privileged application
+WebView.
+
+Canonical integration tests verify the exact clean shared-engine revision
+`46a18a27bbc9df5fec061f6df226159b18f788e5`, using its real app, authentication,
+routes, SQLite store and report renderer with temporary data and no scan calls.
+Its scheduler thread runs for readiness with automatic scanning disabled. CI
+checks out that revision separately; fault-injection Flask fixtures are additional
+transport tests. To run canonical tests locally, set `NMAPUI_SHARED_ENGINE_SOURCE`
+to a clean checkout of that revision and optionally
+`NMAPUI_SHARED_ENGINE_CANONICAL_PYTHON` to its Python environment. The regular
+fixture interpreter (`NMAPUI_SHARED_ENGINE_FIXTURE_PYTHON`, default `python3`)
+needs Flask 3.1.3. Tests render the SwiftUI view through `NSHostingView` without
+launching the application delegate, and Chromium verifies offline policy,
+report layout and hash-authorized filter/CSV behavior.
+
+Moving execution to the shared engine is a separate migration: native
+`history.json`/`reports_archive` and `customers.json` do not match the shared
+`scans/*/metadata.json`, SQLite artifacts and customer registry. Native hourly
+schedules also have no exact counterpart in current shared customer monitoring.
+Preserve native files and their existing scheduler until an explicit, reversible
+import and single-owner scheduling handoff are implemented.
+
 CI keeps the Flask unit/browser/wrapper jobs and additionally requires the full
 SwiftPM test suite and an optimized native bundle with strict signature/resource
 checks. Tests use temporary data and loopback listeners; they never launch the

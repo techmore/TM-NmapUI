@@ -120,6 +120,12 @@ jobs:
       CODESIGN_IDENTITY: "-"
     steps:
       - uses: actions/checkout@v5
+      - name: Check out the exact shared engine for native HTTP integration
+        uses: actions/checkout@v5
+        with:
+          repository: techmore/TM-NmapUI
+          ref: 46a18a27bbc9df5fec061f6df226159b18f788e5
+          path: .shared-engine-fixture
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -129,12 +135,20 @@ jobs:
           echo "NMAPUI_LOG_DIR=$RUNNER_TEMP/nmapui-native-logs" >> "$GITHUB_ENV"
           echo "NMAPUI_RUNTIME_WORKDIR=$RUNNER_TEMP/nmapui-native-work" >> "$GITHUB_ENV"
           echo "NMAPUI_NATIVE_BUILD_DIR=$RUNNER_TEMP/nmapui-native-swift-build" >> "$GITHUB_ENV"
+          echo "NMAPUI_SHARED_ENGINE_SOURCE=$GITHUB_WORKSPACE/.shared-engine-fixture" >> "$GITHUB_ENV"
+          echo "NMAPUI_SHARED_ENGINE_UI_ARTIFACTS=$RUNNER_TEMP/nmapui-shared-engine-ui" >> "$GITHUB_ENV"
       - name: Install native test tools
         run: |
           brew list nmap >/dev/null 2>&1 || brew install nmap
-          python -m pip install pytest
+          python -m pip install pytest Flask==3.1.3
+          python -m pip install -r .shared-engine-fixture/requirements.txt
       - name: Test full native Swift package
         run: swift test --package-path packaging/macos --scratch-path "$NMAPUI_NATIVE_BUILD_DIR"
+      - name: Verify offline reports preserve layout and block decoy scripts
+        run: |
+          export PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/nmapui-native-report-browser"
+          python -m playwright install chromium --only-shell
+          python packaging/macos/Tests/SharedEngineCoreTests/Fixtures/check_offline_html.py "$NMAPUI_SHARED_ENGINE_UI_ARTIFACTS"
       - name: Verify numeric versions and optimized native bundle
         run: python -m pytest -q -s --basetemp "$RUNNER_TEMP/nmapui-native-pytest" tests/test_macos_bundle_version.py tests/test_native_bundle.py
       - name: Upload native diagnostics
@@ -145,5 +159,6 @@ jobs:
           path: |
             ${{ runner.temp }}/nmapui-native-logs
             ${{ runner.temp }}/nmapui-native-pytest/test_real_native_bundle_*/artifacts
+            ${{ runner.temp }}/nmapui-shared-engine-ui
             .pytest_cache
           if-no-files-found: ignore
