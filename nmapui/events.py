@@ -1,6 +1,7 @@
-from flask_socketio import emit
 from functools import wraps
 import threading
+
+from flask_socketio import emit
 
 
 _adapter_publication_lock = threading.RLock()
