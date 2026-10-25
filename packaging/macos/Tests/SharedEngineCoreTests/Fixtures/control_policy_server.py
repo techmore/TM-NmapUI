@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
+import socketserver
 import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,7 +38,20 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+class LiteralLoopbackHTTPServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer's default bind performs reverse DNS even for 127.0.0.1.
+        # This fixture has no hostname contract and must work without DNS.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+def forbidden_dns(*_args, **_kwargs):
+    raise RuntimeError("The loopback policy fixture must never resolve DNS")
+
+
+socket.getfqdn = forbidden_dns
+server = LiteralLoopbackHTTPServer(("127.0.0.1", 0), Handler)
 def stop(*_): raise SystemExit(0)
 signal.signal(signal.SIGTERM, stop)
 if mode == "delayed-ready": time.sleep(.3)
