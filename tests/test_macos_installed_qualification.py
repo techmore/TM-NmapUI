@@ -364,3 +364,24 @@ def test_source_git_authorization_is_exact_read_only_and_not_global(monkeypatch)
         assert '--global' not in arguments
     assert calls[0][-2:] == ['rev-parse', 'HEAD']
     assert calls[1][-2:] == ['status', '--porcelain']
+
+
+def test_archive_ownership_and_writable_modes_are_normalized_before_any_extraction(monkeypatch, tmp_path):
+    archive = tmp_path / 'verified.tar'
+    with tarfile.open(archive, 'w') as stream:
+        for name, mode, is_directory in [('source', 0o777, True), ('source/plain', 0o664, False),
+                                          ('source/executable', 0o6775, False)]:
+            member = tarfile.TarInfo(name)
+            member.uid, member.gid, member.uname, member.gname, member.mode = 1000, 1001, 'upstream', 'upstream', mode
+            if is_directory: member.type = tarfile.DIRTYPE; stream.addfile(member)
+            else: member.size = 1; stream.addfile(member, io.BytesIO(b'x'))
+    extracted = []
+    def extract_stub(self, destination, members):
+        extracted.extend((member.name, member.uid, member.gid, member.uname, member.gname, member.mode) for member in members)
+    monkeypatch.setattr(tarfile.TarFile, 'extractall', extract_stub)
+    monkeypatch.setattr(qualification.os, 'chown', lambda *a, **kw: pytest.fail('no local chown is allowed'))
+    observed = qualification.extract_verified(archive, tmp_path / 'never-created', hashlib.sha256(archive.read_bytes()).hexdigest())
+    assert observed == {'owners_uid_gid': [[1000, 1001]], 'group_or_other_writable_members': 3}
+    assert extracted == [('source', 0, 0, 'root', 'wheel', 0o755), ('source/plain', 0, 0, 'root', 'wheel', 0o644),
+                         ('source/executable', 0, 0, 'root', 'wheel', 0o755)]
+    assert not (tmp_path / 'never-created').exists()

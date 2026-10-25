@@ -274,11 +274,23 @@ def extract_verified(archive, destination, expected_hash):
     if hashlib.sha256(archive.read_bytes()).hexdigest() != expected_hash:
         raise RuntimeError('Source archive SHA256 mismatch: ' + archive.name)
     with tarfile.open(archive) as stream:
-        for member in stream.getmembers():
+        members = stream.getmembers()
+        observed = {'owners_uid_gid': [list(owner) for owner in sorted({(member.uid, member.gid) for member in members})],
+                    'group_or_other_writable_members': sum(bool(member.mode & 0o022) for member in members)}
+        for member in members:
             path = Path(member.name)
             if path.is_absolute() or '..' in path.parts or not (member.isdir() or member.isfile()):
                 raise RuntimeError('Unsafe source archive member: ' + member.name)
-        stream.extractall(destination)
+            # A root tar extractor otherwise preserves upstream account IDs
+            # (arp-scan=1000, libpcap=1001) and writable OpenSSL source modes.
+            # Normalize before any build code runs, never after weakening an
+            # ownership check. Archive bytes and SHA256 stay unchanged.
+            member.uid = member.gid = 0
+            member.uname = 'root'
+            member.gname = 'wheel'
+            member.mode = 0o755 if member.isdir() or member.mode & 0o111 else 0o644
+        stream.extractall(destination, members=members)
+        return observed
 
 
 def harden_tree(root):
@@ -317,11 +329,15 @@ def provision(source):
            'CXX': '/usr/bin/clang++', 'PKG_CONFIG': '/usr/bin/false',
            'SDKROOT': capture(['/usr/bin/xcrun', '--show-sdk-path']).strip()}
     licenses = RECEIPTS / 'licenses'; licenses.mkdir(parents=True)
+    archive_metadata = {}
     for name, entry in manifest.items():
         archive = downloads / entry['url'].rsplit('/', 1)[1]
         run(['/usr/bin/curl', '--fail', '--location', '--proto', '=https', '--proto-redir', '=https',
              '--tlsv1.2', '--max-time', '180', '--max-filesize', '104857600', entry['url'], '-o', archive])
-        extract_verified(archive, builds, entry['sha256'])
+        observed = extract_verified(archive, builds, entry['sha256'])
+        if observed != entry['upstream_archive_metadata']:
+            raise RuntimeError('Pinned source archive metadata differs from its reviewed receipt: ' + name)
+        archive_metadata[name] = observed
         tree = builds / entry['directory']
         license_dir = licenses / name; license_dir.mkdir()
         required_license = tree / entry['license']
@@ -333,6 +349,7 @@ def provision(source):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, target)
     receipt('source-provenance', manifest)
+    receipt('original-archive-metadata', archive_metadata)
     jobs = str(min(os.cpu_count() or 2, 4))
 
     def build(name, configure, extra=None, install_target='install'):

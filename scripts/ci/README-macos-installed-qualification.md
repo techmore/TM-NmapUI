@@ -46,7 +46,13 @@ OpenSSL/Nmap published digests were compared with downloaded archive bytes.
 libpcap and arp-scan publish upstream archives without SHA256 sidecars; their
 manifest checksums were computed from those official HTTPS release downloads.
 No PGP or Sigstore signature verification is claimed. Every VM download must
-match the committed digest before extraction. All upstream licenses, including
+match the committed digest before extraction. The second lifecycle attempt
+(`40245656136`) built all source packages, then correctly rejected the retained
+arp-scan source tree's upstream UID 1000. Raw metadata review also found libpcap
+UID 1001 and 6,065 writable OpenSSL members. Those original metadata receipts
+are pinned in the manifest and checked on the VM. Extraction now normalizes
+verified regular-file/directory metadata to root:wheel and 0644/0755 **before**
+building; it never relaxes an ownership validator or changes archive bytes. All upstream licenses, including
 Nmap's NPSL and bundled library notices, are retained with the receipts.
 
 CPython, static OpenSSL, libpcap, arp-scan and Nmap are built inside the new
