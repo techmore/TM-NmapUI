@@ -5,19 +5,25 @@ on:
     branches:
       - main
       - dev
-      - "codex/**"
+      - swift-native
   pull_request:
+  workflow_dispatch:
 
-# Push and PR events for one source branch share a key; only the newest
-# candidate needs these full packaging and installed-service checks.
+# Feature branches run through their PR, including drafts. Avoid starting a
+# second full matrix on every feature push; dispatch supports pre-PR checks.
+# New revisions still supersede obsolete runs for the same source branch.
 concurrency:
   group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   unit-tests:
     name: Unit And Contract Tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - name: Install system test dependencies
@@ -51,6 +57,7 @@ jobs:
   browser-regressions:
     name: Browser Regressions
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       NMAPUI_RUN_BROWSER_REGRESSION: "1"
       NMAPUI_SOCKET_AUTH_DISABLED: "1"
@@ -90,6 +97,7 @@ jobs:
   ubuntu-production-smoke:
     name: Ubuntu Service And WebSocket Smoke
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
       NMAPUI_RUN_PRODUCTION_SMOKE: "1"
       NMAPUI_RUN_STAGED_SMOKE: "1"
@@ -267,6 +275,7 @@ jobs:
   packaged-smoke:
     name: Packaged App Smoke
     runs-on: macos-latest
+    timeout-minutes: 20
     env:
       NMAPUI_RUN_PACKAGED_SMOKE: "1"
       NMAPUI_SKIP_OPEN: "1"
