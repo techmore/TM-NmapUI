@@ -6,16 +6,24 @@ Current work is published in [draft PR #254](https://github.com/techmore/TM-Nmap
 The cross-platform evidence ledger is
 [RELEASE_READINESS_2026-10-25.md](RELEASE_READINESS_2026-10-25.md).
 It tracks web, native macOS, native elementary OS, Drive, Daedalus packaging and
-installed-host gates separately. Shared engine `911f83d8` passed all four hosted
-jobs, including the Settings transport race and runtime-status privacy fixes.
-Elementary `4b3f1c5`, the Daedalus kit and the native canonical fixture are being
-repinned to that immutable source. Full SwiftUI stabilization is in draft
+installed-host gates separately. Shared engine
+`0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9` passed all four hosted jobs in
+[40244555753](https://github.com/techmore/TM-NmapUI/actions/runs/40244555753):
+889 unit/contract tests (45 gated/platform skips), 39 browser/PDF checks, five
+Mac packaging checks and staged/installed Ubuntu lifecycle qualification.
+This includes terminal-event guards, same-origin HTTPS Socket.IO, honest NSE
+provenance and the repaired browser-test bootstrap handshake. Downstream
+integrations are being repinned from `911f83d8` to this immutable checkpoint.
+Full SwiftUI stabilization is in draft
 [PR #255](https://github.com/techmore/TM-NmapUI/pull/255), with native Drive and
-retained-web hardening in [PR #256](https://github.com/techmore/TM-NmapUI/pull/256)
-and the native shared-scanner library in [PR #257](https://github.com/techmore/TM-NmapUI/pull/257).
-Read-only shared-library access does not establish shared scan/schedule execution;
-that transport and routing work remains open. Installed-host, signing and real
-OAuth gates also remain open. No release has been qualified or tagged.
+retained-web hardening in [PR #256](https://github.com/techmore/TM-NmapUI/pull/256),
+the native shared-scanner library in [PR #257](https://github.com/techmore/TM-NmapUI/pull/257)
+and authenticated controls in [PR #258](https://github.com/techmore/TM-NmapUI/pull/258).
+All four checks passed on the named heads of those four native slices. App-level
+source routing and full shared execution/data/scheduler parity remain open;
+transport qualification alone does not establish parity. Installed-host,
+signing and real OAuth gates also remain open. No release has been qualified
+or tagged.
 
 ## October 25 repository audit
 
