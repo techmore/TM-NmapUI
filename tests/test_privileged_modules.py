@@ -79,7 +79,7 @@ def test_unprivileged_fallback_preserves_exclusions(monkeypatch):
     result = scanning.run_nmap_with_xml_output(
         "10.0.0.0/24",
         "/tmp/out",
-        scan_type="comprehensive",
+        scan_type="quick",
         excluded_targets=["10.0.0.5", "10.0.0.9"],
         force_privileged_scan=True,
         **_base_kwargs(runner),
@@ -105,6 +105,36 @@ def test_unprivileged_fallback_preserves_exclusions(monkeypatch):
     assert "sudo" not in fallback
     assert "-sT" in fallback
     assert "-sS" not in fallback
+
+
+def test_comprehensive_scan_does_not_replace_denied_privileged_scan(monkeypatch):
+    monkeypatch.setattr(privileged, "privileged_prefix", lambda: ["sudo", "-n"])
+    captured = []
+    feedback = []
+    kwargs = _base_kwargs(_run(captured, [_denied(["first"])]))
+    kwargs["emit_to_client"] = lambda sid, event, message: feedback.append(message)
+
+    result = scanning.run_nmap_with_xml_output(
+        "10.0.0.0/24", "/tmp/out", scan_type="comprehensive",
+        force_privileged_scan=True, sid="client", **kwargs,
+    )
+
+    assert result == {"success": False, "timeout": False, "privilege_denied": True}
+    assert len(captured) == 1
+    assert any("no unprivileged replacement" in message for message in feedback)
+
+
+def test_explicit_connect_scan_can_retry_without_sudo(monkeypatch):
+    monkeypatch.setattr(privileged, "privileged_prefix", lambda: ["sudo", "-n"])
+    captured = []
+    result = scanning.run_nmap_with_xml_output(
+        "10.0.0.0/24", "/tmp/out", scan_type="comprehensive",
+        scan_only_mode=True,
+        **_base_kwargs(_run(captured, [_denied(["first"]), _ok(["second"])])),
+    )
+    assert result["success"] is True
+    assert len(captured) == 2
+    assert all("-sT" in command for command in captured)
 
 
 def test_scan_only_mode_wins_over_forced_privileged_scan(monkeypatch):
