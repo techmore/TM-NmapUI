@@ -374,6 +374,16 @@ jobs:
           NMAPUI_RUN_ISOLATED_KEYCHAIN_TESTS: "1"
           NMAPUI_KEYCHAIN_TEST_ENVIRONMENT: ${{ runner.environment }}
         run: swift test --package-path packaging/macos --scratch-path "$NMAPUI_NATIVE_BUILD_DIR"
+      - name: TEMP repeat flaky suites 10x (revert before merge)
+        env:
+          NMAPUI_RUN_ISOLATED_KEYCHAIN_TESTS: "1"
+          NMAPUI_KEYCHAIN_TEST_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          for i in $(seq 10); do
+            echo "::group::repeat $i"
+            swift test --package-path packaging/macos --scratch-path "$NMAPUI_NATIVE_BUILD_DIR" --skip-build --filter 'ExecutionSourceTests|SharedExecutionIntegrationTests' || exit 1
+            echo "::endgroup::"
+          done
       - name: Verify offline reports preserve layout and block decoy scripts
         run: |
           export PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/nmapui-native-report-browser"
