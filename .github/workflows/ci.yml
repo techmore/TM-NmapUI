@@ -26,14 +26,20 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+      - name: Retry stalled apt downloads
+        # Config file, so apt calls made by other tools (playwright --with-deps) retry too.
+        run: echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
       - name: Install system test dependencies
         run: sudo apt-get update && sudo apt-get install -y xsltproc
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
+          cache: npm
+          cache-dependency-path: scripts/ui-assets/package-lock.json
       - name: Verify committed browser assets are reproducible
         run: |
           npm ci --prefix scripts/ui-assets
@@ -66,11 +72,15 @@ jobs:
       NMAPUI_DEBUG: "false"
     steps:
       - uses: actions/checkout@v5
+      - name: Retry stalled apt downloads
+        # Config file, so apt calls made by other tools (playwright --with-deps) retry too.
+        run: echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
       - name: Install report transformation dependency
         run: sudo apt-get update && sudo apt-get install -y xsltproc
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -103,6 +113,9 @@ jobs:
       NMAPUI_RUN_STAGED_SMOKE: "1"
     steps:
       - uses: actions/checkout@v5
+      - name: Retry stalled apt downloads
+        # Config file, so apt calls made by other tools (playwright --with-deps) retry too.
+        run: echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
       - name: Install scanner and Python dependencies
         run: |
           sudo apt-get update
@@ -284,6 +297,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
