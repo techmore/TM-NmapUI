@@ -14,7 +14,7 @@ on:
         description: Immutable canonical runtime commit to qualify
         type: string
         required: true
-        default: 6515b783bc3048478a9f6995c6ab8934e8a7a97d
+        default: b99472d4b6c1b002dadd40b10ace473a200496a8
 
 permissions:
   contents: read
@@ -34,7 +34,7 @@ jobs:
     env:
       # Exact two-directory preparation reviewed against inventory40245362133.
       QUALIFICATION_PHASE: lifecycle
-      QUALIFIED_SOURCE: ${{ inputs.source_sha || '6515b783bc3048478a9f6995c6ab8934e8a7a97d' }}
+      QUALIFIED_SOURCE: ${{ inputs.source_sha || 'b99472d4b6c1b002dadd40b10ace473a200496a8' }}
     steps:
       - uses: actions/checkout@v5
         with:
