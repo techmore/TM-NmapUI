@@ -359,6 +359,19 @@ def run_nmap_with_xml_output(
             and result.returncode != 0
             and _is_permission_denied(result)
         ):
+            if scan_type != "quick" and not scan_only_mode:
+                message = (
+                    "Comprehensive scan requires working scanner privileges. "
+                    "The privileged scan was denied; no unprivileged replacement "
+                    "was run. Configure the scanner service/helper before retrying, "
+                    "or explicitly select scan-only mode for a connect scan."
+                )
+                logger.error(message)
+                if sid:
+                    emit_to_client(sid, "scan_feedback", message)
+                else:
+                    socketio_emit("scan_feedback", message)
+                return {"success": False, "timeout": False, "privilege_denied": True}
             logger.warning("Privileged scan denied; retrying with unprivileged connect scan")
             if sid:
                 emit_to_client(
