@@ -80,6 +80,25 @@ done
 log() { printf '[nmapui-daemon] %s\n' "$*"; }
 die() { printf '[nmapui-daemon] ERROR: %s\n' "$*" >&2; exit 1; }
 
+# `launchctl bootout` can return while launchd is still tearing the job down.
+# Bootstrapping the same label inside that window fails with
+# "Bootstrap failed: 5: Input/output error", so every stop waits until launchd
+# no longer reports the service before anything bootstraps it again.
+LAUNCHD_UNLOAD_TIMEOUT=60
+
+wait_for_daemon_unloaded() {
+  local deadline=$((SECONDS + LAUNCHD_UNLOAD_TIMEOUT))
+  while launchctl print "system/${LABEL}" >/dev/null 2>&1; do
+    (( SECONDS < deadline )) || return 1
+    sleep 0.5
+  done
+}
+
+stop_daemon() {
+  launchctl bootout "system/${LABEL}" || return 1
+  wait_for_daemon_unloaded
+}
+
 ensure_privacy_safe_egress_defaults() {
   local setting
   for setting in NMAPUI_ENABLE_NETWORK_FINGERPRINT NMAPUI_ENABLE_UPDATE_CHECK NMAPUI_ENABLE_VULNERS; do
@@ -309,7 +328,7 @@ uninstall() {
   verify_installed_artifacts
   log "stopping and removing ${LABEL}"
   if launchctl print "system/${LABEL}" >/dev/null 2>&1; then
-    launchctl bootout "system/${LABEL}" || die "could not stop daemon; no files removed"
+    stop_daemon || die "could not stop daemon; no files removed"
   fi
   rm -f "$PLIST_PATH" "$SUDOERS_PATH" "$WRAPPER_PATH" "$HELPER_PATH"
   rm -f "$ROOT_DIR" "$PREVIOUS_LINK"
@@ -576,6 +595,7 @@ rollback_failed_install() {
         fi
       fi
       if [[ "${INSTALL_PREVIOUS_LOADED:-0}" == 1 ]]; then
+        wait_for_daemon_unloaded || restore_failed=1
         launchctl bootstrap system "$PLIST_PATH" || restore_failed=1
         launchctl enable "system/${LABEL}" || restore_failed=1
         launchctl kickstart -k "system/${LABEL}" || restore_failed=1
@@ -717,7 +737,7 @@ install_daemon() {
   INSTALL_MUTATED=1
   if [[ "$INSTALL_PREVIOUS_LOADED" == 1 ]]; then
     INSTALL_SWITCHED=1
-    launchctl bootout "system/${LABEL}" || die "could not stop the previous daemon"
+    stop_daemon || die "could not stop the previous daemon"
   fi
 
   log "installing wrapper $WRAPPER_PATH"
@@ -809,7 +829,7 @@ rollback_daemon() {
   INSTALL_MUTATED=1
   if [[ "$INSTALL_PREVIOUS_LOADED" == 1 ]]; then
     INSTALL_SWITCHED=1
-    launchctl bootout "system/${LABEL}" || die "could not stop the current daemon"
+    stop_daemon || die "could not stop the current daemon"
   fi
   install -m 0755 -o root -g wheel "$previous/service-artifacts/nmapui-run" "$WRAPPER_PATH"
   install -m 0755 -o root -g wheel "$previous/service-artifacts/nmapui-privileged-scanner" "$HELPER_PATH"
