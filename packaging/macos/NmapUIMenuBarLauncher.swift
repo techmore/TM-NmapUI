@@ -108,13 +108,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp(_:)), keyEquivalent: "q")
-        quitItem.target = self
-        menu.addItem(quitItem)
-
-        let uninstallItem = NSMenuItem(title: "Uninstall", action: #selector(uninstallApp(_:)), keyEquivalent: "u")
+        // HIG: an item that opens a dialog ends in an ellipsis, a destructive
+        // item gets no shortcut, and Quit is the last item.
+        let uninstallItem = NSMenuItem(title: "Uninstall NmapUI\u{2026}", action: #selector(uninstallApp(_:)), keyEquivalent: "")
         uninstallItem.target = self
         menu.addItem(uninstallItem)
+
+        let quitItem = NSMenuItem(title: "Quit NmapUI", action: #selector(quitApp(_:)), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
 
         statusItem.menu = menu
     }
