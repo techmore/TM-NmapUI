@@ -1,3 +1,4 @@
+import GoogleDriveCore
 import AppKit
 import Foundation
 import ServiceManagement
@@ -659,8 +660,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dataDirectory: URL
     ) async {
         let status = GoogleDriveService.status(dataDirectory: dataDirectory)
-        guard status.connected else {
-            RuntimeDiagnosticsLogger.log("Skipping Google Drive upload: not connected (\(status.status))")
+        // An expired token can still refresh during upload; status remains network-free.
+        guard status.success && status.configured else {
+            RuntimeDiagnosticsLogger.log("Skipping Google Drive upload: credentials unavailable (\(status.status))")
             return
         }
 
@@ -851,16 +853,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func performGoogleDriveConnect() async {
         let dataDirectory = RuntimeSettingsStore.currentDataDirectoryURL()
         do {
-            let session = try GoogleDriveOAuthSession.start(preferredPort: 9010)
+            let session = try GoogleDriveOAuthSession.start()
             let auth = GoogleDriveService.authURL(dataDirectory: dataDirectory, redirectURI: session.redirectURI)
-            guard auth.success, let authURLString = auth.authURL, let authURL = URL(string: authURLString) else {
+            guard auth.success, let authURLString = auth.authURL, let authURL = try? DrivePolicy.browserAuthorizationURL(authURLString) else {
                 session.cancel(with: .listenFailed)
                 presentGoogleDriveMessage(auth.error ?? "Unable to start Google Drive authorization.", isError: true)
                 return
             }
 
+            guard let state = URLComponents(url: authURL, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "state" })?.value, !state.isEmpty else {
+                session.cancel(with: .invalidCallback)
+                presentGoogleDriveMessage("Invalid Google authorization state.", isError: true)
+                return
+            }
+            session.expectState(state)
             presentGoogleDriveMessage("Google authorization opened. Complete sign-in in the browser window.", isError: false)
-            NSWorkspace.shared.open(authURL)
+            guard NSWorkspace.shared.open(authURL) else {
+                session.cancel(with: .listenFailed)
+                presentGoogleDriveMessage("Could not open your browser for Google sign-in.", isError: true)
+                return
+            }
 
             let callback = try await session.waitForCallback(timeoutSeconds: 180)
             let exchange = GoogleDriveService.exchangeCode(

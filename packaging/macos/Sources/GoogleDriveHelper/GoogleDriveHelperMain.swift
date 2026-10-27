@@ -1,6 +1,8 @@
 @preconcurrency import Foundation
 import CryptoKit
 import Security
+import Darwin
+import GoogleDriveCore
 
 private enum HelperError: Error {
     case invalidCommand
@@ -21,12 +23,7 @@ private struct Credentials: Codable {
     var clientSecret: String?
 }
 
-private struct PendingAuth: Codable {
-    var state: String
-    var codeVerifier: String
-    var redirectUri: String
-    var createdAt: String
-}
+private typealias PendingAuth = DrivePendingAuth
 
 private struct HelperResponse: Codable {
     var success: Bool
@@ -87,13 +84,14 @@ private enum SecureState {
         }
     }
 
-    static func remove(root: URL, account: String) {
+    static func remove(root: URL, account: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account + ":" + root.standardizedFileURL.path,
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw HelperError.invalidPayload("Could not remove Google Drive state from Keychain") }
     }
 }
 
@@ -136,9 +134,9 @@ private func printJSON(_ value: HelperResponse) {
     }
 }
 
-private func randomURLSafeToken(byteCount: Int) -> String {
+private func randomURLSafeToken(byteCount: Int) throws -> String {
     var bytes = [UInt8](repeating: 0, count: byteCount)
-    _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+    guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw HelperError.invalidPayload("Secure random generator unavailable") }
     return Data(bytes).base64EncodedString()
         .replacingOccurrences(of: "+", with: "-")
         .replacingOccurrences(of: "/", with: "_")
@@ -162,6 +160,32 @@ private final class ResultBox<Value>: @unchecked Sendable {
     var value: Value?
 }
 
+
+private final class NoDriveRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+private let driveSession = URLSession(configuration: .ephemeral, delegate: NoDriveRedirects(), delegateQueue: nil)
+private func driveRequest(_ request: URLRequest) throws -> DriveResponse {
+    let signal = DispatchSemaphore(value: 0)
+    let result = ResultBox<Result<DriveResponse, Error>>()
+    let task = driveSession.dataTask(with: request) { data, response, error in
+        defer { signal.signal() }
+        if let error { result.value = .failure(error); return }
+        guard let response = response as? HTTPURLResponse else {
+            result.value = .failure(HelperError.invalidPayload("Missing HTTP response")); return
+        }
+        var headers: [String: String] = [:]
+        response.allHeaderFields.forEach { headers[String(describing: $0.key)] = String(describing: $0.value) }
+        result.value = .success(DriveResponse(response.statusCode, body: data ?? Data(), headers: headers))
+    }
+    task.resume()
+    guard signal.wait(timeout: .now() + 65) == .success else { task.cancel(); throw HelperError.invalidPayload("Drive request timed out") }
+    return try result.value!.get()
+}
+
 private func postForm(url: URL, body: [String: String]) throws -> SimpleResponse {
     var request = URLRequest(url: url)
     request.timeoutInterval = 60
@@ -176,7 +200,7 @@ private func postForm(url: URL, body: [String: String]) throws -> SimpleResponse
     let output = ResultBox<SimpleResponse>()
     let caught = ResultBox<Error>()
 
-    URLSession.shared.dataTask(with: request) { data, response, error in
+    driveSession.dataTask(with: request) { data, response, error in
         defer { semaphore.signal() }
         if let error {
             caught.value = error
@@ -202,32 +226,8 @@ private func jsonObject(from data: Data) -> [String: Any] {
 }
 
 private func formURLEncode(_ value: String) -> String {
-    var allowed = CharacterSet.urlQueryAllowed
-    allowed.remove(charactersIn: "&+=?")
-    return value
-        .replacingOccurrences(of: " ", with: "+")
-        .addingPercentEncoding(withAllowedCharacters: allowed) ?? value
-}
-
-private func makeMultipartBody(metadata: [String: Any], fileName: String, fileData: Data) -> (body: Data, boundary: String) {
-    let boundary = "----nmapui-\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
-    var body = Data()
-    func append(_ string: String) { body.append(Data(string.utf8)) }
-
-    append("--\(boundary)\r\n")
-    append("Content-Disposition: form-data; name=\"metadata\"; filename=\"metadata.json\"\r\n")
-    append("Content-Type: application/json; charset=UTF-8\r\n\r\n")
-    body.append((try? JSONSerialization.data(withJSONObject: metadata)) ?? Data())
-    append("\r\n")
-
-    append("--\(boundary)\r\n")
-    append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
-    append("Content-Type: application/octet-stream\r\n\r\n")
-    body.append(fileData)
-    append("\r\n")
-
-    append("--\(boundary)--\r\n")
-    return (body, boundary)
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+    return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
 }
 
 private func formURLEncoded(_ fields: [String: String]) -> Data {
@@ -254,7 +254,7 @@ private func httpGET(url: String, query: [String: String]? = nil, headers: [Stri
     let semaphore = DispatchSemaphore(value: 0)
     let output = ResultBox<SimpleResponse>()
     let caught = ResultBox<Error>()
-    URLSession.shared.dataTask(with: request) { data, response, error in
+    driveSession.dataTask(with: request) { data, response, error in
         defer { semaphore.signal() }
         if let error {
             caught.value = error
@@ -290,7 +290,7 @@ private func httpPOST(
     let semaphore = DispatchSemaphore(value: 0)
     let output = ResultBox<SimpleResponse>()
     let caught = ResultBox<Error>()
-    URLSession.shared.dataTask(with: request) { data, response, error in
+    driveSession.dataTask(with: request) { data, response, error in
         defer { semaphore.signal() }
         if let error {
             caught.value = error
@@ -321,11 +321,11 @@ private func revokeGoogleToken(_ token: String) throws {
     }
 }
 
-private func ensureAccessToken(root: URL, paths: (credentials: URL, token: URL, key: URL)) throws -> String {
+private func ensureAccessToken(root: URL, paths: (credentials: URL, token: URL, key: URL), forceRefresh: Bool = false) throws -> String {
     guard let tokenState = loadToken(root: root, paths: paths) else {
         throw HelperError.invalidPayload("Google Drive is not connected.")
     }
-    if let accessToken = tokenState.accessToken, !accessToken.isEmpty {
+    if !forceRefresh, DrivePolicy.accessUsable(tokenState.accessToken, expiresAt: tokenState.expiresAt), let accessToken = tokenState.accessToken {
         return accessToken
     }
     if let refreshToken = tokenState.refreshToken, !refreshToken.isEmpty {
@@ -333,21 +333,21 @@ private func ensureAccessToken(root: URL, paths: (credentials: URL, token: URL, 
         guard let clientId = credentials["client_id"], let clientSecret = credentials["client_secret"] else {
             throw HelperError.invalidPayload("Google Drive OAuth credentials file not found. Upload your credentials.json from the Google Cloud Console.")
         }
-        let response = try httpPOST(url: "https://oauth2.googleapis.com/token", headers: ["Content-Type": "application/x-www-form-urlencoded"], body: formURLEncoded([
-            "client_id": clientId,
-            "client_secret": clientSecret,
-            "refresh_token": refreshToken,
-            "grant_type": "refresh_token",
-        ]))
-        let payload = jsonObject(from: response.body)
-        guard response.statusCode < 400, let refreshed = payload["access_token"] as? String else {
-            throw HelperError.invalidPayload((payload["error_description"] as? String) ?? (payload["error"] as? String) ?? "Failed to refresh Google Drive access token.")
+        let refreshed: (access: String, refresh: String?, lifetime: TimeInterval)
+        do {
+            refreshed = try DriveTokenRefresher.refresh(clientID: clientId, clientSecret: clientSecret, refreshToken: refreshToken, send: driveRequest)
+        } catch DriveRefreshError.revoked {
+            var revoked = tokenState
+            revoked.accessToken = nil; revoked.refreshToken = nil; revoked.expiresAt = nil
+            try saveToken(revoked, root: root, paths: paths)
+            throw HelperError.invalidPayload("Google Drive access was revoked; reconnect your account.")
         }
         var updated = tokenState
-        updated.accessToken = refreshed
-        updated.expiresAt = ISO8601DateFormatter().string(from: Date().addingTimeInterval(TimeInterval((payload["expires_in"] as? Double).map { Int($0) } ?? 3600)))
+        updated.accessToken = refreshed.access
+        if let replacement = refreshed.refresh, !replacement.isEmpty { updated.refreshToken = replacement }
+        updated.expiresAt = ISO8601DateFormatter().string(from: Date().addingTimeInterval(refreshed.lifetime))
         try saveToken(updated, root: root, paths: paths)
-        return refreshed
+        return refreshed.access
     }
     throw HelperError.invalidPayload("Google Drive is not connected.")
 }
@@ -365,6 +365,7 @@ private func ensureReportsFolder(
         query += " and '\(parentID)' in parents"
     }
     let list = try httpGET(url: "https://www.googleapis.com/drive/v3/files", query: ["q": query, "fields": "files(id,name,webViewLink)"], headers: ["Authorization": "Bearer \(accessToken)"])
+    guard (200...299).contains(list.statusCode) else { throw HelperError.invalidPayload("Drive folder lookup failed (HTTP \(list.statusCode)).") }
     let listPayload = jsonObject(from: list.body)
     if let files = listPayload["files"] as? [[String: Any]], let first = files.first, let id = first["id"] as? String {
         return id
@@ -381,7 +382,7 @@ private func ensureReportsFolder(
         body: body
     )
     let createPayload = jsonObject(from: create.body)
-    if let id = createPayload["id"] as? String {
+    if (200...299).contains(create.statusCode), let id = createPayload["id"] as? String {
         return id
     }
     throw HelperError.invalidPayload("Failed to create Drive folder.")
@@ -394,28 +395,12 @@ private func uploadFile(
     fileNameMap: [String: String],
     paths: (credentials: URL, token: URL, key: URL)
 ) throws -> [String: Any] {
-    let accessToken = try ensureAccessToken(root: root, paths: paths)
-    let overrideName = fileNameMap[path.path]
-    let metadata: [String: Any] = {
-        var value: [String: Any] = ["name": overrideName ?? path.lastPathComponent]
-        if !folderID.isEmpty { value["parents"] = [folderID] }
-        return value
-    }()
-    let fileData = try Data(contentsOf: path)
-    let (multipartBody, boundary) = makeMultipartBody(metadata: metadata, fileName: path.lastPathComponent, fileData: fileData)
-    let response = try httpPOST(
-        url: "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
-        headers: [
-            "Authorization": "Bearer \(accessToken)",
-            "Content-Type": "multipart/form-data; boundary=\(boundary)",
-        ],
-        body: multipartBody
-    )
-    let payload = jsonObject(from: response.body)
-    if response.statusCode >= 400 {
-        throw HelperError.invalidPayload((payload["error"] as? [String: Any])?["message"] as? String ?? "Drive upload failed.")
-    }
-    return payload
+    let uploader = DriveUploader(token: { force in
+        try ensureAccessToken(root: root, paths: paths, forceRefresh: force)
+    }, send: driveRequest)
+    var metadata: [String: Any] = ["name": fileNameMap[path.path] ?? path.lastPathComponent]
+    if !folderID.isEmpty { metadata["parents"] = [folderID] }
+    return try uploader.upload(file: path, metadata: metadata)
 }
 
 @main
@@ -477,13 +462,20 @@ struct GoogleDriveHelper {
         let paths = defaultPaths(root: root)
 
         do {
+            // Serialize separate CLI processes so pending state is consumed exactly once.
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let lockFD = open(root.appendingPathComponent(".google-drive.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+            guard lockFD >= 0 else { throw HelperError.invalidPayload("Cannot lock Drive state") }
+            defer { close(lockFD) }
+            guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { throw HelperError.invalidPayload("Another Drive command is in progress") }
             switch command {
             case "status":
                 let credentials = loadCredentials(root: root, paths: paths)
                 let tokenState = loadToken(root: root, paths: paths)
                 let configured = (credentials["client_id"]?.isEmpty == false) && (credentials["client_secret"]?.isEmpty == false)
-                let connected = (tokenState?.refreshToken?.isEmpty == false) || (tokenState?.accessToken?.isEmpty == false)
-                let status: String = connected ? "Connected" : (configured ? "Not connected" : "OAuth credentials missing. Import credentials.json to enable Google Drive.")
+                let connected = DrivePolicy.accessUsable(tokenState?.accessToken, expiresAt: tokenState?.expiresAt)
+                let refreshable = tokenState?.refreshToken?.isEmpty == false
+                let status: String = connected ? "Connected" : (refreshable ? "Access token expired; refresh required on upload" : (configured ? "Not connected" : "OAuth credentials missing. Import credentials.json to enable Google Drive."))
                 printJSON(HelperResponse(success: true, status: status, error: nil, configured: configured, connected: connected, expiresAt: tokenState?.expiresAt, authURL: nil))
                 exit(0)
 
@@ -495,7 +487,16 @@ struct GoogleDriveHelper {
                 guard let credentials = try? JSONDecoder().decode([String: String].self, from: payloadData) else {
                     throw HelperError.invalidPayload("Credentials must contain a JSON object")
                 }
-                try SecureState.set(JSONEncoder().encode(credentials), root: root, account: "credentials")
+                try DriveCredentialPolicy.replace(credentials, current: {
+                    loadCredentials(root: root, paths: paths)
+                }, clearAuthorization: {
+                    try SecureState.remove(root: root, account: "token")
+                    for legacy in [paths.token, paths.key] where FileManager.default.fileExists(atPath: legacy.path) {
+                        try FileManager.default.removeItem(at: legacy)
+                    }
+                }, save: { validated in
+                    try SecureState.set(JSONEncoder().encode(validated), root: root, account: "credentials")
+                })
                 try? FileManager.default.removeItem(at: paths.credentials)
                 printJSON(HelperResponse(success: true, status: "Google Drive credentials saved", error: nil, configured: nil, connected: nil, expiresAt: nil, authURL: nil))
                 exit(0)
@@ -507,42 +508,46 @@ struct GoogleDriveHelper {
                     printJSON(HelperResponse(success: false, status: nil, error: "Google Drive OAuth credentials file not found. Upload your credentials.json from the Google Cloud Console.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
                     exit(1)
                 }
-                let stateToken = randomURLSafeToken(byteCount: 24)
-                let verifier = randomURLSafeToken(byteCount: 48)
+                try DrivePolicy.redirect(redirectURI)
+                let stateToken = try randomURLSafeToken(byteCount: 24)
+                let verifier = try randomURLSafeToken(byteCount: 48)
                 let challenge = sha256URLSafe(verifier)
                 let pending = PendingAuth(state: stateToken, codeVerifier: verifier, redirectUri: redirectURI, createdAt: ISO8601DateFormatter().string(from: Date()))
-                try saveToken(TokenState(schemaVersion: 1, ciphertext: nil, refreshToken: nil, accessToken: nil, expiresAt: nil, pendingAuth: pending), root: root, paths: paths)
-                let authURL = "https://accounts.google.com/o/oauth2/v2/auth?client_id=\(clientId)&redirect_uri=\(redirectURI)&response_type=code&scope=https://www.googleapis.com/auth/drive.file&access_type=offline&prompt=consent&include_granted_scopes=true&state=\(stateToken)&code_challenge=\(challenge)&code_challenge_method=S256"
+                var authState = loadToken(root: root, paths: paths) ?? TokenState()
+                authState.pendingAuth = pending
+                try saveToken(authState, root: root, paths: paths)
+                let authURL = try DrivePolicy.authorizationURL(clientID: clientId, redirect: redirectURI, state: stateToken, challenge: challenge)
                 printJSON(HelperResponse(success: true, status: nil, error: nil, configured: nil, connected: nil, expiresAt: nil, authURL: authURL))
                 exit(0)
 
             case "disconnect":
+                var revocationError: Error?
                 if let tokenState = loadToken(root: root, paths: paths) {
                     var tokens = [String]()
                     if let refreshToken = tokenState.refreshToken, !refreshToken.isEmpty { tokens.append(refreshToken) }
-                    if let accessToken = tokenState.accessToken, !accessToken.isEmpty { tokens.append(accessToken) }
+                    if tokens.isEmpty, let accessToken = tokenState.accessToken, !accessToken.isEmpty { tokens.append(accessToken) }
                     for token in Set(tokens) {
-                        try revokeGoogleToken(token)
+                        do { try revokeGoogleToken(token) } catch { revocationError = error }
                     }
                 }
-                SecureState.remove(root: root, account: "token")
-                SecureState.remove(root: root, account: "credentials")
+                try SecureState.remove(root: root, account: "token")
+                try SecureState.remove(root: root, account: "credentials")
                 try? FileManager.default.removeItem(at: paths.token)
                 try? FileManager.default.removeItem(at: paths.credentials)
                 try? FileManager.default.removeItem(at: paths.key)
-                printJSON(HelperResponse(success: true, status: "Google Drive disconnected", error: nil, configured: nil, connected: nil, expiresAt: nil, authURL: nil))
-                exit(0)
+                printJSON(HelperResponse(success: revocationError == nil, status: "Google Drive disconnected locally", error: revocationError == nil ? nil : "Local credentials removed; Google token revocation failed. Revoke access in your Google account.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
+                exit(revocationError == nil ? 0 : 1)
 
             case "exchange-code":
                 let tokenState = loadToken(root: root, paths: paths)
-                guard let pending = tokenState?.pendingAuth else {
+                guard let _ = tokenState?.pendingAuth else {
                     printJSON(HelperResponse(success: false, status: nil, error: "Invalid or expired Google Drive auth state.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
                     exit(1)
                 }
-                guard pending.state == state else {
-                    printJSON(HelperResponse(success: false, status: nil, error: "Invalid or expired Google Drive auth state.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
-                    exit(1)
-                }
+                guard !code.isEmpty else { throw HelperError.invalidPayload("Missing OAuth code") }
+                var consumed = tokenState!
+                let pending = try DrivePendingAuth.consume(&consumed.pendingAuth, received: state)
+                try saveToken(consumed, root: root, paths: paths)
                 let credentials = loadCredentials(root: root, paths: paths)
                 guard let clientId = credentials["client_id"], let clientSecret = credentials["client_secret"] else {
                     printJSON(HelperResponse(success: false, status: nil, error: "Google Drive OAuth credentials file not found. Upload your credentials.json from the Google Cloud Console.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
@@ -560,12 +565,12 @@ struct GoogleDriveHelper {
                     "redirect_uri": pending.redirectUri,
                 ])
                 let payload = jsonObject(from: response.body)
-                if response.statusCode >= 400 || payload["access_token"] == nil {
+                if !(200...299).contains(response.statusCode) || (payload["access_token"] as? String)?.isEmpty != false {
                     printJSON(HelperResponse(success: false, status: nil, error: (payload["error_description"] as? String) ?? (payload["error"] as? String) ?? "Failed to exchange Google Drive auth code.", configured: nil, connected: nil, expiresAt: nil, authURL: nil))
                     exit(1)
                 }
-                let expiresIn = (payload["expires_in"] as? Double).map { Int($0) } ?? 3600
-                let updatedState = TokenState(schemaVersion: 1, ciphertext: nil, refreshToken: tokenState?.refreshToken ?? (payload["refresh_token"] as? String), accessToken: payload["access_token"] as? String, expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(TimeInterval(expiresIn))), pendingAuth: nil)
+                let exchanged = try DriveAuthorizationTokens.decode(payload)
+                let updatedState = TokenState(schemaVersion: 1, ciphertext: nil, refreshToken: exchanged.refresh, accessToken: exchanged.access, expiresAt: exchanged.expiresAt, pendingAuth: nil)
                 try saveToken(updatedState, root: root, paths: paths)
                 printJSON(HelperResponse(success: true, status: "Google Drive connected", error: nil, configured: nil, connected: nil, expiresAt: updatedState.expiresAt, authURL: nil))
                 exit(0)

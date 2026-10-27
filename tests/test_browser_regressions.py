@@ -584,3 +584,89 @@ def test_flask_settings_persist_auto_monitor_and_import_drive_credentials(browse
         assert page.evaluate("localStorage.getItem('gemini-nmap-settings')") is None
     finally:
         context.close()
+
+
+def test_flask_settings_http_controls_precede_transport_setup_and_bind_once(browser_server, playwright_browser):
+    """Delay token retrieval and block Socket.IO while real HTTP Settings stays available."""
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    base_url = browser_server["base_url"]
+    original = context.request.get(f"{base_url}/api/settings").json()
+    saved = []
+    blocked = []
+    paused = []
+    cdp = context.new_cdp_session(page)
+    cdp.on("Fetch.requestPaused", lambda event: paused.append(event["requestId"]))
+    cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*/api/socket-token"}]})
+    def block_socket(route):
+        blocked.append(route.request.url)
+        route.abort()
+    context.route(f"{base_url}/socket.io/**", block_socket)
+    context.route("**/api/settings/google-drive/status", lambda route: route.fulfill(json={
+        "success": True, "configured": True, "connected": False, "status": "Background status arrived",
+    }))
+    context.add_init_script("window.open = () => { window.blockedPopupAttempts = (window.blockedPopupAttempts || 0) + 1; return null; };")
+    page.on("request", lambda request: saved.append(request.post_data_json)
+            if request.method == "POST" and request.url == f"{base_url}/api/settings" else None)
+    try:
+        page.goto(base_url, wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        page.wait_for_function("() => settingsTabLoaded === true")
+        assert paused
+        assert page.evaluate("window.socket === null")
+        def save(minutes):
+            page.locator("#settings-max-scan-minutes").fill(str(minutes))
+            with page.expect_response(lambda response: response.request.method == "POST" and response.url == f"{base_url}/api/settings") as response:
+                page.locator("#save-settings-btn").click()
+            assert response.value.json()["success"] is True
+            page.get_by_text("Settings saved.", exact=True).wait_for()
+        save(113)
+        assert len(saved) == 1
+        assert context.request.get(f"{base_url}/api/settings").json()["scan_rules"]["max_scan_minutes"] == 113
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        assert page.evaluate("window.blockedPopupAttempts") == 1
+        with page.expect_request(lambda request: request.url.startswith(f"{base_url}/socket.io/")):
+            for request_id in paused:
+                cdp.send("Fetch.continueRequest", {"requestId": request_id})
+            cdp.send("Fetch.disable")
+        page.wait_for_function("() => window.socket !== null")
+        assert blocked
+        context.unroute(f"{base_url}/socket.io/**")
+        page.wait_for_function("() => window.socket.connected")
+        page.evaluate("() => loadGoogleDriveAuthStatus()")
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        page.evaluate("initializeSettingsTab(); initializeSettingsTab();")
+        save(114)
+        assert len(saved) == 2
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        assert page.evaluate("window.blockedPopupAttempts") == 2
+    finally:
+        cdp.send("Fetch.disable")
+        context.request.post(f"{base_url}/api/settings", data=original)
+        context.close()
+
+
+def test_flask_drive_signin_keeps_the_browser_gesture_and_removes_opener(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    context.route("**/api/settings/google-drive/status", lambda route: route.fulfill(json={
+        "success": True, "configured": True, "connected": False, "status": "Ready",
+    }))
+    context.route("**/api/settings/google-drive/auth-url", lambda route: route.fulfill(json={
+        "success": True, "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?state=synthetic",
+    }))
+    context.route("https://accounts.google.com/**", lambda route: route.fulfill(body="<html><body>Simulated consent</body></html>", content_type="text/html"))
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        page.wait_for_function("() => settingsTabLoaded === true")
+        with page.expect_popup() as opened:
+            page.locator("#settings-google-drive-connect-btn").click()
+        popup = opened.value
+        popup.wait_for_url("https://accounts.google.com/**")
+        assert popup.evaluate("window.opener === null")
+        page.get_by_text("Complete sign-in in the browser window that opened.", exact=True).wait_for()
+    finally:
+        context.close()
