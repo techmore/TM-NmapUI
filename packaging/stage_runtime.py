@@ -22,7 +22,6 @@ RUNTIME_FILES = (
     "customer_fingerprint.py",
     "customer_fingerprint_matcher.py",
     "customer_fingerprint_store.py",
-    "google_drive.py",
     "VERSION",
     "nmap-modern.xsl",
     "nmap-pdf-olive-legacy.xsl",
