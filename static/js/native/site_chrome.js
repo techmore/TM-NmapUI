@@ -1,10 +1,77 @@
+const APP_TABS = ['dashboard', 'history', 'reports', 'customers', 'logs', 'settings'];
+
+// Per-tab activation callbacks. A feature module that owns a tab's data
+// (reports_tab.js owns History and Reports) registers here instead of
+// redefining switchAppTab, so this file keeps the one tab switcher and its
+// shared behaviour (cross-tab sync, hash, tab:changed) always runs.
+const appTabActivationHandlers = new Map();
+const APP_TAB_SYNC_KEY = 'nmapui.activeTab';
+const APP_TAB_SYNC_CHANNEL = 'nmapui-ui-state';
+
+function registerAppTabActivation(tab, handler) {
+    if (!APP_TABS.includes(tab) || typeof handler !== 'function') return;
+    appTabActivationHandlers.set(tab, handler);
+}
+
+function readAppTabFromHash() {
+    const tab = (window.location.hash || '').slice(1);
+    return APP_TABS.includes(tab) ? tab : null;
+}
+
+function readStoredAppTab() {
+    try {
+        const tab = localStorage.getItem(APP_TAB_SYNC_KEY);
+        return APP_TABS.includes(tab || '') ? tab : null;
+    } catch (error) {
+        return null;
+    }
+}
+
+// Pure DOM: wire the tab strip and cross-tab sync as soon as the DOM is
+// ready, before Socket.IO connects, so tabs and their HTTP-loaded panels work
+// without a socket. Safe to call more than once.
+let appTabsInitialized = false;
+function initializeAppTabs() {
+    if (appTabsInitialized) return;
+    appTabsInitialized = true;
+
+    ensureTabPanelsAreSiblings();
+
+    APP_TABS.forEach(tab => {
+        const btn = document.getElementById(`tab-${tab}-btn`);
+        if (btn) {
+            btn.addEventListener('click', () => {
+                switchAppTab(tab, { broadcast: true, persist: true });
+            });
+        }
+    });
+    // Only real tab names switch tabs, so in-page anchors such as the skip
+    // link (#scan-target) keep working.
+    window.addEventListener('hashchange', () => {
+        const tab = readAppTabFromHash();
+        if (tab && tab !== window.activeNmapUITab) switchAppTab(tab, { broadcast: true, persist: true });
+    });
+
+    const applyRemoteTab = (tab) => {
+        if (!APP_TABS.includes(tab) || tab === window.activeNmapUITab) return;
+        switchAppTab(tab, { broadcast: false, persist: false });
+    };
+    window.addEventListener('storage', (event) => {
+        if (event.key === APP_TAB_SYNC_KEY && typeof event.newValue === 'string') {
+            applyRemoteTab(event.newValue);
+        }
+    });
+    if (typeof BroadcastChannel !== 'undefined') {
+        new BroadcastChannel(APP_TAB_SYNC_CHANNEL).addEventListener('message', (event) => {
+            applyRemoteTab(event.data?.tab);
+        });
+    }
+
+    switchAppTab(readAppTabFromHash() || readStoredAppTab() || 'dashboard', { broadcast: false, persist: false });
+}
+
 function initializeSiteChrome() {
     const dateTimeEl = document.getElementById('current-date-time');
-    const tabSyncKey = 'nmapui.activeTab';
-    const tabSyncChannelName = 'nmapui-ui-state';
-    const tabSyncChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(tabSyncChannelName) : null;
-    const tabs = ['dashboard', 'history', 'reports', 'customers', 'logs', 'settings'];
-    let activeTab = tabs.includes((location.hash || '').replace('#', '')) ? (location.hash || '').replace('#', '') : 'dashboard';
 
     const updateDateTime = () => {
         const now = new Date();
@@ -13,40 +80,7 @@ function initializeSiteChrome() {
     updateDateTime();
     setInterval(updateDateTime, 1000);
 
-    ensureTabPanelsAreSiblings();
-
-    tabs.forEach(tab => {
-        const btn = document.getElementById(`tab-${tab}-btn`);
-        if (btn) {
-            btn.addEventListener('click', () => {
-                switchAppTab(tab, { broadcast: true, persist: true });
-            });
-        }
-    });
-
-    const applyRemoteTab = (tab) => {
-        if (!tabs.includes(tab) || tab === activeTab) return;
-        switchAppTab(tab, { broadcast: false, persist: false });
-    };
-
-    const readStoredTab = () => {
-        const storedTab = localStorage.getItem(tabSyncKey);
-        return tabs.includes(storedTab || '') ? storedTab : null;
-    };
-
-    const initialTab = tabs.includes(activeTab) ? activeTab : (readStoredTab() || 'dashboard');
-    switchAppTab(initialTab, { broadcast: false, persist: false });
-
-    window.addEventListener('storage', (event) => {
-        if (event.key === tabSyncKey && typeof event.newValue === 'string') {
-            applyRemoteTab(event.newValue);
-        }
-    });
-
-    tabSyncChannel?.addEventListener('message', (event) => {
-        const tab = event.data?.tab;
-        applyRemoteTab(tab);
-    });
+    initializeAppTabs();
 
     document.getElementById('refresh-history-tab-btn')?.addEventListener('click', () => {
         window.socket?.emit('get_history');
@@ -88,6 +122,8 @@ function setTabButtonState(button, active) {
     button.classList.toggle('action-button-primary', active);
     button.classList.toggle('text-olive-700', !active);
     button.classList.toggle('hover:bg-olive-100', !active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.setAttribute('tabindex', active ? '0' : '-1');
 }
 
 function setTabStatus(elementId, message, isError = false) {
@@ -106,26 +142,8 @@ function setTabStatus(elementId, message, isError = false) {
     status.classList.toggle('text-olive-800', !isError);
 }
 
-function switchAppTab(tab, options = {}) {
-    const { broadcast = false, persist = false } = options;
-    const tabs = ['dashboard', 'history', 'reports', 'customers', 'logs', 'settings'];
-    if (!tabs.includes(tab)) return;
-    window.activeNmapUITab = tab;
-    if (persist) {
-        localStorage.setItem('nmapui.activeTab', tab);
-        if (location.hash !== `#${tab}`) {
-            history.replaceState(null, '', `#${tab}`);
-        }
-    }
-    tabs.forEach(t => {
-        const panel = document.getElementById(`${t}-tab-panel`);
-        if (panel) panel.classList.toggle('hidden', t !== tab);
-        setTabButtonState(document.getElementById(`tab-${t}-btn`), t === tab);
-    });
-
-    const resultsPanel = document.getElementById('dashboard-results-panel');
-    if (resultsPanel) resultsPanel.classList.toggle('hidden', tab !== 'dashboard');
-
+// Default activation for tabs no module has registered a handler for.
+function activateAppTabDefault(tab) {
     if (tab === 'history') {
         window.socket?.emit('get_history');
     } else if (tab === 'reports') {
@@ -143,11 +161,50 @@ function switchAppTab(tab, options = {}) {
             setTabStatus('settings-tab-status', '');
         }
     }
+}
+
+// The only switchAppTab. Do not redefine it in another module: register a
+// per-tab callback with registerAppTabActivation() or listen for the
+// `tab:changed` window event instead.
+// broadcast: tell other NmapUI windows; persist: remember the tab for them.
+function switchAppTab(tab, options = {}) {
+    const { broadcast = false, persist = false } = options;
+    if (!APP_TABS.includes(tab)) tab = 'dashboard';
+    const previousTab = window.activeNmapUITab || null;
+    window.activeNmapUITab = tab;
+    if (persist) {
+        try {
+            localStorage.setItem(APP_TAB_SYNC_KEY, tab);
+        } catch (error) {
+            // Storage can be unavailable; the BroadcastChannel still syncs.
+        }
+    }
+    if (window.location.hash !== `#${tab}`) {
+        window.history.replaceState(null, '', `#${tab}`);
+    }
+
+    APP_TABS.forEach(t => {
+        const panel = document.getElementById(`${t}-tab-panel`);
+        if (panel) panel.classList.toggle('hidden', t !== tab);
+        setTabButtonState(document.getElementById(`tab-${t}-btn`), t === tab);
+    });
+
+    const resultsPanel = document.getElementById('dashboard-results-panel');
+    if (resultsPanel) resultsPanel.classList.toggle('hidden', tab !== 'dashboard');
+
+    const handler = appTabActivationHandlers.get(tab);
+    if (handler) {
+        handler({ tab, previousTab });
+    } else {
+        activateAppTabDefault(tab);
+    }
+
+    window.dispatchEvent(new CustomEvent('tab:changed', { detail: { tab, previousTab } }));
 
     if (broadcast) {
         window.dispatchEvent(new CustomEvent('nmapui-tab-changed', { detail: { tab } }));
         if (typeof BroadcastChannel !== 'undefined') {
-            const channel = new BroadcastChannel('nmapui-ui-state');
+            const channel = new BroadcastChannel(APP_TAB_SYNC_CHANNEL);
             channel.postMessage({ type: 'tab', tab });
             channel.close();
         }
@@ -155,6 +212,8 @@ function switchAppTab(tab, options = {}) {
 }
 
 window.switchAppTab = switchAppTab;
+window.registerAppTabActivation = registerAppTabActivation;
+window.initializeAppTabs = initializeAppTabs;
 
 function initializeAuditLog() {
     const logEntries = document.getElementById('log-entries');
