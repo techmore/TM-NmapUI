@@ -1690,13 +1690,12 @@ def test_template_does_not_keep_inline_report_generation_block():
     assert "function updateReportsBadge(scans)" in reports_source
     assert "document.getElementById('reports-badge')" in reports_source
     assert "loadReportsTab(true);" in reports_source
-    assert "document.getElementById('tab-customers-btn')?.addEventListener('click', () => switchAppTab('customers'));" in reports_source
+    assert "window.registerAppTabActivation('reports', () => loadReportsTab());" in reports_source
     assert "document.getElementById('history-focus-current-btn')?.addEventListener('click'" in reports_source
     assert "document.getElementById('history-focus-all-btn')?.addEventListener('click'" in reports_source
     assert "Newest first" in reports_source
     assert "Compare with previous scan" in reports_source
     assert "historySelectedPath" in reports_source
-    assert "loadCustomersTab()" in reports_source
     assert "id=\"cust-public-ip\"" in template
     # customer updates fan out from the backend handler; UI refreshes via customer_profile.
     assert "socket.on('customer_profile'" in (ROOT / "static" / "js" / "customer_actions.js").read_text() or \
@@ -1753,14 +1752,10 @@ def test_template_uses_dom_helpers_for_scan_result_rendering():
     assert "function ensureTabPanelsAreSiblings()" in reports_tab_module
     assert "panel.parentElement !== dashboardPanel" in reports_tab_module
     assert "parent.insertBefore(panel, dashboardPanel.nextSibling);" in reports_tab_module
-    assert "switchAppTab('history')" in reports_tab_module
-    assert "switchAppTab('reports')" in reports_tab_module
-    assert "switchAppTab('logs')" in reports_tab_module
-    assert "switchAppTab('settings')" in reports_tab_module
-    assert "const panels = {" in reports_tab_module
+    assert "window.registerAppTabActivation('history', () => loadHistoryTab());" in reports_tab_module
+    assert "window.registerAppTabActivation('reports', () => loadReportsTab());" in reports_tab_module
     assert "function loadReportsTab(force = false)" in reports_tab_module
     assert "function loadHistoryTab(force = false)" in reports_tab_module
-    assert "window.loadSettingsTab()" in reports_tab_module
     assert "window.addEventListener('report-complete-refresh'" in reports_tab_module
     assert "buildRuntimeReportArtifactUrl(scan.path, 'html')" in reports_tab_module
     assert "buildRuntimeReportArtifactUrl(scan.path, 'pdf')" in reports_tab_module
@@ -1807,3 +1802,35 @@ def test_template_uses_dom_helpers_for_asset_modal_and_history_rendering():
     assert "serviceDiv.innerHTML =" not in template
     assert "cveDiv.innerHTML =" not in template
     assert "historyList.innerHTML = scans.map" not in template
+
+
+def test_switch_app_tab_has_one_definition_in_site_chrome():
+    """reports_tab.js loads after site_chrome.js; a second global
+    switchAppTab there silently replaced the shared one (and its keyboard
+    navigation / cross-tab behaviour). Feature modules use the hooks instead."""
+    js_dir = ROOT / "static" / "js"
+    definers = sorted(
+        path.relative_to(js_dir).as_posix()
+        for path in js_dir.glob("*.js")
+        if "function switchAppTab(" in path.read_text()
+        or "window.switchAppTab =" in path.read_text()
+    )
+    assert definers == ["site_chrome.js"]
+
+    site_chrome = (js_dir / "site_chrome.js").read_text()
+    reports_tab = (js_dir / "reports_tab.js").read_text()
+    assert "function registerAppTabActivation(tab, handler)" in site_chrome
+    assert "window.registerAppTabActivation = registerAppTabActivation;" in site_chrome
+    assert "window.initializeAppTabs = initializeAppTabs;" in site_chrome
+    assert "const handler = appTabActivationHandlers.get(tab);" in site_chrome
+    assert "new CustomEvent('tab:changed', { detail: { tab, previousTab } })" in site_chrome
+    assert "initializeTabListKeyboard();" in site_chrome
+    assert "window.addEventListener('tab:changed'" in reports_tab
+    assert "addEventListener('click', () => switchAppTab(" not in reports_tab
+
+    template = (ROOT / "templates" / "index.html").read_text()
+    assert template.index('<script src="/static/js/site_chrome.js"></script>') < template.index(
+        '<script src="/static/js/reports_tab.js"></script>'
+    )
+    template_bootstrap = (js_dir / "template_bootstrap.js").read_text()
+    assert template_bootstrap.index("initializeAppTabs();") < template_bootstrap.index("initializeReportsTab();")
