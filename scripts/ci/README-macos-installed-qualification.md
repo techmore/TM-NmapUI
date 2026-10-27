@@ -27,7 +27,10 @@ actual receipts pass.
 The workflow is restricted to the named repository and branch; it never runs
 for PR events. Pushing that reviewed branch explicitly starts qualification.
 A later manual dispatch also requires the disposable-install confirmation.
-The initial runtime pin is `0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9`; the harness
+The initial runtime pin was `0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9`. Its upgrade
+step failed with launchd EIO because the installer bootstrapped before `bootout`
+had finished; the runtime pin is now `6515b783bc3048478a9f6995c6ab8934e8a7a97d`,
+which waits for the unload (a real installer fix, not a test accommodation). The harness
 checkout and runtime checkout are distinct. Receipt identities record both
 immutable commits. No runtime source or installer is patched to accept tests.
 
