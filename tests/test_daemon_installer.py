@@ -456,7 +456,13 @@ def test_mac_uninstall_preserves_data_and_release_archives(tmp_path):
          'SUDOERS_PATH="$TEST_ROOT/sudoers"; PLIST_PATH="$TEST_ROOT/nmapui.plist"\n'
          'SOURCE_PYTHON_BIN=/usr/bin/true\n'
          'require_root() { :; }\n'
-         'launchctl() { printf "%s\\n" "$*" >> "$TEST_LOG"; return 0; }\n'
+         'loaded=1\n'
+         'launchctl() {\n'
+         '  [[ "$1" == print ]] && { [[ "$loaded" == 1 ]]; return; }\n'
+         '  printf "%s\\n" "$*" >> "$TEST_LOG"\n'
+         '  [[ "$1" == bootout ]] && loaded=0\n'
+         '  return 0\n'
+         '}\n'
          'uninstall'],
         env={**os.environ, "INSTALLER": str(INSTALLER), "TEST_ROOT": str(tmp_path),
              "TEST_LOG": str(launch_log)},
@@ -588,13 +594,15 @@ def _rollback_mac_release(tmp_path, *, fail_first_bootstrap=False):
          'verify_release_artifacts() { :; }; check_port_conflict() { :; }\n'
          'read_plist_run_user() { echo scanner; }; read_service_port() { echo 9000; }\n'
          'install() { cp "$7" "$8"; chmod "$2" "$8"; }\n'
-         'bootstrap_count=0\n'
+         'bootstrap_count=0; loaded=1\n'
          'launchctl() {\n'
-         '  [[ "$1" == print ]] && return 0\n'
+         '  [[ "$1" == print ]] && { [[ "$loaded" == 1 ]]; return; }\n'
          '  printf "%s\\n" "$*" >> "$TEST_LOG"\n'
+         '  [[ "$1" == bootout ]] && loaded=0\n'
          '  if [[ "$1" == bootstrap ]]; then\n'
          '    bootstrap_count=$((bootstrap_count + 1))\n'
          '    if [[ "$TEST_FAIL_BOOTSTRAP" == 1 && "$bootstrap_count" == 1 ]]; then return 1; fi\n'
+         '    loaded=1\n'
          '  fi\n'
          '  return 0\n'
          '}\n'
@@ -664,7 +672,14 @@ def test_failed_upgrade_restores_launcher_and_previous_release(tmp_path):
             'rm "$ROOT_DIR"; ln -s "$TEST_ROOT/new-release" "$ROOT_DIR"\n'
             'INSTALL_MUTATED=1; INSTALL_SWITCHED=1; INSTALL_PREVIOUS_LOADED=1\n'
             'INSTALL_PREVIOUS_RELEASE="$TEST_ROOT/old-release"\n'
-            'launchctl() { printf "%s\\n" "$*" >> "$TEST_LOG"; return 0; }\n'
+            'loaded=1\n'
+            'launchctl() {\n'
+            '  [[ "$1" == print ]] && { [[ "$loaded" == 1 ]]; return; }\n'
+            '  printf "%s\\n" "$*" >> "$TEST_LOG"\n'
+            '  [[ "$1" == bootout ]] && loaded=0\n'
+            '  [[ "$1" == bootstrap ]] && loaded=1\n'
+            '  return 0\n'
+            '}\n'
             'rollback_failed_install 1',
         ],
         env={**os.environ, "INSTALLER": str(INSTALLER), "TEST_ROOT": str(tmp_path), "TEST_LOG": str(launch_log)},
@@ -717,3 +732,43 @@ def test_failed_first_install_leaves_no_boot_service(tmp_path):
     assert not (tmp_path / "nmapui-run").exists()
     assert not (tmp_path / "nmapui.plist").exists()
     assert not backup.exists()
+
+
+def _run_stop_daemon(tmp_path, polls_until_unloaded, timeout_seconds):
+    """Model launchd still reporting the label for a while after bootout returns."""
+    launch_log = tmp_path / "launch.log"
+    result = subprocess.run(
+        ["bash", "-c", 'source "$INSTALLER"\n'
+         'LAUNCHD_UNLOAD_TIMEOUT="$TEST_TIMEOUT"\n'
+         'sleep() { :; }\n'
+         'remaining=-1\n'
+         'launchctl() {\n'
+         '  printf "%s\\n" "$*" >> "$TEST_LOG"\n'
+         '  case "$1" in\n'
+         '    bootout) remaining="$TEST_POLLS"; return 0 ;;\n'
+         '    print) (( remaining != 0 )) || return 113; (( remaining > 0 )) && remaining=$((remaining - 1)); return 0 ;;\n'
+         '  esac\n'
+         '  return 0\n'
+         '}\n'
+         'stop_daemon && launchctl bootstrap system /Library/LaunchDaemons/com.techmore.nmapui.plist'],
+        env={**os.environ, "INSTALLER": str(INSTALLER), "TEST_LOG": str(launch_log),
+             "TEST_POLLS": str(polls_until_unloaded), "TEST_TIMEOUT": str(timeout_seconds)},
+        text=True, capture_output=True, timeout=10,
+    )
+    return result, launch_log.read_text().splitlines()
+
+
+def test_mac_stop_waits_for_launchd_to_finish_bootout_before_bootstrap(tmp_path):
+    result, calls = _run_stop_daemon(tmp_path, polls_until_unloaded=3, timeout_seconds=60)
+
+    assert result.returncode == 0, result.stderr
+    assert calls[0] == "bootout system/com.techmore.nmapui"
+    assert calls[1:5] == ["print system/com.techmore.nmapui"] * 4
+    assert calls[-1].startswith("bootstrap system ")
+
+
+def test_mac_stop_fails_when_launchd_never_unloads_the_label(tmp_path):
+    result, calls = _run_stop_daemon(tmp_path, polls_until_unloaded=-1, timeout_seconds=0)
+
+    assert result.returncode != 0
+    assert not any(call.startswith("bootstrap") for call in calls)

@@ -1,4 +1,4 @@
-let appTabsInitialized = false;
+let reportsTabInitialized = false;
 let reportsTabLoaded = false;
 let historyTabLoaded = false;
 let currentAppTab = 'dashboard';
@@ -749,75 +749,32 @@ async function loadReportsTab(force = false) {
     }
 }
 
-function setTabButtonState(button, active) {
-    if (!button) {
-        return;
-    }
-
-    button.classList.toggle('action-button-primary', active);
-    button.classList.toggle('text-olive-700', !active);
-    button.classList.toggle('hover:bg-olive-100', !active);
-    // Roving tabindex: only the selected tab is in the Tab order; arrow keys
-    // move between tabs (see initializeSiteChrome).
-    button.setAttribute('aria-selected', active ? 'true' : 'false');
-    button.setAttribute('tabindex', active ? '0' : '-1');
-}
-
-function switchAppTab(tabName) {
-    if (!['dashboard', 'history', 'reports', 'customers', 'logs', 'settings'].includes(tabName)) tabName = 'dashboard';
-    currentAppTab = tabName;
-    if (window.location.hash !== `#${tabName}`) window.history.replaceState(null, '', `#${tabName}`);
-
-    const panels = {
-        dashboard: document.getElementById('dashboard-tab-panel'),
-        history: document.getElementById('history-tab-panel'),
-        reports: document.getElementById('reports-tab-panel'),
-        customers: document.getElementById('customers-tab-panel'),
-        logs: document.getElementById('logs-tab-panel'),
-        settings: document.getElementById('settings-tab-panel'),
-    };
-
-    Object.entries(panels).forEach(([name, panel]) => {
-        panel?.classList.toggle('hidden', name !== tabName);
-    });
-
-    document.getElementById('dashboard-results-panel')?.classList.toggle('hidden', tabName !== 'dashboard');
-
-    setTabButtonState(document.getElementById('tab-dashboard-btn'), tabName === 'dashboard');
-    setTabButtonState(document.getElementById('tab-history-btn'), tabName === 'history');
-    setTabButtonState(document.getElementById('tab-reports-btn'), tabName === 'reports');
-    setTabButtonState(document.getElementById('tab-customers-btn'), tabName === 'customers');
-    setTabButtonState(document.getElementById('tab-logs-btn'), tabName === 'logs');
-    setTabButtonState(document.getElementById('tab-settings-btn'), tabName === 'settings');
+function syncHistoryFocusButtons() {
     document.getElementById('history-focus-current-btn')?.classList.toggle('action-button-primary', historyViewMode === 'current');
     document.getElementById('history-focus-all-btn')?.classList.toggle('action-button-primary', historyViewMode === 'all');
-
-    if (tabName === 'history') {
-        loadHistoryTab();
-    } else if (tabName === 'reports') {
-        loadReportsTab();
-    } else if (tabName === 'customers' && typeof window.loadCustomersTab === 'function') {
-        window.loadCustomersTab();
-    } else if (tabName === 'settings' && typeof window.loadSettingsTab === 'function') {
-        window.loadSettingsTab();
-    }
 }
 
+// Tab switching lives in site_chrome.js (the one switchAppTab). This module
+// only says what happens when its tabs open, through the shared hooks.
+if (typeof window.registerAppTabActivation === 'function') {
+    window.registerAppTabActivation('history', () => loadHistoryTab());
+    window.registerAppTabActivation('reports', () => loadReportsTab());
+}
+window.addEventListener('tab:changed', (event) => {
+    currentAppTab = event.detail?.tab || 'dashboard';
+    syncHistoryFocusButtons();
+});
+
 function initializeReportsTab() {
-    if (appTabsInitialized) {
+    if (reportsTabInitialized) {
         return;
     }
-    appTabsInitialized = true;
+    reportsTabInitialized = true;
     ensureTabPanelsAreSiblings();
-    switchAppTab(window.location.hash.slice(1) || 'dashboard');
-    window.addEventListener('hashchange', () => switchAppTab(window.location.hash.slice(1)));
-
-    document.getElementById('tab-dashboard-btn')?.addEventListener('click', () => switchAppTab('dashboard'));
-    document.getElementById('tab-history-btn')?.addEventListener('click', () => switchAppTab('history'));
-    document.getElementById('tab-reports-btn')?.addEventListener('click', () => switchAppTab('reports'));
-    document.getElementById('tab-customers-btn')?.addEventListener('click', () => switchAppTab('customers'));
-    document.getElementById('tab-logs-btn')?.addEventListener('click', () => switchAppTab('logs'));
-    document.getElementById('tab-settings-btn')?.addEventListener('click', () => switchAppTab('settings'));
+    // site_chrome.js wires the tab strip and opens the tab named in the URL.
+    if (typeof window.initializeAppTabs === 'function') {
+        window.initializeAppTabs();
+    }
 
     document.getElementById('refresh-history-tab-btn')?.addEventListener('click', () => {
         historyTabLoaded = false;
@@ -851,5 +808,4 @@ function initializeReportsTab() {
 
 window.loadHistoryTab = loadHistoryTab;
 window.loadReportsTab = loadReportsTab;
-window.switchAppTab = switchAppTab;
 window.initializeReportsTab = initializeReportsTab;
