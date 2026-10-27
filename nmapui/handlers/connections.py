@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from nmapui.auth import require_socket_auth, socket_authorized
 from nmapui.daedalus_commands import emit_command_result, NAMESPACE
 from nmapui.auto_scan import build_auto_scan_status_payload
+from nmapui.events import serialize_job_publication
 
 
 def get_app_version_safe():
@@ -95,6 +96,7 @@ def register_connection_handlers(socketio, deps):
     auth_disabled = _os.environ.get("NMAPUI_SOCKET_AUTH_DISABLED", "").strip().lower() in {"1", "true", "yes"}
 
     @socketio.on("connect")
+    @serialize_job_publication(job_registry)
     def on_connect(auth=None):
         # Reject connections that did not present the loopback token (#210).
         # Test harnesses may disable the check explicitly via env flag.
@@ -256,9 +258,14 @@ def register_connection_handlers(socketio, deps):
         else:
             for event, data in replay_buffer:
                 emit_to_client(new_sid, event, data)
+        # Replay is historical evidence and may predate an unpublished pause or
+        # completion. Preserve it verbatim, then finish with a fresh observation.
+        current_job = job_registry.get(owner_sid, active_job_type) or {"status": "idle", "details": {}}
+        emit_to_client(new_sid, "job_status", {**current_job, "job_type": active_job_type})
 
     @socketio.on("get_initial_data")
     @require_socket_auth()
+    @serialize_job_publication(job_registry)
     def on_get_initial_data():
         """Legacy protocol bridge (#230): re-send the sync snapshot when the frontend
         asks for it after wiring its listeners."""
@@ -307,3 +314,5 @@ def register_connection_handlers(socketio, deps):
         if owner_sid:
             for event, data in broadcaster.get_replay_buffer(owner_sid, job_type=active_job_type):
                 emit_to_client(request.sid, event, data)
+            current_job = job_registry.get(owner_sid, active_job_type) or {"status": "idle", "details": {}}
+            emit_to_client(request.sid, "job_status", {**current_job, "job_type": active_job_type})
