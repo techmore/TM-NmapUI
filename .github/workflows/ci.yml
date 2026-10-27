@@ -120,6 +120,12 @@ jobs:
       CODESIGN_IDENTITY: "-"
     steps:
       - uses: actions/checkout@v5
+      - name: Check out the exact shared engine for native HTTP integration
+        uses: actions/checkout@v5
+        with:
+          repository: techmore/TM-NmapUI
+          ref: 911f83d837c6ea992f2592b4633c59e4a5c1ee29
+          path: .shared-engine-fixture
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -129,15 +135,34 @@ jobs:
           echo "NMAPUI_LOG_DIR=$RUNNER_TEMP/nmapui-native-logs" >> "$GITHUB_ENV"
           echo "NMAPUI_RUNTIME_WORKDIR=$RUNNER_TEMP/nmapui-native-work" >> "$GITHUB_ENV"
           echo "NMAPUI_NATIVE_BUILD_DIR=$RUNNER_TEMP/nmapui-native-swift-build" >> "$GITHUB_ENV"
+          echo "NMAPUI_SHARED_ENGINE_SOURCE=$GITHUB_WORKSPACE/.shared-engine-fixture" >> "$GITHUB_ENV"
+          echo "NMAPUI_SHARED_ENGINE_UI_ARTIFACTS=$RUNNER_TEMP/nmapui-shared-engine-ui" >> "$GITHUB_ENV"
       - name: Install native test tools
         run: |
           brew list nmap >/dev/null 2>&1 || brew install nmap
-          python -m pip install pytest
+          python -m pip install pytest Flask==3.1.3
+          python -m pip install -r .shared-engine-fixture/requirements.txt
+          # Xcode's test runner can replace PATH; bind both fixtures to the
+          # interpreter whose dependencies were installed above.
+          python -c 'import os, sys; p = os.path.realpath(sys.executable); f = open(os.environ["GITHUB_ENV"], "a"); f.write(f"NMAPUI_SHARED_ENGINE_FIXTURE_PYTHON={p}\nNMAPUI_SHARED_ENGINE_CANONICAL_PYTHON={p}\n")'
       - name: Test full native Swift package
         run: swift test --package-path packaging/macos --scratch-path "$NMAPUI_NATIVE_BUILD_DIR"
+      - name: Verify offline reports preserve layout and block decoy scripts
+        run: |
+          export PLAYWRIGHT_BROWSERS_PATH="$RUNNER_TEMP/nmapui-native-report-browser"
+          python -m playwright install chromium --only-shell
+          python packaging/macos/Tests/SharedEngineCoreTests/Fixtures/check_offline_html.py "$NMAPUI_SHARED_ENGINE_UI_ARTIFACTS"
       - name: Verify numeric versions and optimized native bundle
         run: python -m pytest -q -s --basetemp "$RUNNER_TEMP/nmapui-native-pytest" tests/test_macos_bundle_version.py tests/test_native_bundle.py tests/test_macos_build_preflight.py
       - name: Upload native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-shared-scanner-evidence
+          path: ${{ runner.temp }}/nmapui-shared-engine-ui
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload native failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
