@@ -1,3 +1,4 @@
+from nmapui.events import serialize_job_publication
 from nmapui.app_client_state_runtime import (
     get_client_state as get_client_state_runtime,
     get_current_customer_state as get_current_customer_state_runtime,
@@ -70,6 +71,7 @@ def build_event_helpers(*, socketio, job_registry, broadcaster=None, runtime_sto
         _log_runtime_event(runtime_store, event, data)
         return result
 
+    @serialize_job_publication(job_registry)
     def emit_job_status(sid, job_type):
         targets = {sid}
         if broadcaster is not None and hasattr(broadcaster, "get_subscribers"):

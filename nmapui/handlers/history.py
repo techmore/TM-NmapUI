@@ -2,6 +2,7 @@ from datetime import datetime
 
 from flask import request
 from flask_socketio import emit
+from nmapui.events import serialize_job_publication
 from nmapui.auth import require_socket_auth
 from nmapui.daedalus_commands import command_id_from_payload, begin_command, emit_command_result, report_scan_completion
 
@@ -22,6 +23,7 @@ def register_history_handlers(socketio, deps):
     logger = deps["logger"]
     runtime_store = deps.get("runtime_store")
 
+    @serialize_job_publication(job_registry)
     def emit_preferred_job_status(target_sid, job_type):
         owner_sid = broadcaster.find_active_owner(job_type) if broadcaster else None
         if owner_sid and owner_sid != target_sid:
