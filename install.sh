@@ -3,7 +3,7 @@
 # NmapUI dependency installer.
 #
 # Installs the toolchain the Flask app actually needs: nmap, xsltproc, a Python
-# interpreter, the project virtualenv, Playwright's Chromium and gowitness.
+# interpreter, the project virtualenv and Playwright's Chromium.
 # It deliberately does not install Node: the Express app in this repository is a
 # legacy rollback reference, not the product.
 #
@@ -42,7 +42,6 @@ BREW_PACKAGES=(
     "nmap"
     "libxslt"
     "python"
-    "go"
 )
 
 OPTIONAL_BREW_PACKAGES=(
@@ -131,47 +130,6 @@ if ! python -m playwright install chromium; then
     echo "WARNING: Playwright Chromium install failed. PDF export can still fall back to wkhtmltopdf or Chrome."
 fi
 
-find_gowitness() {
-    if command -v gowitness &> /dev/null; then
-        command -v gowitness
-        return 0
-    fi
-    if command -v go &> /dev/null; then
-        local gobin gopath
-        gobin="$(go env GOBIN 2>/dev/null || true)"
-        gopath="$(go env GOPATH 2>/dev/null || true)"
-        if [ -n "$gobin" ] && [ -x "$gobin/gowitness" ]; then
-            echo "$gobin/gowitness"
-            return 0
-        fi
-        if [ -n "$gopath" ] && [ -x "$gopath/bin/gowitness" ]; then
-            echo "$gopath/bin/gowitness"
-            return 0
-        fi
-    fi
-    if [ -x "$HOME/go/bin/gowitness" ]; then
-        echo "$HOME/go/bin/gowitness"
-        return 0
-    fi
-    return 1
-}
-
-echo ""
-echo "Installing gowitness with Go when needed..."
-if GOWITNESS_BIN="$(find_gowitness)"; then
-    echo "gowitness already installed at $GOWITNESS_BIN"
-elif command -v go &> /dev/null; then
-    go install github.com/sensepost/gowitness@latest
-    GOWITNESS_BIN="$(find_gowitness || true)"
-    if [ -n "$GOWITNESS_BIN" ]; then
-        echo "gowitness installed at $GOWITNESS_BIN"
-    else
-        echo "WARNING: gowitness install completed, but the binary was not found under GOBIN or GOPATH/bin."
-    fi
-else
-    echo "WARNING: Go is unavailable. Web screenshot capture will be skipped until gowitness is installed."
-fi
-
 echo ""
 echo "[5/6] Verifying installations..."
 MISSING=0
@@ -190,12 +148,6 @@ if python -c "import flask, flask_socketio, playwright" &> /dev/null; then
 else
     echo "MISSING: python dependencies — re-run ./install.sh"
     MISSING=1
-fi
-
-if GOWITNESS_BIN="$(find_gowitness)"; then
-    echo "OK: gowitness - $GOWITNESS_BIN"
-else
-    echo "OPTIONAL MISSING: gowitness"
 fi
 
 if CHROME_BIN="$(find_chrome)"; then

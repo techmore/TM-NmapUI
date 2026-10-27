@@ -25,7 +25,7 @@ from nmapui.handlers.auto_scan import (
     start_auto_scan_thread,
 )
 from nmapui.jobs import ClientJobRegistry
-from nmapui.paths import AUTO_SCAN_SCHEDULER_LOCK_FILE, resolve_scan_path
+from nmapui.paths import AUTO_SCAN_SCHEDULER_LOCK_FILE, SCANS_DIR, resolve_scan_path
 from nmapui.runtime import env_flag
 
 
@@ -333,7 +333,7 @@ def test_resolve_scan_path_accepts_nested_scan_path():
     resolved = resolve_scan_path("Customer/2026-03-13/scan_010000_target")
 
     assert isinstance(resolved, Path)
-    assert "data/scans" in str(resolved)
+    assert resolved == (SCANS_DIR / "Customer/2026-03-13/scan_010000_target").resolve()
 
 
 def test_env_flag_parses_truthy_values(monkeypatch):

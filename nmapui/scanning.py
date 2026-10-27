@@ -1,7 +1,9 @@
 from datetime import datetime
+import hashlib
 import ipaddress
 import logging
 import os
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -76,6 +78,18 @@ def check_nmap():
         return None
 
 
+def vulners_script_version(vulners_script: Path) -> str:
+    """Identify the primary NSE snapshot without borrowing a parent Git revision."""
+    digest = hashlib.sha256()
+    try:
+        with vulners_script.open("rb") as source:
+            for chunk in iter(lambda: source.read(64 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return "Unavailable"
+    return f"vulners.nse sha256:{digest.hexdigest()[:16]}"
+
+
 def check_vulners(vulners_script):
     """Verify the bundled vulners NSE script is present.
 
@@ -90,20 +104,7 @@ def check_vulners(vulners_script):
         )
         return False
 
-    vulners_dir = vulners_script.parent
-    try:
-        result = subprocess.run(
-            ["git", "log", "-1", "--oneline"],
-            cwd=vulners_dir,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            logger.info("Vulners script present (revision: %s)", result.stdout.strip())
-        else:
-            logger.info("Vulners script present at %s", vulners_script)
-    except Exception:
-        logger.info("Vulners script present at %s", vulners_script)
+    logger.info("Vulners script present (%s)", vulners_script_version(vulners_script))
 
     return True
 

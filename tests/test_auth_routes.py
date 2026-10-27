@@ -250,7 +250,7 @@ def build_auto_scan_app():
     return app
 
 
-def build_settings_app(backfill_result=None, backfill_calls=None, save_settings=None, disconnect_google_drive=None):
+def build_settings_app(backfill_result=None, backfill_calls=None, save_settings=None, disconnect_google_drive=None, drive_deps=None):
     app = Flask(__name__)
     settings_state = {
         "target_profiles": [],
@@ -289,6 +289,7 @@ def build_settings_app(backfill_result=None, backfill_calls=None, save_settings=
                     "error": "No completed reports are available yet",
                 }
             ),
+            **(drive_deps or {}),
         },
     )
     return app, settings_state
@@ -1196,6 +1197,117 @@ def test_settings_routes_return_google_drive_auth_url(monkeypatch):
     assert "https://example.com/auth" in response.get_json()["auth_url"]
 
 
+@pytest.mark.parametrize("authentication", ["basic", "local"])
+@pytest.mark.parametrize("browser_headers", [
+    {"Origin": "http://localhost:9876"},
+    {"Referer": "http://localhost:9876/foreign-page"},
+    {"Sec-Fetch-Site": "cross-site"},
+])
+def test_foreign_browser_get_cannot_replace_pending_drive_authorization(monkeypatch, authentication, browser_headers):
+    configure_auth(monkeypatch)
+    monkeypatch.delenv("NMAPUI_ALLOWED_ORIGINS", raising=False)
+    if authentication == "local":
+        monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
+    calls = []
+    app, _ = build_settings_app(drive_deps={
+        "build_google_drive_auth_url": lambda **kwargs: calls.append(kwargs) or {"success": True},
+    })
+    headers = {**(basic_auth_header() if authentication == "basic" else {}), **browser_headers}
+    response = app.test_client().get("/api/settings/google-drive/auth-url", headers=headers)
+    # Sec-Fetch-Site can already remove loopback trust before the route's
+    # origin guard. Either denial must leave the pending authorization alone.
+    expected = 401 if authentication == "local" and "Sec-Fetch-Site" in browser_headers else 403
+    assert response.status_code == expected
+    assert calls == []
+    assert "no-store" in response.headers["Cache-Control"]
+
+
+@pytest.mark.parametrize("browser_headers", [{}, {"Origin": "http://localhost"}, {"Referer": "http://localhost/settings"}])
+def test_drive_auth_url_accepts_same_origin_browser_and_headerless_api(monkeypatch, browser_headers):
+    configure_auth(monkeypatch)
+    monkeypatch.delenv("NMAPUI_ALLOWED_ORIGINS", raising=False)
+    app, _ = build_settings_app()
+    response = app.test_client().get(
+        "/api/settings/google-drive/auth-url", headers={**basic_auth_header(), **browser_headers},
+    )
+    assert response.status_code == 200
+    assert "no-store" in response.headers["Cache-Control"]
+
+
+@pytest.mark.parametrize("path", [
+    "/api/settings/google-drive/status",
+    "/api/settings/google-drive/auth-url",
+    "/api/settings/google-drive/callback?code=abc&state=xyz",
+    "/api/settings/google-drive/callback?error=access_denied",
+])
+def test_drive_sensitive_success_and_error_responses_are_not_cached(monkeypatch, path):
+    configure_auth(monkeypatch)
+    app, _ = build_settings_app()
+    response = app.test_client().get(path, headers=basic_auth_header())
+    assert response.headers["Cache-Control"] == "private, no-store"
+
+
+def test_drive_disconnect_wins_over_callback_and_does_not_wait_for_bulk_backfill(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    configure_auth(monkeypatch)
+    folder_entered, release_folder = Event(), Event()
+    disconnect_started, revoked = Event(), Event()
+    backfill_entered, release_backfill = Event(), Event()
+
+    def setup_folder():
+        folder_entered.set()
+        assert release_folder.wait(timeout=5)
+        return {"success": True, "folder_id": "reports"}
+
+    def revoke():
+        revoked.set()
+        return {"success": True}
+
+    def bulk_backfill():
+        backfill_entered.set()
+        assert release_backfill.wait(timeout=5)
+        return {"success": False, "attempted": False}
+
+    app, settings = build_settings_app(drive_deps={
+        "ensure_google_drive_reports_folder": setup_folder,
+        "disconnect_google_drive": revoke,
+        "upload_latest_report_to_google_drive": bulk_backfill,
+    })
+
+    def connect():
+        with app.test_client() as client:
+            return client.get("/api/settings/google-drive/callback?code=abc&state=xyz").status_code
+
+    def disconnect():
+        disconnect_started.set()
+        with app.test_client() as client:
+            return client.post("/api/settings/google-drive/disconnect", headers=basic_auth_header()).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        try:
+            callback = pool.submit(connect)
+            assert folder_entered.wait(timeout=5)
+            disconnected = pool.submit(disconnect)
+            assert disconnect_started.wait(timeout=5)
+            # The former implementation revoked tokens here, then the older
+            # callback re-enabled sync when its delayed folder request returned.
+            assert not revoked.wait(timeout=0.1)
+            release_folder.set()
+            assert backfill_entered.wait(timeout=5)
+            assert disconnected.result(timeout=3) == 200
+            assert revoked.is_set()
+            assert settings["sync"]["google_drive"]["enabled"] is False
+            assert settings["sync"]["google_drive"]["status"] == "Not connected"
+            assert not callback.done(), "Disconnect must not wait for bulk report uploads"
+        finally:
+            release_folder.set()
+            release_backfill.set()
+        assert callback.result(timeout=3) == 200
+        assert settings["sync"]["google_drive"]["enabled"] is False
+
+
 def test_settings_routes_callback_backfills_latest_report_when_drive_connects(monkeypatch):
     configure_auth(monkeypatch)
     backfill_calls = []
@@ -1235,6 +1347,24 @@ def test_settings_routes_callback_reports_when_no_backfill_report_available(monk
 
     assert response.status_code == 200
     assert b"No saved report was uploaded automatically." in response.data
+
+
+def test_drive_callback_escapes_upload_error_in_success_page(monkeypatch):
+    configure_auth(monkeypatch)
+    app, _ = build_settings_app(backfill_result={"attempted": True, "success": False, "error": '<img src=x onerror="alert(1)">'})
+    response = app.test_client().get("/api/settings/google-drive/callback?code=abc&state=xyz")
+    assert response.status_code == 200
+    assert b"<img" not in response.data
+    assert b"&lt;img" in response.data
+
+
+def test_drive_disconnect_disables_sync_without_browser_followup(monkeypatch):
+    configure_auth(monkeypatch)
+    app, settings = build_settings_app()
+    settings["sync"]["google_drive"]["enabled"] = True
+    response = app.test_client().post("/api/settings/google-drive/disconnect", headers=basic_auth_header())
+    assert response.status_code == 200
+    assert settings["sync"]["google_drive"]["enabled"] is False
 
 
 def test_settings_routes_callback_returns_html_when_unexpected_error_occurs(monkeypatch):

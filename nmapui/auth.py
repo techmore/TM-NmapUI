@@ -125,7 +125,9 @@ def default_credentials_allowed():
     if not acknowledged or not local_ui_trusted():
         return False
 
-    bind_host = str(os.environ.get("NMAPUI_HOST", "127.0.0.1") or "127.0.0.1").strip()
+    # An explicitly empty bind is not the default loopback address: the server
+    # receives that value unchanged and can bind all interfaces.
+    bind_host = str(os.environ.get("NMAPUI_HOST", "127.0.0.1")).strip()
     if bind_host.startswith("[") and bind_host.endswith("]"):
         bind_host = bind_host[1:-1]
     if bind_host.lower() == "localhost":

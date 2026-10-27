@@ -144,6 +144,10 @@ under the data directory. Saved reports also offer a passive VLAN/segmentation
 view with confidence levels and cited evidence
 (`docs/guides/VLAN_SEGMENTATION.md`).
 
+Optional Google Drive export uses per-file OAuth access and resumable uploads.
+See [Drive setup, behavior and production requirements](docs/guides/GOOGLE_DRIVE.md)
+for consent, disconnect, retry limits and verification evidence.
+
 ### Vulnerability enrichment and data egress
 
 Complete scans can query Vulners.com over HTTPS for CVE matches. The bundled

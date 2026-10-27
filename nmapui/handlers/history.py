@@ -2,6 +2,7 @@ from datetime import datetime
 
 from flask import request
 from flask_socketio import emit
+from nmapui.events import serialize_job_publication
 from nmapui.auth import require_socket_auth
 from nmapui.daedalus_commands import command_id_from_payload, begin_command, emit_command_result, report_scan_completion
 
@@ -22,6 +23,7 @@ def register_history_handlers(socketio, deps):
     logger = deps["logger"]
     runtime_store = deps.get("runtime_store")
 
+    @serialize_job_publication(job_registry)
     def emit_preferred_job_status(target_sid, job_type):
         owner_sid = broadcaster.find_active_owner(job_type) if broadcaster else None
         if owner_sid and owner_sid != target_sid:
@@ -166,7 +168,7 @@ def register_history_handlers(socketio, deps):
             candidates = [job["sid"] for job in job_registry.snapshot()["active_jobs"] if job.get("job_type") == "scan" and (job.get("details") or {}).get("daedalus_command_namespace") == namespace]
             owner_sid = (request.sid if request.sid in candidates else candidates[0]) if candidates else (broadcaster.find_active_owner("scan") or request.sid)
         if source_job_id is not None and command_id is None:
-            if broadcaster and broadcaster.get_bridge_namespace(request.sid):
+            if broadcaster and broadcaster.is_bridge_client(request.sid):
                 emit("scan_error", "Bridge cancellation requires a command identifier")
                 return
             observed_owner = broadcaster.find_active_owner(job_type) if broadcaster else None
@@ -243,11 +245,31 @@ def register_history_handlers(socketio, deps):
             emit("scan_error", "Invalid job type")
             return
         owner_sid = request.sid
+        bridge_namespace = (
+            broadcaster.get_bridge_namespace(request.sid)
+            if broadcaster and broadcaster.is_bridge_client(request.sid) else None
+        )
+        if bridge_namespace is not None:
+            # A reconnected bridge has a new SID; prefer its enrollment's job
+            # instead of the first scan another enrollment happens to own.
+            candidates = [
+                job["sid"] for job in job_registry.snapshot()["active_jobs"]
+                if job.get("job_type") == job_type
+                and (job.get("details") or {}).get("daedalus_command_namespace") == bridge_namespace
+            ]
+            if candidates:
+                owner_sid = request.sid if request.sid in candidates else candidates[0]
         current = job_registry.get(owner_sid, job_type)
         if not current or current.get("status") != "running":
             observed_owner = broadcaster.find_active_owner(job_type) if broadcaster else None
             if observed_owner and job_registry.get(observed_owner, job_type):
                 owner_sid = observed_owner
+        current = job_registry.get(owner_sid, job_type)
+        original_namespace = ((current or {}).get("details") or {}).get("daedalus_command_namespace")
+        if (broadcaster and broadcaster.is_bridge_client(request.sid)
+                and original_namespace is not None and original_namespace != bridge_namespace):
+            emit_to_client(request.sid, "scan_error", "The active scan belongs to a different bridge control session.")
+            return
         change = job_registry.resume if resume else job_registry.pause
         ok, reason = change(owner_sid, job_type, expected_source_job_id=source_job_id)
         emit_job_status(owner_sid, job_type)

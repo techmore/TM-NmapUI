@@ -5,7 +5,7 @@ import base64
 from flask import Flask
 from flask_socketio import SocketIO
 
-from nmapui.handlers.connections import register_connection_handlers
+from nmapui.handlers.connections import _load_persisted_active_job, register_connection_handlers
 from nmapui.jobs import ClientJobRegistry, ScanBroadcaster
 from nmapui.runtime_db import create_runtime_state_store
 from nmapui.scan_runtime import make_broadcast_emit
@@ -134,3 +134,36 @@ def test_finished_jobs_older_than_recovery_window_are_not_replayed(monkeypatch, 
     client = bridge_client(app, socket)
     assert not [payload for _, name, payload in emitted if name == "daedalus_event"]
     client.disconnect()
+
+
+def test_active_durable_and_memory_events_replay_once_per_reconnect(monkeypatch, tmp_path):
+    store = create_runtime_state_store(tmp_path / "runtime.db")
+    broadcaster = ScanBroadcaster()
+    registry = ClientJobRegistry(runtime_store=store)
+    broadcaster.register_client("owner")
+    assert registry.start("owner", "scan")
+    broadcaster.start_job("owner", source_job_id=registry.get("owner", "scan")["source_job_id"])
+    send = make_broadcast_emit(owner_sid="owner", broadcaster=broadcaster,
+        emit_to_client=lambda *args: None, runtime_store=store)
+    send("owner", "scan_results", [{"ip": "fixture-host"}])
+    original = broadcaster.get_bridge_replay_buffer("owner")[0]
+    emitted = []
+    app, socket = connection_fixture(monkeypatch, broadcaster, registry, store, emitted)
+
+    first = bridge_client(app, socket)
+    assert [payload for _, event, payload in emitted if event == "daedalus_event"] == [original]
+    first.disconnect()
+    emitted.clear()
+    second = bridge_client(app, socket)
+    assert [payload for _, event, payload in emitted if event == "daedalus_event"] == [original]
+    second.disconnect()
+
+
+def test_command_receipts_do_not_hide_persisted_scanner_status(tmp_path):
+    store = create_runtime_state_store(tmp_path / "runtime.db")
+    store.upsert_job(job_id="scan-run", owner_sid="owner", job_type="scan", status="running", payload={})
+    for number in range(30):
+        store.upsert_job(job_id=f"command-{number}", owner_sid="bridge", job_type="command", status="running", payload={})
+    assert _load_persisted_active_job(store)["job_id"] == "scan-run"
+    store.upsert_job(job_id="report-run", owner_sid="owner", job_type="report", status="running", payload={})
+    assert _load_persisted_active_job(store)["job_id"] == "report-run"

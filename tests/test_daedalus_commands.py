@@ -155,9 +155,11 @@ def test_interrupted_command_replays_a_stable_failed_receipt(monkeypatch, tmp_pa
     first.emit("start_scan", {"target": "fixture", "daedalus_command_id": 601})
     first.disconnect()
     reconcile_interrupted_jobs(runtime_store=store)
+    emitted.clear()
     second = client(app, socket)
     terminal = store.list_job_events(job_id=f"daedalus-command:{COMMAND_NAMESPACE}:601")[-1]["source_event"]
     assert terminal["payload"]["status"] == "failed"
+    assert [item["status"] for item in receipts(emitted)] == ["accepted", "failed"]
     second.disconnect()
     third = client(app, socket)
     assert terminal in [data for _, event, data in emitted if event == "daedalus_event"]
@@ -248,3 +250,57 @@ def test_registry_rejects_stale_cancellation():
     registry.start("owner", "scan")
     assert not registry.cancel("owner", "scan", expected_source_job_id="old-run")
     assert registry.get("owner", "scan")["status"] == "running"
+
+
+@pytest.mark.parametrize("namespace", ["b" * 24, None])
+def test_bridge_pause_and_resume_cannot_control_another_namespace(monkeypatch, tmp_path, namespace):
+    app, socket, store, broadcaster, registry, emitted, tasks = fixture(monkeypatch, tmp_path)
+    owner = client(app, socket)
+    owner.emit("start_scan", {"target": "fixture", "daedalus_command_id": 1101})
+    owner_sid = tasks[0][0]
+    source_job_id = registry.get(owner_sid, "scan")["source_job_id"]
+    foreign = client(app, socket, namespace=namespace)
+
+    foreign.emit("pause_job", {"job_type": "scan", "source_job_id": source_job_id})
+    assert not registry.is_paused(owner_sid, "scan")
+    owner.emit("pause_job", {"job_type": "scan", "source_job_id": source_job_id})
+    assert registry.is_paused(owner_sid, "scan")
+    foreign.emit("resume_job", {"job_type": "scan", "source_job_id": source_job_id})
+    assert registry.is_paused(owner_sid, "scan")
+    assert sum(event == "scan_error" and "different bridge" in data for _, event, data in emitted) == 2
+    owner.disconnect()
+    foreign.disconnect()
+
+
+def test_reconnected_bridge_pause_selects_its_namespace_job(monkeypatch, tmp_path):
+    app, socket, store, broadcaster, registry, emitted, tasks = fixture(monkeypatch, tmp_path)
+    first = client(app, socket)
+    first.emit("start_scan", {"target": "fixture", "daedalus_command_id": 1201})
+    first_owner = tasks[0][0]
+    second = client(app, socket, namespace="b" * 24)
+    second.emit("start_scan", {"target": "fixture", "daedalus_command_id": 1202})
+    second_owner = tasks[1][0]
+    second_source = registry.get(second_owner, "scan")["source_job_id"]
+    second.disconnect()
+    replacement = client(app, socket, namespace="b" * 24)
+
+    replacement.emit("pause_job", {"job_type": "scan", "source_job_id": second_source})
+    assert registry.is_paused(second_owner, "scan")
+    assert not registry.is_paused(first_owner, "scan")
+    replacement.emit("resume_job", {"job_type": "scan", "source_job_id": second_source})
+    assert not registry.is_paused(second_owner, "scan")
+    first.disconnect()
+    replacement.disconnect()
+
+
+@pytest.mark.parametrize("namespace", ["b" * 24, None])
+def test_bridge_cannot_use_browser_cancellation_path_without_command_id(monkeypatch, tmp_path, namespace):
+    app, socket, store, broadcaster, registry, emitted, tasks = fixture(monkeypatch, tmp_path)
+    owner = client(app, socket)
+    owner.emit("start_scan", {"target": "fixture", "daedalus_command_id": 1301})
+    owner_sid = tasks[0][0]
+    foreign = client(app, socket, namespace=namespace)
+    foreign.emit("cancel_job", {"job_type": "scan", "source_job_id": registry.get(owner_sid, "scan")["source_job_id"]})
+    assert registry.get(owner_sid, "scan")["status"] == "running"
+    owner.disconnect()
+    foreign.disconnect()

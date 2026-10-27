@@ -1,4 +1,7 @@
 let settingsTabInitialized = false;
+const settingsTabSockets = new WeakSet();
+let googleDriveActionFeedback = false;
+let googleDriveStatusRequested = false;
 
 function setSettingsStatus(message, isError = false) {
     const status = document.getElementById('settings-tab-status');
@@ -106,7 +109,10 @@ function applySettingsForm(settings) {
     if (document.getElementById('settings-remote-sync-api-key')) document.getElementById('settings-remote-sync-api-key').value = settings.remoteSyncApiKey || '';
 }
 
-function setGoogleDriveStatus(message, isError = false) {
+function setGoogleDriveStatus(message, isError = false, background = false) {
+    // A late connection snapshot must not erase the outcome of a user action.
+    if (background && googleDriveActionFeedback) return;
+    if (!background) googleDriveActionFeedback = true;
     const status = document.getElementById('settings-google-drive-status');
     if (!status) return;
     status.textContent = message || 'Ready';
@@ -389,9 +395,9 @@ function addTargetProfile() {
     setSettingsStatus(`Profile saved locally - click Save Settings to persist it to the runtime.`);
 }
 
-function initializeSettingsTab(socket) {
-    if (settingsTabInitialized) return;
-    settingsTabInitialized = true;
+function initializeSettingsSocket(socket) {
+    if (!socket || settingsTabSockets.has(socket)) return;
+    settingsTabSockets.add(socket);
 
     // Load initial settings
     socket.on('initial_data', (data) => {
@@ -401,7 +407,8 @@ function initializeSettingsTab(socket) {
 
     socket.on('google_drive_status', (data = {}) => {
         if (data.config) applyGoogleDriveConfig(data.config, data);
-        setGoogleDriveStatus(data.status || data.error || 'Google Drive status updated.', !data.success && !!data.error);
+        setGoogleDriveStatus(data.status || data.error || 'Google Drive status updated.', !data.success && !!data.error, !googleDriveStatusRequested);
+        googleDriveStatusRequested = false;
     });
 
     socket.on('google_drive_auth_url', (data = {}) => {
@@ -417,6 +424,13 @@ function initializeSettingsTab(socket) {
         setGoogleDriveStatus(data.status || 'Report uploaded to Google Drive.');
         socket.emit('get_google_drive_status');
     });
+}
+
+function initializeSettingsTab(socket) {
+    // Socket listeners can arrive later; DOM controls are bound exactly once.
+    initializeSettingsSocket(socket);
+    if (settingsTabInitialized) return;
+    settingsTabInitialized = true;
 
     document.getElementById('save-settings-btn')?.addEventListener('click', saveSettingsTab);
     document.getElementById('refresh-settings-btn')?.addEventListener('click', loadSettingsTab);
@@ -430,22 +444,37 @@ function initializeSettingsTab(socket) {
             renderGoogleDriveSummary({ config: {}, status: status });
             setGoogleDriveStatus(status.connected ? 'Google Drive is connected.' : 'Google Drive is not connected.');
         } catch (error) {
-            socket.emit('get_google_drive_status');
+            if (window.socket?.connected) {
+                googleDriveStatusRequested = true;
+                window.socket.emit('get_google_drive_status');
+            } else {
+                setGoogleDriveStatus('Unable to check Google Drive status.', true);
+            }
         }
     });
     document.getElementById('settings-google-drive-connect-btn')?.addEventListener('click', async () => {
+        // Open during the user's gesture; browsers can block a popup after fetch.
+        const authWindow = window.open('about:blank', '_blank');
+        if (!authWindow) {
+            setGoogleDriveStatus('Allow pop-ups for NmapUI, then click Connect Google Drive again.', true);
+            return;
+        }
+        authWindow.opener = null;
         setGoogleDriveStatus('Starting Google Drive authorization...');
         try {
             const response = await fetch('/api/settings/google-drive/auth-url');
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const result = await response.json();
             if (!result.success || !result.auth_url) throw new Error(result.error || 'No authorization URL returned');
+            const authUrl = new URL(result.auth_url);
+            if (authUrl.origin !== 'https://accounts.google.com' || authUrl.pathname !== '/o/oauth2/v2/auth') {
+                throw new Error('The runtime returned an invalid Google authorization URL');
+            }
             setGoogleDriveStatus('Complete sign-in in the browser window that opened.');
-            window.open(result.auth_url, '_blank', 'noopener,noreferrer');
+            authWindow.location.replace(authUrl.href);
         } catch (error) {
-            // Node dev runtime implements this via socket events instead.
-            setGoogleDriveStatus('Starting Google Drive authorization via local runtime...');
-            socket.emit('connect_google_drive');
+            authWindow.close();
+            setGoogleDriveStatus(`Unable to start Google Drive sign-in: ${error.message}`, true);
         }
     });
     document.getElementById('settings-google-drive-disconnect-btn')?.addEventListener('click', async () => {
@@ -455,30 +484,11 @@ function initializeSettingsTab(socket) {
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const result = await response.json();
             if (!result.success) throw new Error(result.error || 'Disconnect failed');
-            setGoogleDriveStatus(result.status || 'Google Drive disconnected.');
-            // The disconnect route only revokes the token; also flip
-            // sync.google_drive.enabled off so report uploads stop failing.
-            const currentDoc = await fetchServerSettings();
-            if (currentDoc) {
-                const payload = buildServerSettingsPayload(collectSettingsForm(), {
-                    ...currentDoc,
-                    sync: {
-                        ...(currentDoc.sync || {}),
-                        google_drive: {
-                            ...((currentDoc.sync || {}).google_drive || {}),
-                            enabled: false,
-                        },
-                    },
-                });
-                await fetch('/api/settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload),
-                });
-            }
+            const enabled = document.getElementById('settings-google-drive-enabled');
+            if (enabled) enabled.checked = false;
+            setGoogleDriveStatus(result.warning || result.status || 'Google Drive disconnected.', !!result.warning);
         } catch (error) {
-            // Node dev runtime fallback.
-            socket.emit('disconnect_google_drive');
+            setGoogleDriveStatus(`Unable to disconnect Google Drive: ${error.message}`, true);
         }
     });
     document.getElementById('settings-google-drive-import-btn')?.addEventListener('click', () => {
@@ -491,18 +501,19 @@ function initializeSettingsTab(socket) {
         reader.onload = async () => {
             setGoogleDriveStatus('Importing Google Drive credentials...');
             try {
+                const credentials = JSON.parse(String(reader.result || ''));
                 const response = await fetch('/api/settings/google-drive/credentials', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ credentials: String(reader.result || '') }),
+                    body: JSON.stringify({ credentials }),
                 });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const result = await response.json();
-                if (!result.success) throw new Error(result.error || 'Import rejected');
+                if (!response.ok || !result.success) throw new Error(result.error || `HTTP ${response.status}`);
                 setGoogleDriveStatus(result.status || 'Credentials imported.');
             } catch (error) {
-                // Node dev runtime fallback.
-                socket.emit('save_google_drive_credentials', { credentialsJson: String(reader.result || '') });
+                setGoogleDriveStatus(`Unable to import Google Drive credentials: ${error.message}`, true);
+            } finally {
+                event.target.value = '';
             }
         };
         reader.onerror = () => setGoogleDriveStatus('Failed to read credentials file.', true);

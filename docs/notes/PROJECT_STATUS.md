@@ -1,4 +1,41 @@
-# Project status — 2026-09-29
+# Project status — 2026-10-25
+
+## Next release stabilization
+
+The shared-engine release candidate merged through [PR #254](https://github.com/techmore/TM-NmapUI/pull/254)
+at `2ba2287c386e1306a38842f7af256d1ec9b2d527`; its tree matches the qualified
+`0e7d22ed` checkpoint. Native and downstream integration work remains separate.
+The cross-platform evidence ledger is
+[RELEASE_READINESS_2026-10-25.md](RELEASE_READINESS_2026-10-25.md).
+It tracks web, native macOS, native elementary OS, Drive, Daedalus packaging and
+installed-host gates separately. Shared engine
+`0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9` passed all four hosted jobs in
+[40244555753](https://github.com/techmore/TM-NmapUI/actions/runs/40244555753):
+889 unit/contract tests (45 gated/platform skips), 39 browser/PDF checks, five
+Mac packaging checks and staged/installed Ubuntu lifecycle qualification.
+This includes terminal-event guards, same-origin HTTPS Socket.IO, honest NSE
+provenance and the repaired browser-test bootstrap handshake. Downstream
+integrations are being repinned from `911f83d8` to this immutable checkpoint.
+Full SwiftUI stabilization is in draft
+[PR #255](https://github.com/techmore/TM-NmapUI/pull/255), with native Drive and
+retained-web hardening in [PR #256](https://github.com/techmore/TM-NmapUI/pull/256),
+the native shared-scanner library in [PR #257](https://github.com/techmore/TM-NmapUI/pull/257)
+and authenticated controls in [PR #258](https://github.com/techmore/TM-NmapUI/pull/258).
+All four checks passed on the named heads of those four native slices. App-level
+source routing and full shared execution/data/scheduler parity remain open;
+transport qualification alone does not establish parity. Installed-host,
+signing and real OAuth gates also remain open. No release has been qualified
+or tagged.
+
+## October 25 repository audit
+
+Local `main` was fast-forwarded from `ead49881` to `bec25d94` (22 commits).
+PR #240 merged October 12 as `0fc510e2`; there are no open PRs at this audit.
+The September implementation narrative and checkpoint below are historical,
+including references to #240 being draft and the old branch divergence counts.
+Current findings, dependency changes, branch dispositions and validation are in
+[REPOSITORY_AUDIT_2026-10-25.md](REPOSITORY_AUDIT_2026-10-25.md).
+The installed-host and unattended-operation release gates still apply.
 
 ## Product direction
 
@@ -356,7 +393,7 @@ serialize with scheduler updates so a stale browser form cannot erase a just-
 completed run. Unit and staged-worker tests cover these paths; installed-host
 crash, power-loss and multi-process behavior still need verification.
 
-## Where work stopped
+## Historical September checkpoint
 
 - `main` / `origin/main`: `2828bd36`, PR #239 merged August 24. Latest CI passed
   unit/contract, browser regression and packaged Mac smoke jobs:

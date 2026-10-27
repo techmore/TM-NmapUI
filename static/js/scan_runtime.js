@@ -406,7 +406,7 @@ function applyScanPauseState(job) {
 function initializeScanRuntime(socket) {
     initializeInventoryExportOptions();
     socket.on('job_status', (job = {}) => {
-        if (job.job_type !== 'scan') return;
+        if (job?.job_type !== 'scan' || !window.acceptJobStatus(job)) return;
         const pauseState = applyScanPauseState(job);
         if (job.status === 'running' || job.status === 'cancelling') {
             activeScanSourceJobId = job.source_job_id || null;

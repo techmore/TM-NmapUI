@@ -19,6 +19,180 @@ from persistence import remove_scan_metadata_index_entry, upsert_scan_metadata_i
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_drive_credentials_import_sends_json_and_reports_parse_errors(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    imported = []
+
+    def receive_credentials(route):
+        imported.append(route.request.post_data_json)
+        route.fulfill(json={"success": True, "status": "Credentials imported for test"})
+
+    context.route("**/api/settings/google-drive/credentials", receive_credentials)
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        credentials = {"installed": {"client_id": "test-client", "client_secret": "synthetic-secret"}}
+        field = page.locator("#settings-google-drive-credentials-file")
+        field.set_input_files({"name": "credentials.json", "mimeType": "application/json", "buffer": json.dumps(credentials).encode()})
+        page.get_by_text("Credentials imported for test", exact=True).wait_for()
+        assert imported == [{"credentials": credentials}]
+        field.set_input_files({"name": "bad.json", "mimeType": "application/json", "buffer": b"not json"})
+        page.wait_for_function("() => document.getElementById('settings-google-drive-status').textContent.includes('Unable to import')")
+        assert len(imported) == 1
+    finally:
+        context.close()
+
+
+def test_drive_signin_opens_system_browser_target_without_opener(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    context.route("**/api/settings/google-drive/auth-url", lambda route: route.fulfill(json={
+        "success": True, "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?state=synthetic",
+    }))
+    # Keep this regression entirely local: no real Google account or consent.
+    context.route("https://accounts.google.com/**", lambda route: route.fulfill(body="<html><body>Simulated Google consent</body></html>", content_type="text/html"))
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        with page.expect_popup() as opened:
+            page.locator("#settings-google-drive-connect-btn").click()
+        popup = opened.value
+        popup.wait_for_url("https://accounts.google.com/**")
+        assert popup.evaluate("window.opener === null")
+        page.get_by_text("Complete sign-in in the browser window that opened.", exact=True).wait_for()
+    finally:
+        context.close()
+
+
+def test_drive_popup_blocking_is_a_visible_recoverable_error(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        page.evaluate("window.open = () => null")
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+    finally:
+        context.close()
+
+
+
+def test_settings_http_controls_work_before_socket_and_bind_once_after_connect(browser_server, playwright_browser):
+    """HTTP controls remain usable across initial Socket.IO failure and recovery."""
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    blocked_socket_requests = []
+    settings_posts = []
+    base_url = browser_server["base_url"]
+    original = context.request.get(f"{base_url}/api/settings").json()
+    def block_socket(route):
+        blocked_socket_requests.append(route.request.url)
+        route.abort()
+
+    context.route("**/socket.io/**", block_socket)
+    context.add_init_script("window.open = () => { window.blockedPopupAttempts = (window.blockedPopupAttempts || 0) + 1; return null; };")
+    page.on("request", lambda request: settings_posts.append(request.post_data_json)
+            if request.method == "POST" and request.url == f"{base_url}/api/settings" else None)
+    try:
+        page.goto(base_url, wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        page.get_by_text("Settings loaded from the local runtime.", exact=True).wait_for()
+        assert blocked_socket_requests
+        assert page.evaluate("window.socket.connected") is False
+
+        def save(minutes):
+            page.locator("#settings-max-scan-minutes").fill(str(minutes))
+            with page.expect_response(lambda response: response.request.method == "POST" and response.url == f"{base_url}/api/settings") as saved:
+                page.locator("#save-settings-btn").click()
+            assert saved.value.json()["success"] is True
+            page.get_by_text("Settings saved to the local runtime and this browser.", exact=True).wait_for()
+
+        save(113)
+        assert len(settings_posts) == 1
+        assert context.request.get(f"{base_url}/api/settings").json()["scan_rules"]["max_scan_minutes"] == 113
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        assert page.evaluate("window.blockedPopupAttempts") == 1
+        assert page.evaluate("window.socket.connected") is False
+
+        context.unroute("**/socket.io/**")
+        page.wait_for_function("() => window.socket.connected && window.socket.listeners('google_drive_status').length === 1")
+        page.evaluate("""() => {
+            window.receivedDriveStatus = false;
+            window.socket.once('google_drive_status', () => { window.receivedDriveStatus = true; });
+        }""")
+        browser_server["app_module"].socketio.emit("google_drive_status", {
+            "success": True, "connected": True, "config": {"enabled": True}, "status": "Background status arrived",
+        })
+        page.wait_for_function("() => window.receivedDriveStatus")
+        assert page.locator("#settings-google-drive-enabled").is_checked()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        page.evaluate("initializeSettingsTab(window.socket); initializeSettingsTab(window.socket)")
+        assert page.evaluate("window.socket.listeners('google_drive_status').length") == 1
+        save(114)
+        assert len(settings_posts) == 2
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        assert page.evaluate("window.blockedPopupAttempts") == 2
+    finally:
+        context.request.post(f"{base_url}/api/settings", data=original)
+        context.close()
+
+
+@pytest.fixture
+def tls_browser_server(browser_server):
+    """An owned TLS listener around the real app, with a temporary certificate."""
+    from werkzeug.serving import make_server
+
+    app_module = browser_server["app_module"]
+    server = make_server("127.0.0.1", 0, app_module.app, threaded=True, ssl_context="adhoc")
+    origin = f"https://127.0.0.1:{server.server_port}"
+    engine = app_module.socketio.server.eio
+    original_origins = engine.cors_allowed_origins
+    engine.cors_allowed_origins = [*original_origins, origin]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield origin
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        engine.cors_allowed_origins = original_origins
+
+
+@pytest.mark.parametrize("bootstrap", ["template_bootstrap.js", "app_bootstrap.js"])
+def test_https_socket_uses_page_origin_and_serves_real_job_request(
+    tls_browser_server, playwright_browser, bootstrap,
+):
+    context = playwright_browser.new_context(ignore_https_errors=True)
+    # Both supported entry points share the real template's DOM. Substitute
+    # only the legacy entry point's production bootstrap, without mocking io.
+    if bootstrap == "app_bootstrap.js":
+        context.route("**/static/js/template_bootstrap.js", lambda route: route.fulfill(
+            body=(ROOT / "static/js" / bootstrap).read_text(), content_type="application/javascript"))
+    page = context.new_page()
+    socket_urls = []
+    page.on("request", lambda request: socket_urls.append(request.url)
+            if "/socket.io/" in request.url else None)
+    try:
+        page.goto(tls_browser_server, wait_until="domcontentloaded")
+        page.wait_for_function("() => window.socket && window.socket.connected")
+        assert page.evaluate("window.socket.io.uri") == tls_browser_server
+        page.evaluate("""() => {
+            window.tlsJobSnapshots = [];
+            window.socket.on('job_status', job => window.tlsJobSnapshots.push(job.job_type));
+            window.socket.emit('get_job_status');
+        }""")
+        page.wait_for_function("() => ['scan', 'report'].every(kind => window.tlsJobSnapshots.includes(kind))")
+        assert socket_urls
+        assert all(url.startswith(tls_browser_server + "/socket.io/") for url in socket_urls)
+    finally:
+        context.close()
+
+
 def _require_browser_regression_enabled():
     if os.environ.get("NMAPUI_RUN_BROWSER_REGRESSION") != "1":
         pytest.skip("Set NMAPUI_RUN_BROWSER_REGRESSION=1 to run browser regression coverage")
@@ -1552,5 +1726,99 @@ def test_results_table_shows_empty_state_until_hosts_arrive(browser_server, play
             "() => document.getElementById('discovery-table').classList.contains('hidden')"
         )
         assert page.locator("#discovery-empty-state").is_visible()
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("job_type", ["scan", "report"])
+@pytest.mark.parametrize("terminal", ["completed", "cancelled"])
+def test_terminal_job_status_cannot_be_reopened_by_late_same_run_events(browser_server, playwright_browser, monkeypatch, job_type, terminal):
+    """Real Socket.IO packets may arrive terminal, idle, then stale cancelling/running."""
+    # Bootstrap requests the real registry's idle snapshot asynchronously. It
+    # must finish before this test injects a synthetic running job that does
+    # not exist in that registry, or a legitimate idle response can clear it.
+    handlers = browser_server["app_module"].socketio.server.handlers["/"]
+    original_status_handler = handlers["get_job_status"]
+    initial_snapshot_sent = threading.Event()
+
+    def status_with_receipt(*args, **kwargs):
+        result = original_status_handler(*args, **kwargs)
+        initial_snapshot_sent.set()
+        return result
+
+    monkeypatch.setitem(handlers, "get_job_status", status_with_receipt)
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.wait_for_function("() => window.socket?.connected && window.socket.listeners('job_status').length >= 3")
+        assert initial_snapshot_sent.wait(timeout=10), "Bootstrap did not request its job snapshot"
+        # An acknowledged request drains the already-enqueued snapshot over
+        # the actual transport. This uses neither sleeps nor mocked packets.
+        page.evaluate("""() => new Promise((resolve, reject) => {
+            window.socket.timeout(10000).emit('get_job_status', error => {
+                if (error) reject(new Error('Startup snapshot acknowledgement timed out'));
+                else resolve();
+            });
+        })""")
+        sid = page.evaluate("window.socket.id")
+        page.evaluate("""() => {
+            window.lastTestJobReceipt = null;
+            window.socket.on('job_status', job => {
+                if (job.browser_test_receipt) window.lastTestJobReceipt = job.browser_test_receipt;
+            });
+        }""")
+        started = (datetime.now() - timedelta(seconds=8)).isoformat()
+        first_id, next_id = str(uuid.uuid4()), str(uuid.uuid4())
+
+        def send(status, run_id=first_id, **fields):
+            receipt = str(uuid.uuid4())
+            payload = {"job_type": job_type, "status": status, "started_at": started,
+                       "details": {"target": "127.0.0.1", "chunked": False}, "browser_test_receipt": receipt, **fields}
+            if run_id is not None:
+                payload["source_job_id"] = run_id
+            browser_server["app_module"].socketio.emit("job_status", payload, to=sid)
+            page.wait_for_function("receipt => window.lastTestJobReceipt === receipt", arg=receipt)
+
+        def state():
+            return page.evaluate("""kind => kind === 'scan' ? {
+                active: activeScanKind !== null, timer: activePhaseTimer !== null, run: activeScanSourceJobId,
+                control: document.getElementById('start-scan-btn').disabled,
+                pause: document.getElementById('suspend-scan-btn').disabled,
+                resume: document.getElementById('resume-scan-btn').disabled
+            } : {
+                active: reportActionPending, timer: reportTimerInterval !== null, started: reportStartTime,
+                control: !document.getElementById('stop-report-btn').classList.contains('hidden'),
+                pulse: document.getElementById('generate-report-btn').classList.contains('card-pulsing')
+            }""", job_type)
+
+        send("running")
+        assert state()["active"] and state()["timer"]
+        send("running", paused=True, paused_at=datetime.now().isoformat())
+        assert state()["active"]
+        if job_type == "scan":
+            assert state()["pause"] and not state()["resume"]
+        send("running", paused=False)
+        assert state()["active"] and state()["timer"]
+        send(terminal, finished_at=datetime.now().isoformat())
+        ended = state()
+        assert not ended["active"] and not ended["timer"] and not ended["control"]
+        if job_type == "report":
+            assert not ended["pulse"]
+        send("idle", run_id=None)
+        for late_status in ["cancelling", "running"]:
+            send(late_status)
+            assert state() == ended
+        send("running", run_id=next_id, started_at=datetime.now().isoformat())
+        next_running = state()
+        assert next_running["active"] and next_running["timer"]
+        send("running")  # Older run must also stay terminal after a different run starts.
+        assert state() == next_running
+        send("cancelled", run_id=next_id, finished_at=datetime.now().isoformat())
+        assert not state()["active"] and not state()["timer"]
+        send("running", run_id=None)  # Missing IDs retain the legacy event behavior.
+        assert state()["active"] and state()["timer"]
+        send("cancelled", run_id=None, finished_at=datetime.now().isoformat())
+        assert not state()["active"] and not state()["timer"]
     finally:
         context.close()

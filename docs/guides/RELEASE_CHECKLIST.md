@@ -7,9 +7,12 @@ tracked in [issue #241](https://github.com/techmore/TM-NmapUI/issues/241).
 
 ## Build and automated checks
 
-- [ ] Bump `VERSION` from the current `v2026.3.14.00_10` to the approved release
-  version (the latest repository tag is `v2026.4.26.4.00`), then push the
-  release branch.
+- [x] Prepare candidate `VERSION` as `v2026.10.25`, newer than the previous
+  repository release tag `v2026.4.26.4.00`. Numeric Mac bundle metadata is derived
+  separately; this candidate has not been tagged or published.
+- [ ] Complete the current
+  [release evidence ledger](../notes/RELEASE_READINESS_2026-10-25.md), then review
+  the final version/artifacts and release publication.
 - [x] Run `source .venv/bin/activate` and `python -m py_compile app.py`.
 - [x] Run `.venv/bin/python -m pytest -q` (**619 passed, 27 skipped** on Python 3.11).
 - [x] Audit pinned dependencies with `pip-audit -r requirements.txt` (no known vulnerabilities).
