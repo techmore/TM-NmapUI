@@ -1,20 +1,11 @@
 function setSafeExternalLink(link, rawUrl) {
-    if (!rawUrl) return false;
+    const href = window.safeHttpHref?.(String(rawUrl ?? ''));
+    if (!href) return false;
 
-    try {
-        const url = new URL(String(rawUrl), window.location.origin);
-        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-            return false;
-        }
-
-        link.href = url.href;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        return true;
-    } catch (error) {
-        console.warn('Ignoring invalid external URL:', rawUrl);
-        return false;
-    }
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    return true;
 }
 
 function renderDelimitedCell(cell, items, options = {}) {
@@ -106,7 +97,10 @@ function renderRoutePath(data) {
         });
     } else {
         const span = document.createElement('span');
-        if (data.error) {
+        if (data.fingerprinting_enabled === false) {
+            span.className = 'text-olive-500';
+            span.textContent = 'External route discovery is disabled for this scanner.';
+        } else if (data.error) {
             span.className = 'text-red-700 font-medium';
             span.textContent = data.error;
         } else {
@@ -162,6 +156,8 @@ function updateHistoryBadge(customerName) {
 
 function getDiscoveryTableCell(row, column) {
     if (!row) return null;
+    const taggedCell = row.querySelector(`[data-column="${column}"]`);
+    if (taggedCell) return taggedCell;
     if (window.tableSorter?.getCellByColumn) {
         return window.tableSorter.getCellByColumn(row, column);
     }
@@ -172,27 +168,34 @@ function getDiscoveryTableCell(row, column) {
 
 function updateRowWithResults(host) {
     const tb = document.querySelector('#discovery-table tbody');
-    let rowToUpdate = Array.from(tb.rows).find(row => getDiscoveryTableCell(row, 'ip')?.textContent === host.ip);
+    window.discoveryRowsByIp = window.discoveryRowsByIp || new Map();
+    let rowToUpdate = window.discoveryRowsByIp.get(host.ip);
+    if (!rowToUpdate || !rowToUpdate.isConnected) {
+        rowToUpdate = Array.from(tb.rows).find(row => getDiscoveryTableCell(row, 'ip')?.textContent === host.ip);
+        if (rowToUpdate) window.discoveryRowsByIp.set(host.ip, rowToUpdate);
+    }
     if (!rowToUpdate) {
         return;
     }
 
     const ports = host.ports || [];
     const portsStr = ports.map(port => `${port.port}/${String(port.service || '').split(/\s+/)[0]}`).join(', ');
-    const versionHtml = ports.map(port => `<div class="text-xs">${escapeHTMLValue(port.service)}</div>`).join('');
-
     const openPortsCell = getDiscoveryTableCell(rowToUpdate, 'open_ports');
     const versionCell = getDiscoveryTableCell(rowToUpdate, 'version');
     const cvesCell = getDiscoveryTableCell(rowToUpdate, 'cves');
 
     if (openPortsCell) openPortsCell.textContent = portsStr;
-    if (versionCell) versionCell.innerHTML = versionHtml;
-
-    if (host.cves && host.cves.length > 0 && cvesCell) {
-        cvesCell.innerHTML = host.cves
-            .map(cve => `<div class="text-xs py-0.5"><span class="inline-block px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-medium mr-1">${escapeHTMLValue(cve.score)}</span><a href="${escapeHTMLValue(cve.url)}" target="_blank" class="text-olive-600 hover:text-olive-800 hover:underline">${escapeHTMLValue(cve.id)}</a></div>`)
-            .join('');
+    if (versionCell) {
+        versionCell.replaceChildren();
+        ports.forEach(port => {
+            const service = document.createElement('div');
+            service.className = 'text-xs';
+            service.textContent = port.service ?? '';
+            versionCell.appendChild(service);
+        });
     }
+
+    if (cvesCell) renderCveArrayCell(cvesCell, Array.isArray(host.cves) ? host.cves : []);
 
     if (window.currentHosts[host.ip]) {
         window.currentHosts[host.ip].open_ports = portsStr;
@@ -277,6 +280,7 @@ function populateTableWithResults(data, isHistorical = false) {
 
     window.assetData = {};
     window.currentHosts = {};
+    window.discoveryRowsByIp = new Map();
 
     data.forEach(result => {
         if (result.ip) {
@@ -285,6 +289,7 @@ function populateTableWithResults(data, isHistorical = false) {
         }
 
         const newRow = tb.insertRow(-1);
+        if (result.ip) window.discoveryRowsByIp.set(result.ip, newRow);
         if (isHistorical) {
             newRow.classList.add('historical-row');
         }
@@ -455,9 +460,12 @@ function initializeDiscoveryUI(socket) {
 
     socket.on('versions', data => {
         console.log('Versions received:', data);
-        const nmapVersion = data.nmap || 'Not found';
-        const vulnersVersion = data.vulners || 'Not found';
-        const arpScanVersion = data.arp_scan || 'Not found';
+        // Quick startup deliberately skips dependency checks, so null means
+        // "not checked" rather than "not installed". Full startup reports
+        // missing tools explicitly as "Not installed".
+        const nmapVersion = data.nmap || 'Not checked';
+        const vulnersVersion = data.vulners || 'Not checked';
+        const arpScanVersion = data.arp_scan || 'Not checked';
         const appVersion = data.app || 'v--.--.--.__';
 
         document.getElementById('app-version').textContent = appVersion;
@@ -467,7 +475,6 @@ function initializeDiscoveryUI(socket) {
         if (settingsNmapVersion) settingsNmapVersion.textContent = `Nmap: ${nmapVersion}`;
         if (settingsVulnersVersion) settingsVulnersVersion.textContent = `Vulners: ${vulnersVersion}`;
         if (settingsArpScanVersion) settingsArpScanVersion.textContent = `ARP-Scan: ${arpScanVersion}`;
-        socket.emit('check_app_updates');
     });
 
     socket.on('history_counts', data => {
@@ -545,10 +552,62 @@ function initializeDiscoveryUI(socket) {
 
     requestLocalRuntimeInfo();
 
-    document.getElementById('info-icon').addEventListener('click', () => {
-        document.getElementById('tooltip').classList.toggle('hidden');
+    initializeTargetFormatHelp();
+    initializeDiscoveryEmptyState();
+}
+
+// The "i" button next to the target input toggles the valid-format popover.
+// It is a real button so it is reachable by keyboard; Escape and clicking
+// elsewhere close it, and aria-expanded tracks its state.
+function initializeTargetFormatHelp() {
+    const trigger = document.getElementById('info-icon');
+    const tooltip = document.getElementById('tooltip');
+    if (!trigger || !tooltip || trigger.dataset.helpWired === 'true') return;
+    trigger.dataset.helpWired = 'true';
+
+    const setOpen = (open) => {
+        tooltip.classList.toggle('hidden', !open);
+        trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+
+    trigger.addEventListener('click', () => {
+        setOpen(tooltip.classList.contains('hidden'));
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !tooltip.classList.contains('hidden')) {
+            setOpen(false);
+            trigger.focus();
+        }
+    });
+    document.addEventListener('click', (event) => {
+        if (tooltip.classList.contains('hidden')) return;
+        if (trigger.contains(event.target) || tooltip.contains(event.target)) return;
+        setOpen(false);
     });
 }
+
+// Show an explanatory empty state instead of a bare 2400px-wide header row
+// until the first host row exists; every code path that fills the table
+// writes into the same tbody, so a childList observer covers them all.
+function syncDiscoveryEmptyState() {
+    const table = document.getElementById('discovery-table');
+    const emptyState = document.getElementById('discovery-empty-state');
+    if (!table || !emptyState) return;
+    const tbody = table.querySelector('tbody');
+    const hasRows = !!(tbody && tbody.rows.length > 0);
+    table.classList.toggle('hidden', !hasRows);
+    emptyState.classList.toggle('hidden', hasRows);
+}
+
+function initializeDiscoveryEmptyState() {
+    const tbody = document.querySelector('#discovery-table tbody');
+    if (!tbody || tbody.dataset.emptyStateWired === 'true') return;
+    tbody.dataset.emptyStateWired = 'true';
+    syncDiscoveryEmptyState();
+    new MutationObserver(syncDiscoveryEmptyState).observe(tbody, { childList: true });
+}
+
+window.syncDiscoveryEmptyState = syncDiscoveryEmptyState;
 
 function formatReportCompleteMessage(data) {
     const scanDir = data?.scan_dir || 'saved scan folder';

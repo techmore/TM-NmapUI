@@ -1,12 +1,20 @@
 from flask import jsonify, request
 from html import escape
+import threading
 
 from nmapui.auto_monitor import build_auto_monitor_rule_status
 from nmapui.auth import browser_request_origin_allowed, require_auth
-from nmapui.settings import normalize_settings_document
+from nmapui.settings import (
+    SETTINGS_STATE_LOCK,
+    normalize_settings_document,
+    preserve_auto_monitor_progress,
+)
 
 
 def register_settings_routes(app, deps):
+    # Route lifecycle -> token operations -> settings commit. Bulk report
+    # uploads run after releasing this lock so disconnect stays responsive.
+    drive_lifecycle_lock = threading.RLock()
     settings_state = deps["settings_state"]
     save_settings = deps["save_settings"]
     validate_google_drive = deps["validate_google_drive"]
@@ -20,15 +28,28 @@ def register_settings_routes(app, deps):
     disconnect_google_drive = deps["disconnect_google_drive"]
     upload_latest_report_to_google_drive = deps.get("upload_latest_report_to_google_drive")
 
+    @app.after_request
+    def protect_google_drive_responses(response):
+        if request.path.startswith("/api/settings/google-drive/"):
+            response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     @app.route("/api/settings")
     @require_auth
     def get_settings():
-        return jsonify(
-            normalize_settings_document(
+        with SETTINGS_STATE_LOCK:
+            remote_sync = (settings_state.get("sync") or {}).get("remote_sync") or {}
+            normalized = normalize_settings_document(
                 settings_state,
                 customer_name_lookup=get_customer_name,
+                # The encrypted key is intentionally absent from the settings
+                # document. Preserve its server-owned presence bit when
+                # normalizing this already-loaded in-memory state.
+                remote_sync_api_key_configured=bool(
+                    remote_sync.get("api_key_configured", False)
+                ),
             )
-        )
+        return jsonify(normalized)
 
     @app.route("/api/settings", methods=["POST"])
     @require_auth
@@ -37,18 +58,25 @@ def register_settings_routes(app, deps):
         if not isinstance(payload, dict):
             return jsonify({"success": False, "error": "Invalid settings payload"}), 400
 
-        normalized = save_settings(payload)
-        settings_state.clear()
-        settings_state.update(normalized)
+        try:
+            with SETTINGS_STATE_LOCK:
+                candidate = preserve_auto_monitor_progress(payload, settings_state)
+                normalized = save_settings(candidate)
+                settings_state.clear()
+                settings_state.update(normalized)
+        except Exception:
+            app.logger.exception("Failed to save settings")
+            return jsonify({"success": False, "error": "Could not save settings"}), 500
         return jsonify({"success": True, "settings": normalized})
 
     @app.route("/api/settings/auto-monitor")
     @require_auth
     def get_auto_monitor_settings():
-        normalized = normalize_settings_document(
-            settings_state,
-            customer_name_lookup=get_customer_name,
-        )
+        with SETTINGS_STATE_LOCK:
+            normalized = normalize_settings_document(
+                settings_state,
+                customer_name_lookup=get_customer_name,
+            )
         auto_monitor = normalized.get("auto_monitor", {})
         return jsonify(
             {
@@ -93,10 +121,13 @@ def register_settings_routes(app, deps):
     @app.route("/api/settings/google-drive/auth-url")
     @require_auth
     def google_drive_auth_url_route():
+        # This compatibility GET creates pending OAuth state. CORS alone does
+        # not stop another page from triggering it and replacing a live flow.
         if not browser_request_origin_allowed():
             return jsonify({"success": False, "error": "Request origin is not allowed"}), 403
         redirect_uri = request.host_url.rstrip("/") + "/api/settings/google-drive/callback"
-        result = build_google_drive_auth_url(redirect_uri=redirect_uri)
+        with drive_lifecycle_lock:
+            result = build_google_drive_auth_url(redirect_uri=redirect_uri)
         status_code = 200 if result.get("success") else 400
         return jsonify(result), status_code
 
@@ -106,7 +137,8 @@ def register_settings_routes(app, deps):
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict) or "credentials" not in payload:
             return jsonify({"success": False, "error": "Invalid credentials payload"}), 400
-        result = save_google_drive_credentials(payload.get("credentials"))
+        with drive_lifecycle_lock:
+            result = save_google_drive_credentials(payload.get("credentials"))
         status_code = 200 if result.get("success") else 400
         return jsonify(result), status_code
 
@@ -123,36 +155,38 @@ def register_settings_routes(app, deps):
                 400,
             )
         try:
-            result = exchange_google_drive_auth_code(code=code, state=state)
-            if not result.get("success"):
-                return (
-                    "<html><body><h3>Google Drive connection failed</h3>"
-                    f"<p>{escape(str(result.get('error', 'Unknown error')))}</p></body></html>",
-                    400,
-                )
-            folder_result = ensure_google_drive_reports_folder()
-            normalized = normalize_settings_document(settings_state)
-            google_drive_state = normalized.get("sync", {}).get("google_drive", {})
-            if folder_result.get("success"):
-                google_drive_state.update(
-                    {
-                        "enabled": True,
-                        "folder_id": folder_result.get("folder_id", ""),
-                        "status": "Connected",
-                    }
-                )
-            else:
-                failure_reason = folder_result.get("error", "Folder setup failed")
-                google_drive_state.update(
-                    {
-                        "enabled": False,
-                        "status": f"Connected (folder setup failed: {failure_reason})",
-                    }
-                )
-            normalized["sync"]["google_drive"] = google_drive_state
-            normalized = save_settings(normalized)
-            settings_state.clear()
-            settings_state.update(normalized)
+            with drive_lifecycle_lock:
+                result = exchange_google_drive_auth_code(code=code, state=state)
+                if not result.get("success"):
+                    return (
+                        "<html><body><h3>Google Drive connection failed</h3>"
+                        f"<p>{escape(str(result.get('error', 'Unknown error')))}</p></body></html>",
+                        400,
+                    )
+                folder_result = ensure_google_drive_reports_folder()
+                with SETTINGS_STATE_LOCK:
+                    normalized = normalize_settings_document(settings_state)
+                    google_drive_state = normalized.get("sync", {}).get("google_drive", {})
+                    if folder_result.get("success"):
+                        google_drive_state.update(
+                            {
+                                "enabled": True,
+                                "folder_id": folder_result.get("folder_id", ""),
+                                "status": "Connected",
+                            }
+                        )
+                    else:
+                        failure_reason = folder_result.get("error", "Folder setup failed")
+                        google_drive_state.update(
+                            {
+                                "enabled": False,
+                                "status": f"Connected (folder setup failed: {failure_reason})",
+                            }
+                        )
+                    normalized["sync"]["google_drive"] = google_drive_state
+                    normalized = save_settings(normalized)
+                    settings_state.clear()
+                    settings_state.update(normalized)
             message = "Google Drive connected."
             backfill_result = None
             if folder_result.get("success") and upload_latest_report_to_google_drive is not None:
@@ -177,7 +211,7 @@ def register_settings_routes(app, deps):
                     "Google Drive connected, but the default folder could not be created. "
                     f"{folder_result.get('error', 'Check Settings to finish setup.')}"
                 )
-            return f"<html><body><h3>{message}</h3><p>You can close this window and return to NmapUI.</p></body></html>"
+            return f"<html><body><h3>{escape(message)}</h3><p>You can close this window and return to NmapUI.</p></body></html>"
         except Exception as exc:
             app.logger.exception("Google Drive callback failed")
             return (
@@ -189,4 +223,13 @@ def register_settings_routes(app, deps):
     @app.route("/api/settings/google-drive/disconnect", methods=["POST"])
     @require_auth
     def google_drive_disconnect_route():
-        return jsonify(disconnect_google_drive())
+        with drive_lifecycle_lock:
+            result = disconnect_google_drive()
+            if result.get("success"):
+                with SETTINGS_STATE_LOCK:
+                    normalized = normalize_settings_document(settings_state)
+                    normalized["sync"]["google_drive"].update(enabled=False, status="Not connected")
+                    normalized = save_settings(normalized)
+                    settings_state.clear()
+                    settings_state.update(normalized)
+        return jsonify(result)

@@ -1,20 +1,77 @@
+import os
+import ipaddress
+import tempfile
+from pathlib import Path
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 
-from flask import after_this_request, jsonify, render_template, request, send_file
-from nmapui.auth import require_auth
+from flask import (
+    after_this_request,
+    jsonify,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    send_file,
+)
+from nmapui.auth import (
+    auth_uses_insecure_defaults,
+    browser_request_origin_allowed,
+    check_auth,
+    clear_session_cookie,
+    require_auth,
+    request_is_local_ui,
+    session_username,
+    set_session_cookie,
+)
 from nmapui.handlers.scans import delete_scan_artifacts
-from nmapui.reporting import _resolve_artifact_file_path, build_artifact_downloads
+from nmapui.reporting import (
+    _resolve_artifact_file_path,
+    build_artifact_downloads,
+    convert_html_to_pdf,
+    parse_scan_xml_for_assets,
+    report_content_security_policy,
+)
+from nmapui.asset_inventory import render_asset_inventory_html
+from nmapui.segmentation import analyze_segmentation, load_supplied_evidence, segmentation_page
 from nmapui.runtime_history import (
     backfill_runtime_history_artifacts,
     build_compare_result,
     build_history_rows,
     normalize_runtime_report_row,
 )
+from nmapui.runtime_scan_history import scan_run_details, compare_scan_runs
+from nmapui.runtime_live_hosts import latest_scan_hosts
 from nmapui.runtime_log import append_runtime_log
 from nmapui.runtime_db import (
     DEFAULT_CUSTOMER_SCAN_HISTORY_RETENTION,
     DEFAULT_RUNTIME_LOG_RETENTION,
 )
+
+
+
+def management_history_url():
+    """Return a configured portal link without credentials or arbitrary schemes."""
+    value = os.environ.get("NMAPUI_MANAGEMENT_PORTAL_URL", "").strip()
+    try:
+        parts = urlsplit(value)
+        if (
+            parts.scheme not in {"https", "http"}
+            or not parts.hostname
+            or parts.username is not None
+            or parts.password is not None
+            or parts.query or parts.fragment
+            or chr(92) in value
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)
+        ):
+            return ""
+        if parts.scheme == "http" and parts.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            return ""
+        if parts.port is not None and not 1 <= parts.port <= 65535:
+            return ""
+        return value.rstrip("/") + "/dashboard#scanners"
+    except ValueError:
+        return ""
 
 
 def _get_runtime_artifact(runtime_store, scan_path):
@@ -45,7 +102,10 @@ def _send_runtime_artifact(*, runtime_store, scans_dir, scan_path, artifact_key,
     kwargs = {"as_attachment": as_attachment}
     if download_name:
         kwargs["download_name"] = download_name
-    return send_file(artifact_path, **kwargs)
+    response = send_file(artifact_path, **kwargs)
+    if artifact_key == "html_path":
+        response.headers["Content-Security-Policy"] = report_content_security_policy()
+    return response
 
 
 def register_core_routes(app, deps):
@@ -75,16 +135,71 @@ def register_core_routes(app, deps):
 
     @app.route("/")
     def index():
-        return render_template("index.html")
+        return render_template("index.html", management_history_url=management_history_url())
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        """Browser login that issues a long-lived session cookie.
+
+        Kept separate from the API so an unattended appliance can authenticate
+        once and keep working for months without re-prompting.
+        """
+        if request.method == "POST" and not browser_request_origin_allowed():
+            return render_template("login.html", error="Sign in from the NmapUI page."), 403
+        if request_is_local_ui():
+            return redirect("/")
+
+        error = None
+        if request.method == "POST":
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            if check_auth(username, password):
+                target = request.args.get("next") or "/"
+                if not target.startswith("/") or target.startswith("//"):
+                    target = "/"
+                return set_session_cookie(make_response(redirect(target)), username)
+            error = "Invalid credentials"
+        elif auth_uses_insecure_defaults():
+            error = (
+                "Authentication credentials are empty or use the built-in default "
+                "password. Set non-empty NMAPUI_USERNAME and NMAPUI_PASSWORD values; "
+                "only enable NMAPUI_ALLOW_DEFAULT_CREDENTIALS=true when intentionally "
+                "accepting that password for a local-only install."
+            )
+        return render_template("login.html", error=error), (401 if error and request.method == "POST" else 200)
+
+    @app.route("/logout", methods=["GET", "POST"])
+    def logout():
+        if request.method == "POST" and not browser_request_origin_allowed():
+            return jsonify({"error": "Request origin is not allowed"}), 403
+        target = "/" if request_is_local_ui() else "/login"
+        return clear_session_cookie(make_response(redirect(target)))
+
+    @app.route("/api/session/status")
+    @require_auth
+    def session_status():
+        username = session_username()
+        return jsonify(
+            {
+                "authenticated": bool(username) or request_is_local_ui(),
+                "username": username,
+                "local_trust": request_is_local_ui(),
+                "auth_configured": not auth_uses_insecure_defaults(),
+            }
+        )
 
     @app.route("/api/socket-token")
+    @require_auth
     def socket_token():
-        """Loopback-only token for authenticating the Socket.IO handshake."""
-        from flask import jsonify, request as flask_request
+        """Return the CSRF token to an authenticated browser session.
 
-        remote = flask_request.remote_addr or ""
-        if remote not in {"127.0.0.1", "::1"}:
-            return jsonify({"error": "forbidden"}), 403
+        The token is not a credential: Socket.IO separately requires a session
+        or Basic credentials, and its configured origin allowlist controls which
+        browser origins may connect. Requiring a session here supports browsers
+        on another machine without opening the socket to unauthenticated clients.
+        """
+        from flask import jsonify
+
         return jsonify({"token": deps["socket_auth_token"]})
 
     @app.route("/api/health")
@@ -117,6 +232,36 @@ def register_core_routes(app, deps):
         )
         return jsonify(payload), status_code
 
+    @app.route("/api/runtime/maintenance", methods=["POST", "DELETE"])
+    @require_auth
+    def runtime_maintenance():
+        try:
+            local_peer = ipaddress.ip_address(request.remote_addr or "").is_loopback
+            host = urlsplit("http://" + request.host).hostname
+            local_host = host == "localhost" or ipaddress.ip_address(host or "").is_loopback
+        except ValueError:
+            local_peer = local_host = False
+        if not local_peer or not local_host or not browser_request_origin_allowed():
+            return jsonify({"error": "Local scanner access is required"}), 403
+        if request.method == "POST":
+            payload = request.get_json(silent=True)
+            previous_token = payload.get("token") if isinstance(payload, dict) else None
+            if previous_token is not None and (not isinstance(previous_token, str) or len(previous_token) != 32
+                    or any(c not in "0123456789abcdef" for c in previous_token)):
+                return jsonify({"error": "Invalid maintenance ownership"}), 400
+            token = job_registry.acquire_maintenance(previous_token)
+            if token is None:
+                return jsonify({"error": "Scanner work or maintenance is already active"}), 409
+            response = jsonify({"maintenance_active": True, "token": token})
+        else:
+            payload = request.get_json(silent=True)
+            token = payload.get("token") if isinstance(payload, dict) else None
+            if not isinstance(token, str) or len(token) != 32 or not job_registry.release_maintenance(token):
+                return jsonify({"error": "Maintenance ownership could not be confirmed"}), 409
+            response = jsonify({"maintenance_active": False})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.route("/api/runtime/status")
     @require_auth
     def runtime_status():
@@ -125,6 +270,7 @@ def register_core_routes(app, deps):
         response = jsonify(
             {
                 "has_active_jobs": snapshot["has_active_jobs"],
+                "maintenance_active": snapshot.get("maintenance_active", False),
                 "active_job_types": sorted(
                     {job.get("job_type") for job in active_jobs if job.get("job_type")}
                 ),
@@ -134,7 +280,15 @@ def register_core_routes(app, deps):
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    @app.route("/api/runtime/live-hosts")
+    @require_auth
+    def runtime_live_hosts():
+        response = jsonify(latest_scan_hosts(runtime_store))
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.route("/api/runtime/settings-summary")
+    @require_auth
     def runtime_settings_summary():
         scan_rules = settings_state.get("scan_rules", {})
         reports = settings_state.get("reports", {})
@@ -142,6 +296,7 @@ def register_core_routes(app, deps):
         max_scan_minutes = int(scan_rules.get("max_scan_minutes", 120) or 120)
         maintenance_backfill = {}
         maintenance_retention = {}
+        automatic_retention = {}
         persisted_counts = {
             "report_artifacts": 0,
             "customer_scan_history": 0,
@@ -153,6 +308,9 @@ def register_core_routes(app, deps):
             )
             maintenance_retention = (
                 runtime_store.get_runtime_snapshot("maintenance_retention_status") or {}
+            )
+            automatic_retention = (
+                runtime_store.get_runtime_snapshot("automatic_retention_status") or {}
             )
         if runtime_store is not None:
             if hasattr(runtime_store, "count_report_artifacts"):
@@ -177,11 +335,13 @@ def register_core_routes(app, deps):
                 "tool_versions": get_versions(),
                 "maintenance_backfill": maintenance_backfill,
                 "maintenance_retention": maintenance_retention,
+                "automatic_retention": automatic_retention,
                 "persisted_counts": persisted_counts,
             }
         )
 
     @app.route("/api/runtime/logs")
+    @require_auth
     def runtime_logs():
         category = None
         if runtime_store is not None:
@@ -299,6 +459,95 @@ def register_core_routes(app, deps):
             as_attachment=True,
         )
 
+    @app.route("/api/runtime/reports/<path:scan_path>/inventory")
+    @require_auth
+    def runtime_report_inventory(scan_path):
+        artifact = _get_runtime_artifact(runtime_store, scan_path)
+        if artifact is None:
+            return "Report artifact not found", 404
+
+        scans_dir = deps.get("scans_dir")
+        xml_path = _resolve_artifact_file_path(
+            scans_dir=scans_dir,
+            scan_path=scan_path,
+            stored_path=artifact.get("xml_path"),
+            default_name="scan.xml",
+        )
+        if not xml_path.is_file():
+            return "Scan XML artifact not found", 404
+
+        temporary = tempfile.TemporaryDirectory(prefix="nmapui-inventory-")
+        try:
+            orientation = (request.args.get("orientation") or "landscape").strip().lower()
+            color_mode = (request.args.get("color") or "color").strip().lower()
+            if orientation not in {"portrait", "landscape"}:
+                temporary.cleanup()
+                return jsonify({"success": False, "error": "Invalid page orientation"}), 400
+            if color_mode not in {"color", "bw"}:
+                temporary.cleanup()
+                return jsonify({"success": False, "error": "Invalid print color mode"}), 400
+            temp_dir = Path(temporary.name)
+            html_path = temp_dir / "asset_inventory.html"
+            pdf_path = temp_dir / "asset_inventory.pdf"
+            payload = dict(artifact.get("payload", {}) or {})
+            assets = parse_scan_xml_for_assets(xml_path)
+            scanned_at = payload.get("timestamp") or " ".join(
+                str(payload.get(key) or "").strip() for key in ("date", "time")
+            ).strip()
+            html_path.write_text(
+                render_asset_inventory_html(
+                    assets,
+                    network=payload.get("target", ""),
+                    title="Network device inventory",
+                    scanned_at=scanned_at or None,
+                    orientation=orientation,
+                    monochrome=color_mode == "bw",
+                ),
+                encoding="utf-8",
+            )
+            if not convert_html_to_pdf(html_path, pdf_path):
+                temporary.cleanup()
+                return jsonify({"success": False, "error": "Could not create the inventory PDF"}), 500
+
+            response = send_file(
+                pdf_path,
+                mimetype="application/pdf",
+                as_attachment=True,
+                download_name="NmapUI_Asset_Inventory.pdf",
+            )
+            response.headers["Cache-Control"] = "private, no-store"
+            response.call_on_close(temporary.cleanup)
+            return response
+        except Exception:
+            temporary.cleanup()
+            app.logger.exception("Failed to create asset inventory PDF")
+            return jsonify({"success": False, "error": "Could not create the inventory PDF"}), 500
+
+    @app.route("/api/runtime/reports/<path:scan_path>/segmentation")
+    @require_auth
+    def runtime_report_segmentation(scan_path):
+        """Passive VLAN/segmentation findings for one saved scan (JSON, or HTML with ?format=html)."""
+        artifact = _get_runtime_artifact(runtime_store, scan_path)
+        if artifact is None:
+            return "Report artifact not found", 404
+        xml_path = _resolve_artifact_file_path(
+            scans_dir=deps.get("scans_dir"),
+            scan_path=scan_path,
+            stored_path=artifact.get("xml_path"),
+            default_name="scan.xml",
+        )
+        if not xml_path.is_file():
+            return "Scan XML artifact not found", 404
+        analysis = analyze_segmentation([xml_path.read_bytes()], load_supplied_evidence(xml_path.parent))
+        if (request.args.get("format") or "json").strip().lower() == "html":
+            response = make_response(segmentation_page(analysis))
+            response.headers["Content-Type"] = "text/html; charset=utf-8"
+            response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+        else:
+            response = jsonify(analysis)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     @app.route("/api/runtime/reports/<path:scan_path>/upload/google-drive", methods=["POST"])
     @require_auth
     def runtime_report_google_drive_upload(scan_path):
@@ -377,6 +626,26 @@ def register_core_routes(app, deps):
             customer_fingerprinter=customer_fingerprinter,
         )
         return jsonify({"history": history})
+
+    @app.route("/api/runtime/scan-runs/compare")
+    @require_auth
+    def runtime_scan_run_compare():
+        try:
+            result = compare_scan_runs(runtime_store, request.args.get("base_id", ""), request.args.get("current_id", ""))
+        except ValueError as exc:
+            response = jsonify({"error": str(exc)})
+            response.headers["Cache-Control"] = "no-store"
+            return response, 422
+        response = jsonify(result); response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.route("/api/runtime/scan-runs/<path:job_id>")
+    @require_auth
+    def runtime_scan_run_details(job_id):
+        result = scan_run_details(runtime_store, job_id)
+        response = jsonify(result if result is not None else {"error": "Scan run not found"})
+        response.headers["Cache-Control"] = "no-store"
+        return response, 200 if result is not None else 404
 
     @app.route("/api/runtime/history/<path:scan_path>", methods=["DELETE"])
     @require_auth

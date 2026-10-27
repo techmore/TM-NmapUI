@@ -268,11 +268,16 @@ class TableSorter {
     updateVisualIndicators(activeHeader) {
         this.table.querySelectorAll(".sortable").forEach((header) => {
             header.classList.remove("sorted-asc", "sorted-desc");
+            header.removeAttribute("aria-sort");
         });
 
         const directionClass =
             this.currentSort.direction === "asc" ? "sorted-asc" : "sorted-desc";
         activeHeader.classList.add(directionClass);
+        activeHeader.setAttribute(
+            "aria-sort",
+            this.currentSort.direction === "asc" ? "ascending" : "descending"
+        );
     }
 
     saveSortState() {

@@ -118,6 +118,7 @@ def register_app_handlers(
             check_for_updates=check_for_updates,
             idle_state_manager=idle_state_manager,
             logger=logger,
+            broadcaster=broadcaster, runtime_store=runtime_store, emit_to_client=emit_to_client,
         ),
         connection_handler_deps=build_connection_handler_deps(
             broadcaster=broadcaster,
@@ -175,6 +176,7 @@ def register_app_handlers(
             run_traceroute=run_traceroute,
         ),
         scan_job_handler_deps=build_scan_job_handler_deps(
+            get_client_state=get_client_state,
             validate_target=validate_target,
             rate_limiter=rate_limiter,
             job_registry=job_registry,
@@ -184,6 +186,7 @@ def register_app_handlers(
             generate_report_task=generate_report_task,
             generate_pdf_from_saved_task=generate_pdf_from_saved_task,
             broadcaster=broadcaster,
+            runtime_store=runtime_store, emit_to_client=emit_to_client,
         ),
         settings_routes_deps=build_settings_routes_deps(
             settings_state=settings_state,

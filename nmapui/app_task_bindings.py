@@ -55,6 +55,18 @@ def build_task_bindings(
     load_json_document,
     normalize_scan_metadata_document,
 ):
+    original_convert_xml_to_html = convert_xml_to_html
+
+    def convert_xml_to_html(*args, **kwargs):
+        from nmapui.settings import get_network_report_profile
+        target = kwargs.pop("report_target", "")
+        customer_id = kwargs.pop("report_customer_id", "")
+        profile = get_network_report_profile(settings_state, target, customer_id)
+        report_settings = profile["reports"] if profile else (settings_state.get("reports") or {})
+        kwargs["include_topology_recommendations"] = report_settings.get("include_topology_recommendations", False) is True
+        kwargs["network_plan"] = profile.get("network_plan") if profile else None
+        return original_convert_xml_to_html(*args, **kwargs)
+
     def run_arp_scan(target, interface=None, sid=None, emit_to_client_override=None):
         return run_arp_scan_runtime(
             target=target,
@@ -75,6 +87,7 @@ def build_task_bindings(
         sid=None,
         excluded_targets=None,
         scan_only_mode=False,
+        skip_host_discovery=False,
         force_privileged_scan=False,
         timeout_seconds=None,
         emit_to_client_override=None,
@@ -86,6 +99,7 @@ def build_task_bindings(
             sid=sid,
             excluded_targets=excluded_targets,
             scan_only_mode=scan_only_mode,
+            skip_host_discovery=skip_host_discovery,
             force_privileged_scan=force_privileged_scan,
             timeout_seconds=timeout_seconds,
             vulners_script=vulners_script,
@@ -96,10 +110,11 @@ def build_task_bindings(
             run_cancellable_command=run_cancellable_command,
         )
 
-    def start_scan_task(sid, target):
+    def start_scan_task(sid, target, skip_host_discovery_override=None):
         return start_scan_task_runtime(
             sid=sid,
             target=target,
+            skip_host_discovery_override=skip_host_discovery_override,
             **build_scan_task_deps(
                 broadcaster=broadcaster,
                 emit_to_client=emit_to_client,

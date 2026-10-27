@@ -19,7 +19,7 @@ window.socket = null;
     } catch (err) {
         console.warn('Could not fetch socket token; retrying unauthenticated.');
     }
-    const socket = io.connect(`http://${document.domain}:${location.port}`, {
+    const socket = io.connect(window.location.origin, {
         auth: { token },
         query: { token }
     });
@@ -57,6 +57,14 @@ async function bootstrapApp() {
     }
     // Request the legacy sync snapshot now that all listeners are wired (#230 bridge).
     socket.emit('get_initial_data');
+    // Transport-level reconnect = new server session; closures hold the dead socket.
+    // Reload to rebuild everything against the live session (#237 follow-up).
+    if (socket.io) {
+        socket.io.on('reconnect', () => { location.reload(); });
+    }
+    if (typeof initializeScanButtonWiring === 'function') {
+        initializeScanButtonWiring(socket);
+    }
     if (typeof initializeDiscoveryUI === 'function') {
         initializeDiscoveryUI(socket);
     }

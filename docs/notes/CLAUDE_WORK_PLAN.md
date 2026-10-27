@@ -23,7 +23,7 @@
 - [ ] Issue #23: Circular logging
 - [ ] Issue #14: GoWitness integration
 - [ ] Issue #11: Dragnet redesign
-- [ ] Issue #10: Pause/Resume functionality
+- [x] Issue #10: Pause/Resume functionality (see PROJECT_STATUS.md, "Scan pause and resume")
 - [ ] Issue #9: Optimize bundle size
 - [ ] Issue #7: Google Drive upload (ready to merge?)
 - [ ] Issue #4: Remote sync

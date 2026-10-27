@@ -39,7 +39,15 @@ EOF
 auto_scan_config.json
 .playwright-browsers/
 
-# Generated Flask fallback bundle and mutable runtime data
-/NmapUI.app/
-/data/
-/config/customers.yaml
+# Runtime state: must never be committed (scan data, DB, logs, local config)
+data/
+*.sqlite3
+*.sqlite3-*
+logs/
+.hermes/
+config/customers.yaml
+docs/notes/eval-logs/
+
+# Generated Flask fallback bundle and macOS app bundles
+NmapUI.app/
+NmapUIMenuBar.app/

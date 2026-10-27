@@ -111,13 +111,13 @@ def build_scan_workflow_context(deps):
         cve_pattern=re.compile(
             r"CVE-\d{4}-\d+\s+(\d+\.\d+)\s+(https://vulners\.com/cve/CVE-\d{4}-\d+)"
         ),
-        port_info_regex=re.compile(r"(\d+)/tcp\s+(\w+)\s+(.*)"),
+        port_info_regex=re.compile(r"(\d+)/(?:tcp|udp)\s+([\w|]+)\s+(.*)"),
         ip_regex=re.compile(r"Nmap scan report for .*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"),
         hostname_regex=re.compile(
             r"Nmap scan report for ([^ ]+) \((\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\)"
         ),
         host_status_regex=re.compile(r"Host is (up|down) \(([\d.]+s latency\))"),
-        open_port_regex=re.compile(r"(\d+)\/tcp\s+(\w+)\s+(\w+)"),
+        open_port_regex=re.compile(r"(\d+)/(?:tcp|udp)\s+([\w|]+)\s+(\w+)"),
         nmap_done_regex=re.compile(
             r"Nmap done: (\d+) IP address(?:es)? \((\d+) host(?:s)? up\) scanned in ([\d.]+) seconds"
         ),

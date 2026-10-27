@@ -1,4 +1,31 @@
+from functools import wraps
+import threading
+
 from flask_socketio import emit
+
+
+_adapter_publication_lock = threading.RLock()
+
+
+def job_publication_lock(job_registry):
+    """Real registries own a lock; legacy registry adapters share a fallback."""
+    return getattr(job_registry, "status_publication_lock", _adapter_publication_lock)
+
+
+def serialize_job_publication(job_registry):
+    """Order snapshot selection, replay and enqueue across status producers.
+
+    Acquire before registry/broadcaster reads. Their internal locks are released
+    before emission; mutations never acquire this lock while holding their own.
+    Reentrancy allows bootstrap/preferred-status helpers to call the publisher.
+    """
+    def decorate(function):
+        @wraps(function)
+        def publish(*args, **kwargs):
+            with job_publication_lock(job_registry):
+                return function(*args, **kwargs)
+        return publish
+    return decorate
 
 
 def safe_emit(event, data=None):
@@ -22,9 +49,10 @@ def emit_to_client(socketio, sid: str, event: str, data=None):
 
 def emit_job_status(socketio, job_registry, sid: str, job_type: str):
     """Publish the current status for a client job."""
-    payload = job_registry.get(sid, job_type) or {"status": "idle", "details": {}}
-    payload["job_type"] = job_type
-    emit_to_client(socketio, sid, "job_status", payload)
+    with job_publication_lock(job_registry):
+        payload = job_registry.get(sid, job_type) or {"status": "idle", "details": {}}
+        payload["job_type"] = job_type
+        emit_to_client(socketio, sid, "job_status", payload)
 
 
 def update_job_progress(

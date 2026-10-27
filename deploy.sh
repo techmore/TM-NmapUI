@@ -115,4 +115,4 @@ gh release create "$VERSION" \
 
 echo "🎉 Deployment complete!"
 echo "📦 Files created: NmapUI.pkg, NmapUI.dmg"
-echo "🚀 Release: https://github.com/techmore/NmapUI/releases/tag/$VERSION"
+echo "🚀 Release: https://github.com/techmore/TM-NmapUI/releases/tag/$VERSION"

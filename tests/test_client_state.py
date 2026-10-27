@@ -121,6 +121,7 @@ def test_generate_report_task_prefers_per_client_state_snapshot(tmp_path):
         (),
         {
             "complete": lambda self, *args, **kwargs: None,
+            "update": lambda self, *args, **kwargs: None,
             "is_cancelled": lambda self, *args, **kwargs: False,
             "get": lambda self, *args, **kwargs: {"status": "completed"},
             "clear_if_disconnected": lambda self, *args, **kwargs: None,
@@ -202,6 +203,7 @@ def test_generate_report_task_uses_distinct_web_and_pdf_stylesheets(tmp_path):
         (),
         {
             "complete": lambda self, *args, **kwargs: None,
+            "update": lambda self, *args, **kwargs: None,
             "is_cancelled": lambda self, *args, **kwargs: False,
             "get": lambda self, *args, **kwargs: {"status": "completed"},
             "clear_if_disconnected": lambda self, *args, **kwargs: None,
@@ -212,7 +214,7 @@ def test_generate_report_task_uses_distinct_web_and_pdf_stylesheets(tmp_path):
         scan_dir.mkdir(parents=True, exist_ok=True)
         return scan_dir
 
-    def convert_xml_to_html_stub(xml_path, html_path, *, stylesheet, get_app_version, feedback=None):
+    def convert_xml_to_html_stub(xml_path, html_path, *, stylesheet, get_app_version, feedback=None, report_target=None, report_customer_id=None):
         convert_calls.append((html_path.name, stylesheet))
         return True
 
@@ -279,6 +281,7 @@ def test_generate_report_task_injects_diff_summary_into_generated_html(tmp_path)
         (),
         {
             "complete": lambda self, *args, **kwargs: None,
+            "update": lambda self, *args, **kwargs: None,
             "is_cancelled": lambda self, *args, **kwargs: False,
             "get": lambda self, *args, **kwargs: {"status": "completed"},
             "clear_if_disconnected": lambda self, *args, **kwargs: None,
@@ -318,7 +321,7 @@ def test_generate_report_task_injects_diff_summary_into_generated_html(tmp_path)
         )
         return {"success": True}
 
-    def convert_xml_to_html_stub(xml_path, html_path, *, stylesheet, get_app_version, feedback=None):
+    def convert_xml_to_html_stub(xml_path, html_path, *, stylesheet, get_app_version, feedback=None, report_target=None, report_customer_id=None):
         html_path.write_text("<html><body><h1>Report</h1></body></html>", encoding="utf-8")
         return True
 
@@ -386,6 +389,7 @@ def test_generate_report_task_respects_non_chunked_full_scan_requests(tmp_path):
         (),
         {
             "complete": lambda self, *args, **kwargs: None,
+            "update": lambda self, *args, **kwargs: None,
             "is_cancelled": lambda self, *args, **kwargs: False,
             "get": lambda self, *args, **kwargs: {"status": "completed"},
             "clear_if_disconnected": lambda self, *args, **kwargs: None,
@@ -401,7 +405,7 @@ def test_generate_report_task_respects_non_chunked_full_scan_requests(tmp_path):
         output_base.with_suffix(".xml").write_text("<nmaprun></nmaprun>", encoding="utf-8")
         return {"success": True}
 
-    def convert_xml_to_html_stub(xml_path, html_path, *, stylesheet, get_app_version, feedback=None):
+    def convert_xml_to_html_stub(xml_path, html_path, *, stylesheet, get_app_version, feedback=None, report_target=None, report_customer_id=None):
         html_path.write_text("<html><body>Report</body></html>", encoding="utf-8")
         return True
 
@@ -469,6 +473,7 @@ def test_generate_report_task_overrides_non_chunked_large_network_reports(tmp_pa
         (),
         {
             "complete": lambda self, *args, **kwargs: None,
+            "update": lambda self, *args, **kwargs: None,
             "is_cancelled": lambda self, *args, **kwargs: False,
             "get": lambda self, *args, **kwargs: {"status": "completed"},
             "clear_if_disconnected": lambda self, *args, **kwargs: None,
@@ -484,7 +489,7 @@ def test_generate_report_task_overrides_non_chunked_large_network_reports(tmp_pa
         output_base.with_suffix(".xml").write_text("<nmaprun></nmaprun>", encoding="utf-8")
         return {"success": True}
 
-    def convert_xml_to_html_stub(xml_path, html_path, *, stylesheet, get_app_version, feedback=None):
+    def convert_xml_to_html_stub(xml_path, html_path, *, stylesheet, get_app_version, feedback=None, report_target=None, report_customer_id=None):
         html_path.write_text("<html><body>Report</body></html>", encoding="utf-8")
         return True
 
@@ -561,6 +566,7 @@ def test_generate_report_task_auto_uploads_to_google_drive_when_enabled(tmp_path
         (),
         {
             "complete": lambda self, *args, **kwargs: None,
+            "update": lambda self, *args, **kwargs: None,
             "is_cancelled": lambda self, *args, **kwargs: False,
             "get": lambda self, *args, **kwargs: {"status": "completed"},
             "clear_if_disconnected": lambda self, *args, **kwargs: None,
@@ -575,7 +581,7 @@ def test_generate_report_task_auto_uploads_to_google_drive_when_enabled(tmp_path
         output_base.with_suffix(".xml").write_text("<nmaprun></nmaprun>", encoding="utf-8")
         return {"success": True}
 
-    def convert_xml_to_html_stub(xml_path, html_path, *, stylesheet, get_app_version, feedback=None):
+    def convert_xml_to_html_stub(xml_path, html_path, *, stylesheet, get_app_version, feedback=None, report_target=None, report_customer_id=None):
         html_path.write_text("<html><body>Report</body></html>", encoding="utf-8")
         return True
 

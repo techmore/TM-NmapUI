@@ -237,6 +237,22 @@ Flask page. Desktop Flask startup skips public traceroute by default; an explici
 `NMAPUI_STARTUP_TRACEROUTE=true` still opts in. Readiness requires the scanner and
 scheduler, independently of optional public topology discovery.
 
+The retained Flask wrapper (`NmapUIMenuBarLauncher.swift`) appears as a network icon in the menu bar. Use the menu to start, stop, or open NmapUI.
+When activity ends, the recent-activity clock means the work is no longer active;
+open NmapUI to review whether the scan or report succeeded, failed or was cancelled.
+The status reader accepts mixed-type runtime metadata, polls one request at a
+time and discards responses from an earlier start/stop cycle. Strict-auth
+installations can supply `NMAPUI_USERNAME` and `NMAPUI_PASSWORD` to the launcher.
+Without them, the status reader reports that credentials are needed; opening
+NmapUI still provides the browser sign-in. Browser sessions are not shared with
+the native status reader.
+The packaged desktop entrypoint defaults `NMAPUI_STARTUP_TRACEROUTE=false` so
+public topology discovery cannot block server startup. Set it explicitly to
+`true` to opt in; this does not disable later network fingerprinting by itself.
+Shutdown allows the owned runtime a two-second TERM grace period, then freezes
+its remaining process tree before collecting and killing descendants. PID marker
+files and port listeners never grant ownership of another process.
+
 Build/bundle/install replacement now refuses active or unverified destinations.
 It never signals processes from a stale PID marker or command substring, and it
 never removes the scanner's shared scheduler lock. Quit the selected copy first;
@@ -262,3 +278,27 @@ write/read/update, root/account separation, deletion and unchanged search-list
 metadata after deleting its owned Keychain. It does not read or write default
 Keychain items, authorize Google, upload account data or prove real consent and
 revocation. Local runs skip this hosted-only test.
+
+## Bundle versions
+
+The product `VERSION` remains unchanged in the bundled runtime and UI. Before
+building or cleaning existing artifacts, `build.sh` validates it as a real
+calendar date in `vYYYY.M.D` format, optionally followed by `.HH_MM` or `.HH.MM`
+(24-hour time). Invalid dates, times, whitespace and shell/XML text fail closed.
+
+Apple's [marketing version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleshortversionstring)
+is the numeric `YYYY.M.D`. The [build version](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleversion)
+is `YYYY.M.P`, where `P = (day - 1) * 1440 + hour * 60 + minute`.
+This keeps three numeric components and increases chronologically, including
+historical time suffixes. A date without a time means midnight; equivalent
+`.HH_MM` and `.HH.MM` spellings identify the same build. For example:
+
+| Product VERSION | Marketing version | Build version |
+| --- | --- | --- |
+| `v2026.3.14.00_10` | `2026.3.14` | `2026.3.18730` |
+| `v2026.4.26.4.00` | `2026.4.26` | `2026.4.36240` |
+| `v2026.10.25` | `2026.10.25` | `2026.10.34560` |
+
+Rebuilding the same VERSION is reproducible. Before distributing a changed
+build, advance VERSION; use a later time suffix for another build on the same
+date. This mapping does not select a release channel or qualify a release.

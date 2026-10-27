@@ -1,5 +1,6 @@
 from flask import Flask
 from flask_socketio import SocketIO
+import pytest
 
 from nmapui.app_bindings import build_event_helpers
 from nmapui.handlers.connections import register_connection_handlers
@@ -210,6 +211,69 @@ def test_start_scan_persists_last_target_with_keyword_state_setter(monkeypatch):
     assert observed["rate_recorded"] is True
 
 
+@pytest.mark.parametrize("value", [True, False])
+def test_start_scan_forwards_strict_per_job_discovery_override(monkeypatch, value):
+    configure_auth(monkeypatch)
+    observed = {}
+
+    class RateLimiterStub:
+        def can_scan(self, sid=None):
+            return True, None
+
+        def record_scan(self, sid=None):
+            return None
+
+    app, socketio = build_scan_jobs_app({
+        "validate_target": lambda target: (True, None),
+        "rate_limiter": RateLimiterStub(),
+        "job_registry": ClientJobRegistry(),
+        "emit_job_status": lambda *args: None,
+        "set_last_scan_target_state": lambda **kwargs: None,
+        "start_scan_task": lambda *args, **kwargs: observed.setdefault("task", (args, kwargs)),
+        "generate_report_task": lambda *args: None,
+        "generate_pdf_from_saved_task": lambda *args: None,
+    })
+    socketio.start_background_task = lambda fn, *args: fn(*args)
+
+    client = socketio.test_client(app, headers=basic_auth_header())
+    client.emit("start_scan", {"target": "127.0.0.1", "skip_host_discovery": value})
+
+    assert observed["task"][0][1] == "127.0.0.1"
+    assert observed["task"][0][2] is value
+
+
+@pytest.mark.parametrize("value", [None, "true", 1, [], {}])
+def test_start_scan_rejects_non_boolean_discovery_override(monkeypatch, value):
+    configure_auth(monkeypatch)
+    observed = {"started": False}
+
+    class RateLimiterStub:
+        def can_scan(self, sid=None):
+            return True, None
+
+        def record_scan(self, sid=None):
+            return None
+
+    app, socketio = build_scan_jobs_app({
+        "validate_target": lambda target: (True, None),
+        "rate_limiter": RateLimiterStub(),
+        "job_registry": ClientJobRegistry(),
+        "emit_job_status": lambda *args: None,
+        "set_last_scan_target_state": lambda **kwargs: None,
+        "start_scan_task": lambda *args, **kwargs: observed.update(started=True),
+        "generate_report_task": lambda *args: None,
+        "generate_pdf_from_saved_task": lambda *args: None,
+    })
+    socketio.start_background_task = lambda fn, *args, **kwargs: fn(*args, **kwargs)
+
+    client = socketio.test_client(app, headers=basic_auth_header())
+    client.emit("start_scan", {"target": "127.0.0.1", "skip_host_discovery": value})
+    received = client.get_received()
+
+    assert observed["started"] is False
+    assert any(event["name"] == "scan_error" for event in received)
+
+
 def test_start_scan_uses_sid_scoped_rate_limit_and_broadcaster(monkeypatch):
     configure_auth(monkeypatch)
     observed = {}
@@ -223,12 +287,15 @@ def test_start_scan_uses_sid_scoped_rate_limit_and_broadcaster(monkeypatch):
             observed["record_scan_sid"] = sid
 
     class JobRegistryStub:
+        def get(self, sid, job_type):
+            return {"source_job_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}
+
         def start(self, sid, job_type, details):
             observed["job_start"] = (sid, job_type, details)
             return True
 
     class BroadcasterStub:
-        def start_job(self, sid, job_type="scan"):
+        def start_job(self, sid, job_type="scan", source_job_id=None):
             observed["broadcaster"] = (sid, job_type)
 
     app, socketio = build_scan_jobs_app(
@@ -328,6 +395,59 @@ def test_get_local_ip_still_emits_cidr_when_public_ip_lookup_fails(monkeypatch):
     assert payload["public_ip"] == ""
 
 
+def test_disabled_network_fingerprint_skips_traceroute_and_public_ip_lookup(monkeypatch):
+    configure_auth(monkeypatch)
+    monkeypatch.setenv("NMAPUI_ENABLE_NETWORK_FINGERPRINT", "false")
+
+    class NetifacesStub:
+        AF_INET = object()
+
+        @staticmethod
+        def ifaddresses(_interface):
+            return {
+                NetifacesStub.AF_INET: [
+                    {"addr": "192.168.1.42", "netmask": "255.255.255.0"}
+                ]
+            }
+
+    def unexpected_external_call(*_args, **_kwargs):
+        raise AssertionError("disabled network fingerprint attempted an external lookup")
+
+    app, socketio = build_runtime_info_app(
+        {
+            "calculate_cidr": lambda _ip, _mask: "192.168.1.0/24",
+            "get_client_state": lambda *, sid=None: {
+                "network_key": {
+                    "target": "1.1.1.1",
+                    "total_hops": 0,
+                    "private_hops": [],
+                    "public_hops": [],
+                    "exit_ip": None,
+                }
+            },
+            "get_default_interface_cached": lambda: "en0",
+            "get_report_counts": lambda: {},
+            "logger": Flask(__name__).logger,
+            "netifaces": NetifacesStub,
+            "requests": type("RequestsStub", (), {"get": unexpected_external_call}),
+            "run_traceroute": unexpected_external_call,
+        }
+    )
+
+    client = socketio.test_client(app, headers=basic_auth_header())
+    client.emit("get_network_key")
+    client.emit("get_local_ip")
+    received = client.get_received()
+
+    network_event = next(event for event in received if event["name"] == "network_key")
+    local_ip_event = next(event for event in received if event["name"] == "local_ip")
+    assert network_event["args"][0]["fingerprinting_enabled"] is False
+    assert network_event["args"][0]["total_hops"] == 0
+    assert local_ip_event["args"][0]["local_ip"] == "192.168.1.42"
+    assert local_ip_event["args"][0]["cidr"] == "192.168.1.0/24"
+    assert local_ip_event["args"][0]["public_ip"] == ""
+
+
 def test_generate_pdf_from_saved_rejects_invalid_payload(monkeypatch):
     configure_auth(monkeypatch)
     observed = {}
@@ -357,7 +477,8 @@ def test_generate_pdf_from_saved_rejects_invalid_payload(monkeypatch):
     assert "pdf_calls" not in observed
 
 
-def test_connect_replays_active_scan_events_to_new_tab():
+def test_connect_replays_active_scan_events_to_new_tab(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
 
     class BroadcasterStub:
@@ -400,7 +521,7 @@ def test_connect_replays_active_scan_events_to_new_tab():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["job_lookup"] == ("owner-sid", "scan")
@@ -419,7 +540,9 @@ def test_connect_replays_active_scan_events_to_new_tab():
     ]
     assert contract_events[4][1] == "job_status"
     assert contract_events[4][2]["job_type"] == "scan"
-    assert [e for e in contract_events[5:]] == [
+    assert contract_events[-1][1] == "job_status"
+    assert contract_events[-1][2]["job_type"] == "scan"
+    assert [e for e in contract_events[5:-1]] == [
         (observed["subscribe"][1], "scan_feedback", "Scanning..."),
         (observed["subscribe"][1], "scan_progress", {"pct": 50}),
     ]
@@ -498,7 +621,8 @@ def test_generate_report_broadcasts_running_job_status_to_existing_open_tabs(mon
     }
 
 
-def test_connect_replays_active_report_events_to_new_tab():
+def test_connect_replays_active_report_events_to_new_tab(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
 
     class BroadcasterStub:
@@ -546,7 +670,7 @@ def test_connect_replays_active_report_events_to_new_tab():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["active_lookups"] == ["scan", "report"]
@@ -557,7 +681,9 @@ def test_connect_replays_active_report_events_to_new_tab():
     contract_events = [e for e in emitted if e[1] not in bridge_events]
     assert contract_events[4][1] == "job_status"
     assert contract_events[4][2]["job_type"] == "report"
-    assert [e for e in contract_events[5:]] == [
+    assert contract_events[-1][1] == "job_status"
+    assert contract_events[-1][2]["job_type"] == "report"
+    assert [e for e in contract_events[5:-1]] == [
         (observed["subscribe"][1], "scan_feedback", "Generating PDF report..."),
         (
             observed["subscribe"][1],
@@ -567,7 +693,8 @@ def test_connect_replays_active_report_events_to_new_tab():
     ]
 
 
-def test_connect_hydrates_new_tab_from_shared_snapshot_without_active_scan():
+def test_connect_hydrates_new_tab_from_shared_snapshot_without_active_scan(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
     emitted = []
 
@@ -593,7 +720,7 @@ def test_connect_hydrates_new_tab_from_shared_snapshot_without_active_scan():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["customer_state"][0][1]["id"] == "cust-999"
@@ -610,7 +737,8 @@ def test_connect_hydrates_new_tab_from_shared_snapshot_without_active_scan():
     assert "initial_data" in [event for _, event, _ in emitted]
 
 
-def test_connect_hydrates_new_tab_from_sqlite_snapshot_without_active_scan():
+def test_connect_hydrates_new_tab_from_sqlite_snapshot_without_active_scan(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
     emitted = []
 
@@ -652,7 +780,7 @@ def test_connect_hydrates_new_tab_from_sqlite_snapshot_without_active_scan():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["customer_state"][0][1]["id"] == "cust-sqlite"
@@ -663,7 +791,8 @@ def test_connect_hydrates_new_tab_from_sqlite_snapshot_without_active_scan():
     assert emitted[2][2] == {"last_scan_target": "10.10.10.0/24"}
 
 
-def test_connect_normalizes_persisted_last_scan_target_snapshot_dict():
+def test_connect_normalizes_persisted_last_scan_target_snapshot_dict(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
     emitted = []
 
@@ -705,14 +834,15 @@ def test_connect_normalizes_persisted_last_scan_target_snapshot_dict():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["target_state"][0][1] == "10.10.10.0/24"
     assert emitted[2][2] == {"last_scan_target": "10.10.10.0/24"}
 
 
-def test_connect_emits_persisted_active_job_status_without_active_owner():
+def test_connect_emits_persisted_active_job_status_without_active_owner(monkeypatch):
+    configure_auth(monkeypatch)
     emitted = []
 
     class BroadcasterStub:
@@ -723,7 +853,11 @@ def test_connect_emits_persisted_active_job_status_without_active_owner():
         def get_runtime_snapshot(self, key):
             return None
 
-        def list_jobs(self, statuses=None, limit=50):
+        def list_jobs(self, statuses=None, job_type=None, limit=50):
+            assert statuses == ("running", "cancelling")
+            assert limit == 1
+            if job_type != "report":
+                return []
             return [
                 {
                     "job_id": "owner-sid:report",
@@ -766,7 +900,7 @@ def test_connect_emits_persisted_active_job_status_without_active_owner():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert emitted[-2][1] == "job_status"
@@ -780,7 +914,8 @@ def test_connect_emits_persisted_active_job_status_without_active_owner():
     )
 
 
-def test_connect_clears_stale_broadcast_slot_when_no_scan_job():
+def test_connect_clears_stale_broadcast_slot_when_no_scan_job(monkeypatch):
+    configure_auth(monkeypatch)
     observed = {}
 
     class BroadcasterStub:
@@ -804,7 +939,7 @@ def test_connect_clears_stale_broadcast_slot_when_no_scan_job():
         }
     )
 
-    client = socketio.test_client(app)
+    client = socketio.test_client(app, headers=basic_auth_header())
 
     assert client.is_connected()
     assert observed["job_lookup"] == ("owner-sid", "scan")

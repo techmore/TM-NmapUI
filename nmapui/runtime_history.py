@@ -1,3 +1,4 @@
+from nmapui.runtime_scan_history import scan_run_rows
 from nmapui.reporting import (
     build_artifact_downloads,
     find_previous_scan_metadata,
@@ -153,7 +154,7 @@ def build_history_rows(
     history.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
 
     for scan in history:
-        if scan.get("diff_summary") is not None:
+        if scan.get("diff_summary") is not None or scan.get("diff_summary_computed"):
             continue
 
         previous = find_previous_scan_metadata(scan, history)
@@ -182,6 +183,8 @@ def build_history_rows(
                 "baseline_timestamp": previous.get("timestamp", ""),
             }
 
+    history.extend(scan_run_rows(runtime_store))
+    history.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
     return history
 
 

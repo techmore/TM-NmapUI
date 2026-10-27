@@ -1,8 +1,16 @@
 from flask import Flask
 from flask_socketio import SocketIO
+import pytest
 
 from nmapui.handlers.updates import register_update_handlers
 import nmapui.runtime as runtime
+
+
+@pytest.fixture(autouse=True)
+def reset_update_check_cache():
+    runtime._clear_update_check_cache()
+    yield
+    runtime._clear_update_check_cache()
 
 
 def test_check_for_updates_selects_mac_installer_asset(monkeypatch):
@@ -18,11 +26,11 @@ def test_check_for_updates_selects_mac_installer_asset(monkeypatch):
         def json(self):
             return {
                 "tag_name": "v2026.1.9.12_53",
-                "html_url": "https://github.com/techmore/NmapUI/releases/tag/v2026.1.9.12_53",
+                "html_url": "https://github.com/techmore/TM-NmapUI/releases/tag/v2026.1.9.12_53",
                 "body": "release notes",
                 "assets": [
-                    {"name": "NmapUI.pkg", "browser_download_url": "https://github.com/techmore/NmapUI/releases/download/v2026.1.9.12_53/NmapUI.pkg"},
-                    {"name": "NmapUI.dmg", "browser_download_url": "https://github.com/techmore/NmapUI/releases/download/v2026.1.9.12_53/NmapUI.dmg"},
+                    {"name": "NmapUI.pkg", "browser_download_url": "https://github.com/techmore/TM-NmapUI/releases/download/v2026.1.9.12_53/NmapUI.pkg"},
+                    {"name": "NmapUI.dmg", "browser_download_url": "https://github.com/techmore/TM-NmapUI/releases/download/v2026.1.9.12_53/NmapUI.dmg"},
                 ],
             }
 
@@ -34,7 +42,7 @@ def test_check_for_updates_selects_mac_installer_asset(monkeypatch):
     assert result["current_version"] == "v2026.1.1.00_00"
     assert result["latest_version"] == "v2026.1.9.12_53"
     assert result["asset_name"] == "NmapUI.dmg"
-    assert result["download_url"] == "https://github.com/techmore/NmapUI/releases/download/v2026.1.9.12_53/NmapUI.dmg"
+    assert result["download_url"] == "https://github.com/techmore/TM-NmapUI/releases/download/v2026.1.9.12_53/NmapUI.dmg"
     assert result["install_method"] == "manual_download"
 
 
@@ -49,7 +57,7 @@ def test_check_for_updates_reports_current_version_when_no_update(monkeypatch):
         def json(self):
             return {
                 "tag_name": "v2026.1.9.12_53",
-                "html_url": "https://github.com/techmore/NmapUI/releases/tag/v2026.1.9.12_53",
+                "html_url": "https://github.com/techmore/TM-NmapUI/releases/tag/v2026.1.9.12_53",
                 "body": "release notes",
                 "assets": [],
             }
@@ -62,8 +70,164 @@ def test_check_for_updates_reports_current_version_when_no_update(monkeypatch):
         "available": False,
         "current_version": "v2026.1.9.12_53",
         "latest_version": "v2026.1.9.12_53",
-        "release_url": "https://github.com/techmore/NmapUI/releases/tag/v2026.1.9.12_53",
+        "release_url": "https://github.com/techmore/TM-NmapUI/releases/tag/v2026.1.9.12_53",
     }
+
+
+def test_check_for_updates_caches_success_and_returns_independent_results(monkeypatch):
+    runtime.APP_VERSION = None
+    monkeypatch.setattr(runtime, "get_app_version", lambda: "v2026.1.9.12_53")
+    calls = []
+
+    class ResponseStub:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "tag_name": "v2026.1.9.12_53",
+                "html_url": "https://github.com/techmore/TM-NmapUI/releases/latest",
+                "assets": [],
+            }
+
+    def get(url, timeout=10):
+        calls.append((url, timeout))
+        return ResponseStub()
+
+    monkeypatch.setattr(runtime.requests, "get", get)
+
+    first = runtime.check_for_updates()
+    first["available"] = True
+    second = runtime.check_for_updates()
+
+    assert calls == [
+        ("https://api.github.com/repos/techmore/TM-NmapUI/releases/latest", 10)
+    ]
+    assert second["available"] is False
+
+
+def test_check_for_updates_backs_off_after_remote_failure(monkeypatch):
+    runtime.APP_VERSION = None
+    monkeypatch.setattr(runtime, "get_app_version", lambda: "v2026.1.9.12_53")
+    calls = []
+
+    def get(url, timeout=10):
+        calls.append(url)
+        raise RuntimeError("release service unavailable")
+
+    monkeypatch.setattr(runtime.requests, "get", get)
+
+    first = runtime.check_for_updates()
+    second = runtime.check_for_updates()
+
+    assert first["error"] == "release service unavailable"
+    assert second == first
+    assert calls == ["https://api.github.com/repos/techmore/TM-NmapUI/releases/latest"]
+
+
+def test_disabled_update_check_never_contacts_github(monkeypatch):
+    monkeypatch.setenv("NMAPUI_ENABLE_UPDATE_CHECK", "false")
+    monkeypatch.setattr(runtime, "get_app_version", lambda: "v2026.1.9.12_53")
+
+    def unexpected_request(*_args, **_kwargs):
+        raise AssertionError("disabled update check contacted GitHub")
+
+    monkeypatch.setattr(runtime.requests, "get", unexpected_request)
+
+    assert runtime.check_for_updates() == {
+        "available": False,
+        "disabled": True,
+        "current_version": "v2026.1.9.12_53",
+    }
+
+
+def test_operator_requested_check_bypasses_disabled_background_check_only(monkeypatch):
+    monkeypatch.setenv("NMAPUI_ENABLE_UPDATE_CHECK", "false")
+    monkeypatch.setattr(runtime, "get_app_version", lambda: "v2026.1.1.00_00")
+    calls = []
+
+    class ResponseStub:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "tag_name": "v2026.1.9.12_53",
+                "html_url": "https://github.com/techmore/TM-NmapUI/releases/tag/v2026.1.9.12_53",
+                "body": "Release notes.",
+                "assets": [],
+            }
+
+    def get(url, timeout=10):
+        calls.append((url, timeout))
+        return ResponseStub()
+
+    monkeypatch.setattr(runtime.requests, "get", get)
+
+    result = runtime.check_for_updates(operator_requested=True)
+
+    assert result["available"] is True
+    assert result["manual_check_only"] is True
+    assert calls == [("https://api.github.com/repos/techmore/TM-NmapUI/releases/latest", 10)]
+    assert runtime.check_for_updates() == {
+        "available": False,
+        "disabled": True,
+        "current_version": "v2026.1.1.00_00",
+    }
+
+
+def test_manual_only_release_result_does_not_enter_idle_update_workflow(monkeypatch):
+    monkeypatch.setenv("NMAPUI_ENABLE_UPDATE_CHECK", "false")
+    monkeypatch.setenv("NMAPUI_USERNAME", "scanner")
+    monkeypatch.setenv("NMAPUI_PASSWORD", "secret-pass")
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "false")
+
+    app = Flask(__name__)
+    socketio = SocketIO(app, cors_allowed_origins="*", test_mode=True)
+    update_calls = []
+    idle_updates = []
+
+    class IdleStateStub:
+        def set_update_available(self, available, update_info=None):
+            idle_updates.append((available, update_info))
+
+        def cancel_countdown(self):
+            return None
+
+        def start_countdown(self):
+            return None
+
+    def check_for_updates(*, operator_requested=False):
+        update_calls.append(operator_requested)
+        return {
+            "available": True,
+            "manual_check_only": True,
+            "latest_version": "v2026.1.9.12_53",
+        }
+
+    register_update_handlers(
+        socketio,
+        {
+            "check_for_updates": check_for_updates,
+            "idle_state_manager": IdleStateStub(),
+            "logger": app.logger,
+        },
+    )
+    token_client = app.test_client()
+    import base64
+    token = base64.b64encode(b"scanner:secret-pass").decode()
+    client = socketio.test_client(
+        app,
+        flask_test_client=token_client,
+        headers={"Authorization": f"Basic {token}"},
+    )
+
+    client.emit("check_app_updates")
+    received = client.get_received()
+
+    assert update_calls == [True]
+    assert idle_updates == []
+    assert any(event["name"] == "app_update_available" for event in received)
 
 
 def test_perform_app_update_emits_manual_install_messages(monkeypatch):
@@ -93,7 +257,7 @@ def test_perform_app_update_emits_manual_install_messages(monkeypatch):
                 "latest_version": "v2026.1.9.12_53",
                 "asset_name": "NmapUI.dmg",
                 "download_url": "https://example.com/NmapUI.dmg",
-                "release_url": "https://github.com/techmore/NmapUI/releases/tag/v2026.1.9.12_53",
+                "release_url": "https://github.com/techmore/TM-NmapUI/releases/tag/v2026.1.9.12_53",
             },
             "idle_state_manager": IdleStateStub(),
             "logger": app.logger,

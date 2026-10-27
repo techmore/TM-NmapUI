@@ -1,7 +1,9 @@
 import subprocess
 
+from nmapui.auto_scan import build_auto_scan_status_payload
 from nmapui.runtime import env_flag
 from nmapui.runtime_log import append_runtime_log
+from nmapui.scanning import vulners_script_version
 
 
 def run_startup_checks(deps, quick=False):
@@ -46,37 +48,25 @@ def run_startup_checks(deps, quick=False):
     default_interface = get_default_interface_cached()
     logger.info(f"Default Network Interface: {default_interface}")
 
+    errors = startup_state.setdefault("errors", [])
+
     if quick:
         logger.info("Quick mode: skipping dependency checks")
         startup_state["dependencies_ok"] = True
     else:
         logger.info("\nChecking nmap...")
-        tool_versions.set_version("nmap", check_nmap())
+        nmap_version = check_nmap()
+        if nmap_version:
+            tool_versions.set_version("nmap", nmap_version)
+        else:
+            tool_versions.set_version("nmap", "Not installed")
+            errors.append("nmap is not installed or not on PATH")
 
         logger.info("\nChecking vulners script...")
-        check_vulners(vulners_script)
-        vulners_dir = vulners_script.parent
-        if vulners_dir.exists():
-            try:
-                version_result = subprocess.run(
-                    [
-                        "git",
-                        "log",
-                        "-1",
-                        "--oneline",
-                        "--date=short",
-                        "--pretty=format:%h %ad %s",
-                    ],
-                    cwd=vulners_dir,
-                    capture_output=True,
-                    text=True,
-                )
-                if version_result.returncode == 0:
-                    tool_versions.set_version("vulners", version_result.stdout.strip())
-                else:
-                    tool_versions.set_version("vulners", "Unknown")
-            except Exception:
-                tool_versions.set_version("vulners", "Unknown")
+        vulners_ok = bool(check_vulners(vulners_script))
+        if not vulners_ok:
+            errors.append(f"Vulners NSE script missing at {vulners_script}")
+        tool_versions.set_version("vulners", vulners_script_version(vulners_script) if vulners_ok else "Not installed")
 
         logger.info("\nChecking arp-scan...")
         if check_arp_scan():
@@ -93,12 +83,23 @@ def run_startup_checks(deps, quick=False):
                 tool_versions.set_version("arp_scan", "arp-scan (version unknown)")
         else:
             tool_versions.set_version("arp_scan", "Not installed")
-        startup_state["dependencies_ok"] = True
+        # arp-scan is optional; nmap and the vulners script are required for a
+        # full scan, so readiness reflects only those two.
+        startup_state["dependencies_ok"] = bool(nmap_version) and vulners_ok
+        if not startup_state["dependencies_ok"]:
+            logger.error(
+                "Startup dependency checks failed; server will start in degraded "
+                "mode and /api/health/ready will report not ready: %s",
+                "; ".join(errors),
+            )
 
     logger.info("\nLoading previous customer assignment...")
     load_current_assignment()
 
-    initialize_topology = env_flag("NMAPUI_STARTUP_TRACEROUTE", default=True) and env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True)
+    initialize_topology = (
+        env_flag("NMAPUI_STARTUP_TRACEROUTE", default=True)
+        and env_flag("NMAPUI_ENABLE_NETWORK_FINGERPRINT", default=True)
+    )
     if initialize_topology:
         logger.info("\nInitializing network key...")
         network_key = run_traceroute("1.1.1.1")
@@ -110,12 +111,15 @@ def run_startup_checks(deps, quick=False):
         traceroute_initialized=not bool(network_key.get("error")),
     )
     if initialize_topology:
-        logger.info(f"Network key initialized with {network_key.get('total_hops', 0)} hops")
+        logger.info("Network key initialized with %s hops", network_key.get("total_hops", 0))
     append_runtime_log(
         runtime_store=runtime_store,
         category="startup",
         level="INFO" if not initialize_topology or not network_key.get("error") else "ERROR",
-        message="Startup network initialization completed" if initialize_topology else "Startup network initialization skipped",
+        message=(
+            "Startup network initialization completed"
+            if initialize_topology else "Startup network initialization skipped"
+        ),
         payload={
             "target": network_key.get("target"),
             "total_hops": network_key.get("total_hops", 0),
@@ -137,4 +141,3 @@ def run_startup_checks(deps, quick=False):
         message="Startup checks completed",
         payload={"dependencies_ok": startup_state.get("dependencies_ok", False)},
     )
-from nmapui.auto_scan import build_auto_scan_status_payload

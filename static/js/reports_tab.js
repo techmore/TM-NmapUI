@@ -3,6 +3,7 @@ let reportsTabLoaded = false;
 let historyTabLoaded = false;
 let currentAppTab = 'dashboard';
 let historyCompareBasePath = null;
+let historyCompareBaseTarget = null;
 let reportsCustomerFilter = 'all';
 let historyViewMode = 'current';
 
@@ -108,11 +109,16 @@ function setTabStatus(elementId, message, isError = false) {
 }
 
 function createScanActionLink(href, label, newTab = false) {
-    const link = document.createElement('a');
-    link.href = href;
+    const safeHref = window.safeHttpHref?.(String(href ?? ''));
+    const link = document.createElement(safeHref ? 'a' : 'span');
+    if (safeHref) {
+        link.href = safeHref;
+    } else {
+        link.setAttribute('aria-disabled', 'true');
+    }
     link.textContent = label;
     link.className = 'action-button action-button-primary action-button-compact';
-    if (newTab) {
+    if (safeHref && newTab) {
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
     }
@@ -263,8 +269,8 @@ function renderHistoryContextPanel(scans) {
                 <h3 class="mt-2 text-2xl font-display italic text-olive-950">${escapeHTMLValue(latestScan.customer_name || 'Unknown')}</h3>
                 <p class="mt-1 text-sm text-olive-700">Target: <span class="font-mono">${escapeHTMLValue(latestScan.target || '--')}</span></p>
                 <p class="mt-1 text-sm text-olive-600">Latest scan: ${formatScanTimestamp(latestScan)}</p>
-                <p class="mt-2 text-sm text-olive-700">${assetCount !== null ? `${assetCount} asset(s) in the saved snapshot.` : 'Asset snapshot unavailable for this saved scan.'}</p>
-                <p class="mt-1 text-sm text-olive-700">${diffSummary?.has_changes ? 'Changes detected since the previous scan.' : 'No recorded changes since the previous scan.'}</p>
+                <p class="mt-2 text-sm text-olive-700">${latestScan.record_type === 'scan_run' ? `Reported hosts: ${escapeHTMLValue(String(latestScan.host_count ?? 'not reported'))}. Expand saved host and port results below.` : (assetCount !== null ? `${assetCount} asset(s) in the saved snapshot.` : 'Asset snapshot unavailable for this saved scan.')}</p>
+                <p class="mt-1 text-sm text-olive-700">${diffSummary ? (diffSummary.has_changes ? 'Changes detected since the previous scan.' : 'No recorded changes since the previous scan.') : (latestScan.record_type === 'scan_run' ? 'Select two completed runs with saved deep scan evidence to compare observations.' : 'Comparison unavailable for this saved scan.')}</p>
             </div>
         </div>
     `;
@@ -294,6 +300,13 @@ function renderHistoryContextPanel(scans) {
 
     panel.replaceChildren(card);
     panel.classList.remove('hidden');
+}
+
+function revealHistoryComparison(panel) {
+    panel.classList.remove('hidden');
+    panel.tabIndex = -1;
+    panel.focus({preventScroll: true});
+    panel.scrollIntoView({block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
 }
 
 function renderHistoryCompareResult(payload) {
@@ -377,22 +390,50 @@ function renderHistoryCompareResult(payload) {
         details.appendChild(changedSection);
     }
 
-    panel.classList.remove('hidden');
+    revealHistoryComparison(panel);
+}
+
+function renderScanObservationComparison(payload) {
+    const panel = document.getElementById('history-compare-panel');
+    const summary = document.getElementById('history-compare-summary');
+    const details = document.getElementById('history-compare-details');
+    if (!panel || !summary || !details) return;
+    details.replaceChildren();
+    summary.textContent = `${payload.target}: ${payload.port_observation_changes.length} port observation difference(s)`;
+    const scope = document.createElement('p'); scope.textContent = payload.scope; details.appendChild(scope);
+    for (const [label, values] of [['Additional host observations', payload.added_host_observations], ['Missing host observations', payload.missing_host_observations]]) {
+        if (!values.length) continue;
+        const text = document.createElement('p'); text.textContent = `${label}: ${values.join(', ')}`; details.appendChild(text);
+    }
+    if (!payload.port_observation_changes.length && !payload.added_host_observations.length && !payload.missing_host_observations.length) {
+        const text = document.createElement('p'); text.textContent = 'Saved observations match. This does not verify equivalent scan coverage.'; details.appendChild(text);
+    }
+    payload.port_observation_changes.forEach(change => {
+        const row = document.createElement('p'); row.className = 'mt-2 text-sm font-mono';
+        const label = value => value ? value.join(' · ') : 'not observed';
+        row.textContent = `${change.ip} ${change.port}/${change.protocol}: ${label(change.previous)} → ${label(change.current)}`;
+        details.appendChild(row);
+    });
+    revealHistoryComparison(panel);
 }
 
 async function compareHistoryScans(basePath, currentPath) {
     renderCompareStatus('Comparing selected scans...');
     try {
-        const response = await fetch(
-            `/api/runtime/history/compare?base_path=${encodeURIComponent(basePath)}&current_path=${encodeURIComponent(currentPath)}`
-        );
+        const localRuns = basePath.startsWith('runtime-job:') && currentPath.startsWith('runtime-job:');
+        if (basePath.startsWith('runtime-job:') !== currentPath.startsWith('runtime-job:')) throw new Error('Select two scan runs or two report artifacts.');
+        const endpoint = localRuns
+            ? `/api/runtime/scan-runs/compare?base_id=${encodeURIComponent(basePath.slice(12))}&current_id=${encodeURIComponent(currentPath.slice(12))}`
+            : `/api/runtime/history/compare?base_path=${encodeURIComponent(basePath)}&current_path=${encodeURIComponent(currentPath)}`;
+        const response = await fetch(endpoint);
         if (!response.ok) {
             const payload = await response.json().catch(() => ({}));
             throw new Error(payload.error || `Failed to compare scans (${response.status})`);
         }
         const payload = await response.json();
         renderCompareStatus('');
-        renderHistoryCompareResult(payload);
+        if (payload.comparison_type === 'scan_observations') renderScanObservationComparison(payload);
+        else renderHistoryCompareResult(payload);
     } catch (error) {
         console.error('Error comparing scans:', error);
         renderCompareStatus(error.message || 'Failed to compare scans.', true);
@@ -436,7 +477,11 @@ function createHistoryCard(scan, options = {}) {
 
     const target = document.createElement('p');
     target.className = 'mt-2 text-sm text-olive-800';
-    target.innerHTML = `Target: <span class="font-mono">${scan.target || '--'}</span>`;
+    target.append('Target: ');
+    const targetValue = document.createElement('span');
+    targetValue.className = 'font-mono';
+    targetValue.textContent = scan.target || '--';
+    target.appendChild(targetValue);
     card.appendChild(target);
 
     if (options.timelineLabel) {
@@ -465,7 +510,39 @@ function createHistoryCard(scan, options = {}) {
         }
     }
 
-    card.appendChild(createHistoryDetailBlock(scan));
+    if (scan.record_type === 'scan_run') {
+        const facts = document.createElement('p');
+        facts.className = 'mt-3 text-sm text-olive-800';
+        facts.textContent = `Status: ${scan.status || 'unknown'} · Hosts: ${scan.host_count ?? 'not reported'} · Local PDF: unavailable`;
+        card.appendChild(facts);
+        const evidence = document.createElement('details');
+        evidence.className = 'mt-4 rounded-xl border border-olive-200 bg-white/70 p-3';
+        const summary = document.createElement('summary'); summary.textContent = 'Saved host and port results';
+        const body = document.createElement('div'); body.className = 'mt-3 text-sm text-olive-800';
+        evidence.append(summary, body); card.appendChild(evidence);
+        let loaded = false;
+        evidence.addEventListener('toggle', async () => {
+            if (!evidence.open || loaded) return;
+            body.textContent = 'Loading saved results…';
+            try {
+                const response = await fetch(`/api/runtime/scan-runs/${encodeURIComponent(scan.job_id)}`);
+                if (!response.ok) throw new Error('Saved results unavailable. Close and reopen to retry.');
+                const data = await response.json(); body.replaceChildren();
+                const scope = document.createElement('p'); scope.textContent = data.evidence_scope; body.appendChild(scope);
+                if (!data.evidence_valid) { const invalid = document.createElement('p'); invalid.textContent = 'Some saved evidence is invalid. This run cannot be compared.'; body.appendChild(invalid); }
+                if (!data.hosts.length) { const empty = document.createElement('p'); empty.textContent = 'No saved deep scan results for this run.'; body.appendChild(empty); }
+                data.hosts.forEach(host => {
+                    const heading = document.createElement('h4'); heading.className = 'mt-3 font-mono font-semibold'; heading.textContent = host.ip; body.appendChild(heading);
+                    const list = document.createElement('ul');
+                    host.ports.forEach(port => { const row = document.createElement('li'); row.textContent = `${port.port}/${port.protocol} · ${port.state} · ${port.service}`; list.appendChild(row); });
+                    if (!host.ports.length) { const empty = document.createElement('li'); empty.textContent = 'No ports reported.'; list.appendChild(empty); }
+                    body.appendChild(list);
+                });
+                if (data.bounded) { const warning = document.createElement('p'); warning.textContent = 'This view is limited to recent saved evidence; it may not contain the whole run.'; body.appendChild(warning); }
+                loaded = true;
+            } catch (error) { body.textContent = error.message; }
+        });
+    } else { card.appendChild(createHistoryDetailBlock(scan)); }
 
     const actions = document.createElement('div');
     actions.className = 'mt-4 flex flex-wrap gap-2';
@@ -493,9 +570,11 @@ function createHistoryCard(scan, options = {}) {
         const selectBaseButton = document.createElement('button');
         selectBaseButton.type = 'button';
         selectBaseButton.className = 'action-button action-button-secondary action-button-compact';
+        selectBaseButton.disabled = scan.record_type === 'scan_run' && (scan.status !== 'completed' || scan.host_count === 0);
         selectBaseButton.textContent = historyCompareBasePath === scan.path ? 'Base Selected' : 'Select Base';
         selectBaseButton.addEventListener('click', () => {
             historyCompareBasePath = historyCompareBasePath === scan.path ? null : scan.path;
+            historyCompareBaseTarget = historyCompareBasePath ? scan.target : null;
             renderCompareStatus(
                 historyCompareBasePath
                     ? `Base scan selected: ${formatScanTimestamp(scan)}`
@@ -510,7 +589,7 @@ function createHistoryCard(scan, options = {}) {
         compareButton.type = 'button';
         compareButton.className = 'action-button action-button-primary action-button-compact';
         compareButton.textContent = 'Compare to Base';
-        compareButton.disabled = !historyCompareBasePath || historyCompareBasePath === scan.path;
+        compareButton.disabled = !historyCompareBasePath || historyCompareBasePath === scan.path || (historyCompareBasePath.startsWith('runtime-job:') !== scan.path.startsWith('runtime-job:')) || (scan.record_type === 'scan_run' && (scan.status !== 'completed' || scan.host_count === 0 || historyCompareBaseTarget !== scan.target));
         compareButton.classList.toggle('opacity-50', compareButton.disabled);
         compareButton.addEventListener('click', () => {
             if (!historyCompareBasePath || historyCompareBasePath === scan.path) {
@@ -525,40 +604,75 @@ function createHistoryCard(scan, options = {}) {
     return card;
 }
 
+let historySelectedPath = null;
+
 function renderHistoryTab(scans) {
     const list = document.getElementById('history-tab-list');
-    if (!list) {
-        return;
-    }
-
+    if (!list) return;
     list.replaceChildren();
-    const contextScans = filterScansToCurrentContext(scans);
-    const usingCurrentContext = historyViewMode === 'current';
-    const visibleScans = usingCurrentContext ? contextScans : scans;
-    renderHistoryContextPanel(usingCurrentContext ? contextScans : []);
+    const scoped = historyViewMode === 'current' && getCurrentHistoryContext().hasContext;
+    const visible = [...(scoped ? filterScansToCurrentContext(scans) : scans)]
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    document.getElementById('history-context-panel')?.classList.add('hidden');
+    document.getElementById('history-compare-panel')?.classList.add('hidden');
+    renderCompareStatus('');
+    setTabStatus('history-tab-status', visible.length
+        ? `${visible.length} saved records · Newest first · Up to 200 recent scan runs`
+        : 'No saved scans here yet. Choose All networks to see other scans.');
+    if (!visible.length) return;
+    if (!visible.some(scan => scan.path === historySelectedPath)) historySelectedPath = visible[0].path;
 
-    if (!visibleScans.length) {
-        setTabStatus('history-tab-status', 'No scan history found yet.');
-        return;
+    const timeline = document.createElement('nav');
+    timeline.setAttribute('aria-label', 'Saved scans');
+    timeline.style.cssText = 'display:flex;flex-direction:column;gap:4px;max-height:65vh;overflow:auto';
+    const review = document.createElement('div');
+    review.style.minWidth = '0';
+    list.append(timeline, review);
+
+    function select(scan) {
+        historySelectedPath = scan.path;
+        document.getElementById('history-compare-panel')?.classList.add('hidden');
+        renderCompareStatus('');
+        timeline.querySelectorAll('button').forEach(button => {
+            const selected = button.dataset.scanPath === scan.path;
+            button.setAttribute('aria-pressed', String(selected));
+            button.style.background = selected ? '#e5e8d8' : 'transparent';
+            button.style.borderColor = selected ? '#788454' : '#d8ddc7';
+        });
+        review.replaceChildren();
+        const card = createHistoryCard(scan);
+        // Reviewing a run immediately reveals its saved evidence.
+        if (scan.record_type === 'scan_run') card.querySelector('details').open = true;
+        const comparable = item => item.record_type !== 'scan_run' || (item.status === 'completed' && item.host_count > 0);
+        const previous = visible.slice(visible.indexOf(scan) + 1).find(item =>
+            item.target === scan.target && item.customer_id === scan.customer_id &&
+            (item.record_type === 'scan_run') === (scan.record_type === 'scan_run') && comparable(item));
+        if (previous && comparable(scan)) {
+            const compare = document.createElement('button');
+            compare.type = 'button';
+            compare.className = 'action-button action-button-primary action-button-compact';
+            compare.textContent = 'Compare with previous scan';
+            compare.title = `Previous compatible scan: ${formatScanTimestamp(previous)}`;
+            compare.addEventListener('click', () => compareHistoryScans(previous.path, scan.path));
+            card.querySelector(':scope > div:last-child').prepend(compare);
+        }
+        review.appendChild(card);
     }
-
-    const timelineLabels = buildTimelineLabels(visibleScans, visibleScans[0]?.path);
-    setTabStatus(
-        'history-tab-status',
-        usingCurrentContext
-            ? `Showing ${visibleScans.length} scan(s) for the current network context.`
-            : ''
-    );
-    visibleScans.forEach((scan) => {
-        const timeline = timelineLabels.get(scan.path) || {};
-        list.appendChild(
-            createHistoryCard(scan, {
-                enableCompare: true,
-                timelineLabel: timeline.label,
-                timelineTone: timeline.tone,
-            })
-        );
+    visible.forEach(scan => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.scanPath = scan.path;
+        button.style.cssText = 'text-align:left;padding:9px 11px;border:1px solid #d8ddc7;border-radius:10px;color:#303a22';
+        const date = document.createElement('strong');
+        date.textContent = formatScanTimestamp(scan);
+        const facts = document.createElement('div');
+        facts.style.cssText = 'font-size:12px;margin-top:3px';
+        facts.textContent = `${scan.customer_name || 'Unassigned'} · ${scan.target || 'Unknown target'} · ${scan.status || 'completed'}${scan.host_count != null ? ` · ${scan.host_count} hosts` : ''}`;
+        button.append(date, facts);
+        button.addEventListener('click', () => select(scan));
+        timeline.appendChild(button);
     });
+    select(visible.find(scan => scan.path === historySelectedPath));
 }
 
 function renderReportsTab(scans) {
@@ -575,7 +689,7 @@ function renderReportsTab(scans) {
     list.replaceChildren();
 
     if (!filteredScans.length) {
-        setTabStatus('reports-tab-status', 'No completed reports found yet.');
+        setTabStatus('reports-tab-status', 'No saved report files found on this scanner for the selected customer.');
         return;
     }
 
@@ -643,10 +757,16 @@ function setTabButtonState(button, active) {
     button.classList.toggle('action-button-primary', active);
     button.classList.toggle('text-olive-700', !active);
     button.classList.toggle('hover:bg-olive-100', !active);
+    // Roving tabindex: only the selected tab is in the Tab order; arrow keys
+    // move between tabs (see initializeSiteChrome).
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.setAttribute('tabindex', active ? '0' : '-1');
 }
 
 function switchAppTab(tabName) {
+    if (!['dashboard', 'history', 'reports', 'customers', 'logs', 'settings'].includes(tabName)) tabName = 'dashboard';
     currentAppTab = tabName;
+    if (window.location.hash !== `#${tabName}`) window.history.replaceState(null, '', `#${tabName}`);
 
     const panels = {
         dashboard: document.getElementById('dashboard-tab-panel'),
@@ -660,6 +780,8 @@ function switchAppTab(tabName) {
     Object.entries(panels).forEach(([name, panel]) => {
         panel?.classList.toggle('hidden', name !== tabName);
     });
+
+    document.getElementById('dashboard-results-panel')?.classList.toggle('hidden', tabName !== 'dashboard');
 
     setTabButtonState(document.getElementById('tab-dashboard-btn'), tabName === 'dashboard');
     setTabButtonState(document.getElementById('tab-history-btn'), tabName === 'history');
@@ -687,6 +809,8 @@ function initializeReportsTab() {
     }
     appTabsInitialized = true;
     ensureTabPanelsAreSiblings();
+    switchAppTab(window.location.hash.slice(1) || 'dashboard');
+    window.addEventListener('hashchange', () => switchAppTab(window.location.hash.slice(1)));
 
     document.getElementById('tab-dashboard-btn')?.addEventListener('click', () => switchAppTab('dashboard'));
     document.getElementById('tab-history-btn')?.addEventListener('click', () => switchAppTab('history'));

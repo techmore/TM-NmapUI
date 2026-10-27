@@ -1,20 +1,21 @@
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
+import re
 import shutil
+import sys
+import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from pathlib import Path
-from datetime import datetime as _dt, timedelta as _td
 
-def _recent_iso(days_ago, hour, minute=0):
-    dt = _dt.now() - _td(days=days_ago)
-    return dt.replace(hour=hour, minute=minute, second=0, microsecond=0).isoformat()
-
-_RECENT_TS_1 = _recent_iso(2, 1)
-_RECENT_TS_2 = _recent_iso(1, 2)
-_RECENT_TS_3 = _recent_iso(1, 3)
-
+import pytest
+from nmapui.asset_inventory import render_asset_inventory_html
+import nmapui.reporting as reporting
 from nmapui.reporting import (
+    _allow_report_pdf_resource,
     build_report_diff_summary,
+    convert_html_to_pdf,
     convert_xml_to_html,
     extract_scan_statistics,
     find_latest_saved_scan_for_pdf,
@@ -26,13 +27,286 @@ from nmapui.reporting import (
     merge_nmap_xml_files,
     parse_scan_xml_for_assets,
     parse_vulners_script,
-    persist_report_artifact,
+    report_content_security_policy,
     render_report_diff_summary_html,
     save_scan_metadata,
     summarize_asset_differences,
 )
+from nmapui.workflows import cleanup_chunk_artifacts
+
+def _recent_iso(days_ago, hour, minute=0):
+    dt = datetime.now() - timedelta(days=days_ago)
+    return dt.replace(hour=hour, minute=minute, second=0, microsecond=0).isoformat()
+
+_RECENT_TS_1 = _recent_iso(2, 1)
+_RECENT_TS_2 = _recent_iso(1, 2)
+_RECENT_TS_3 = _recent_iso(1, 3)
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_pdf_resource_policy_blocks_script_and_out_of_tree_requests(tmp_path):
+    report_root = tmp_path / "scan"
+    report_root.mkdir()
+    report = report_root / "scan.html"
+    local_css = report_root / "report.css"
+    outside_file = tmp_path / "secret.txt"
+
+    assert _allow_report_pdf_resource(report.as_uri(), "document", report_root)
+    assert _allow_report_pdf_resource(local_css.as_uri(), "stylesheet", report_root)
+    assert not _allow_report_pdf_resource(outside_file.as_uri(), "image", report_root)
+    assert not _allow_report_pdf_resource(
+        "https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css",
+        "stylesheet",
+        report_root,
+    )
+    assert not _allow_report_pdf_resource(
+        "https://fonts.gstatic.com/example.woff2", "font", report_root
+    )
+    assert not _allow_report_pdf_resource(
+        "https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js",
+        "script",
+        report_root,
+    )
+    assert not _allow_report_pdf_resource(
+        "https://example.invalid/report.css", "stylesheet", report_root
+    )
+    assert not _allow_report_pdf_resource(
+        "http://cdn.datatables.net/report.css", "stylesheet", report_root
+    )
+    assert _allow_report_pdf_resource(
+        "data:image/png;base64,AA==", "image", report_root
+    )
+
+
+def test_asset_inventory_html_is_print_friendly_and_escapes_scan_values():
+    html = render_asset_inventory_html(
+        [{
+            "ip": "192.168.1.12",
+            "hostname": '<script>alert("x")</script>',
+            "location": "Network Closet & Office",
+            "mac": "00:BB:CC:DD:EE:FF",
+            "vendor": "Example Vendor",
+            "ports": "631 (ipp), 9100 (jetdirect)",
+        }],
+        network="192.168.1.0/24",
+        scanned_at="2026-10-13 10:00",
+    )
+
+    assert "192.168.1.0/24" in html
+    assert "192.168.1.12" in html
+    assert "00:BB:CC:DD:EE:FF" in html
+    assert "&lt;script&gt;" in html
+    assert "<script>alert" not in html
+    assert 'class="icon printer"' in html
+    assert "LOCATION" in html
+    assert "DESCRIPTION / PURPOSE" in html
+    assert "Network Closet &amp; Office" in html
+    assert "Network Closet & Office" not in html
+    assert "MAC OUI vendor: Example Vendor" in html
+    assert "@page { size: Letter landscape" in html
+    assert "col.hostname { width:21%; }" in html
+    assert "body.landscape td { height:22px; }" in html
+    assert "1 scan responder" in html
+
+
+    portrait_bw = render_asset_inventory_html(
+        [
+            {"ip": "192.168.1.12", "hostname": "printer-test", "ports": "631 (ipp)"},
+            {
+                "expected": True,
+                "device_type": "printer",
+                "proposed_ip": "192.168.1.50",
+                "hostname": "Label_Printer",
+                "mac": "00:11:22:33:44:55",
+                "vendor": "Acme Label Systems",
+                "scan_summary": "Zebra ZT410 · verify model",
+                "location": "Packit Station",
+            },
+        ],
+        orientation="portrait",
+        monochrome=True,
+    )
+    assert "@page { size: Letter portrait" in portrait_bw
+    assert '<body class="monochrome portrait">' in portrait_bw
+    assert "body.monochrome td.icon svg" in portrait_bw
+    assert "PORTRAIT · LETTER" in portrait_bw
+    assert "DEVICE NAME" in portrait_bw
+    assert "LOCATION" in portrait_bw
+    assert "Packit Station" in portrait_bw
+    assert 'width:7%"><col style="width:16%"><col style="width:27%"><col style="width:17%"><col style="width:33%"' in portrait_bw
+    assert "SCAN DETAILS · MAC / OUI VENDOR" in portrait_bw
+    assert "DRAFT" in portrait_bw
+    assert "EXPECTED · NOT OBSERVED" in portrait_bw
+    assert "1 scan responder · 1 expected device not observed" in portrait_bw
+    assert "Zebra ZT410 · verify model" in portrait_bw
+    assert "OUI vendor: Acme Label Systems" in portrait_bw
+    assert "font-size:6.8pt" in portrait_bw
+
+
+def test_asset_inventory_html_can_show_an_unfinalized_static_ip_target():
+    html = render_asset_inventory_html(
+        [{
+            "ip": "10.20.0.109",
+            "ip_display": "TBD .50 / .52",
+            "hostname": "Packit",
+            "scan_summary": "Current .109; moving to static, target not selected",
+        }],
+        network="10.20.0.0/24",
+    )
+
+    assert 'class="proposed-tag">DRAFT</span>' in html
+    assert "TBD .50 / .52" in html
+    assert "Current .109; moving to static, target not selected" in html
+
+
+def test_asset_inventory_supports_phone_kinds_and_expected_mac_randomization():
+    assets = [
+        {
+            "ip": "192.0.2.1",
+            "device_type": "phone",
+            "hostname": "Phone",
+            "mac": "02:11:22:33:44:55",
+            "scan_summary": "Phone; HTTPS open",
+            "mac_randomization_expected": True,
+        },
+        {
+            "ip": "192.0.2.2",
+            "device_type": "unknown",
+            "hostname": "Hostname not reported",
+            "mac": "02:11:22:33:44:66",
+            "scan_summary": "HTTPS open",
+        },
+        {
+            "ip": "192.0.2.3",
+            "device_type": "conference",
+            "hostname": "Hostname not reported",
+            "vendor": "Polycom",
+            "scan_summary": "Polycom conference phone; HTTPS open",
+        },
+        {
+            "ip": "192.0.2.4",
+            "device_type": "laptop",
+            "hostname": "Hostname not reported",
+            "scan_summary": "Managed THRIL laptop",
+        },
+    ]
+    html = render_asset_inventory_html(assets, network="10.20.0.0/24")
+
+    assert 'class="icon phone"' in html
+    assert 'class="icon conference"' in html
+    assert 'class="icon laptop"' in html
+    assert html.count("MAC OUI vendor unavailable: private/randomized address") == 1
+    assert "Polycom conference phone" in html
+    assert "Managed THRIL laptop" in html
+
+    portrait = render_asset_inventory_html(
+        assets,
+        network="10.20.0.0/24",
+        orientation="portrait",
+    )
+    assert "MAC: 02:11:22:33:44:55</span>" in portrait
+    assert portrait.count("OUI vendor unavailable (randomized/private address)") == 1
+
+
+@pytest.mark.skipif(
+    os.environ.get("NMAPUI_RUN_BROWSER_REGRESSION") != "1",
+    reason="Set NMAPUI_RUN_BROWSER_REGRESSION=1 to run browser-backed PDF security coverage",
+)
+def test_pdf_renderer_blocks_external_scripts(tmp_path):
+    requests = []
+
+    class ScriptHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript")
+            self.end_headers()
+            self.wfile.write(b"document.body.textContent = 'REMOTE_SCRIPT_RAN';")
+
+        def log_message(self, _format, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ScriptHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    html_path = tmp_path / "scan.html"
+    pdf_path = tmp_path / "scan.pdf"
+    html_path.write_text(
+        "<html><body>Local report"
+        f"<script src='http://127.0.0.1:{server.server_port}/payload.js'></script>"
+        "<script>document.body.textContent = 'INLINE_SCRIPT_RAN';</script>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+
+    try:
+        assert convert_html_to_pdf(html_path, pdf_path)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert pdf_path.is_file()
+    assert pdf_path.read_bytes().startswith(b"%PDF-")
+    assert requests == []
+
+
+def test_wkhtmltopdf_fallback_disables_javascript_and_local_files(tmp_path, monkeypatch):
+    commands = []
+    html_path = tmp_path / "scan.html"
+    html_path.write_text("<html><body>Local report</body></html>", encoding="utf-8")
+
+    def capture_run(command, **_kwargs):
+        commands.append(command)
+
+    monkeypatch.setitem(sys.modules, "playwright.async_api", None)
+    monkeypatch.setattr(
+        reporting.shutil,
+        "which",
+        lambda name: "/usr/bin/wkhtmltopdf" if name == "wkhtmltopdf" else None,
+    )
+    monkeypatch.setattr(reporting.subprocess, "run", capture_run)
+
+    assert convert_html_to_pdf(html_path, tmp_path / "scan.pdf")
+    assert len(commands) == 1
+    assert "--disable-javascript" in commands[0]
+    assert "--disable-local-file-access" in commands[0]
+    assert "--enable-local-file-access" not in commands[0]
+
+
+def test_pdf_converter_fails_closed_when_supported_renderers_are_unavailable(tmp_path, monkeypatch):
+    html_path = tmp_path / "scan.html"
+    html_path.write_text("<html><body>Local report</body></html>", encoding="utf-8")
+    subprocess_calls = []
+
+    monkeypatch.setitem(sys.modules, "playwright.async_api", None)
+    monkeypatch.setitem(sys.modules, "weasyprint", None)
+    monkeypatch.setattr(reporting.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        reporting.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess_calls.append((args, kwargs)),
+    )
+
+    assert not convert_html_to_pdf(html_path, tmp_path / "scan.pdf")
+    assert subprocess_calls == []
+
+
+def test_cleanup_chunk_artifacts_removes_intermediates_but_keeps_merge(tmp_path):
+    merged = tmp_path / "scan.xml"
+    merged.write_text("merged", encoding="utf-8")
+    chunk_xml = tmp_path / "scan_chunk_0.xml"
+    chunk_xml.write_text("chunk", encoding="utf-8")
+    chunk_xml.with_suffix(".nmap").write_text("normal", encoding="utf-8")
+    chunk_xml.with_suffix(".gnmap").write_text("grepable", encoding="utf-8")
+
+    cleanup_chunk_artifacts([chunk_xml], merged_xml_path=merged)
+
+    assert merged.exists()
+    assert not chunk_xml.exists()
+    assert not chunk_xml.with_suffix(".nmap").exists()
+    assert not chunk_xml.with_suffix(".gnmap").exists()
 
 
 def test_parse_vulners_script_extracts_vulnerability_fields():
@@ -93,7 +367,7 @@ def test_parse_scan_xml_for_assets_extracts_asset_data(tmp_path):
           <host>
             <status state="up"/>
             <address addr="192.168.1.10" addrtype="ipv4"/>
-            <address addr="AA:BB:CC:DD:EE:FF" addrtype="mac" vendor="Acme"/>
+            <address addr="00:BB:CC:DD:EE:FF" addrtype="mac" vendor="Acme"/>
             <hostnames><hostname name="router.local"/></hostnames>
             <ports>
               <port portid="80">
@@ -110,8 +384,39 @@ def test_parse_scan_xml_for_assets_extracts_asset_data(tmp_path):
 
     assert assets[0]["ip"] == "192.168.1.10"
     assert assets[0]["hostname"] == "router.local"
+    assert assets[0]["mac"] == "00:BB:CC:DD:EE:FF"
     assert assets[0]["vendor"] == "Acme"
     assert assets[0]["ports"] == "80 (http)"
+
+
+def test_parse_scan_xml_uses_local_mac_oui_fallback_and_skips_randomized_vendor(tmp_path, monkeypatch):
+    xml_path = tmp_path / "scan.xml"
+    xml_path.write_text(
+        """
+        <nmaprun>
+          <host><status state="up"/>
+            <address addr="192.168.1.20" addrtype="ipv4"/>
+            <address addr="00:11:22:33:44:55" addrtype="mac"/>
+          </host>
+          <host><status state="up"/>
+            <address addr="192.168.1.21" addrtype="ipv4"/>
+            <address addr="02:11:22:33:44:55" addrtype="mac" vendor="Misleading OUI"/>
+          </host>
+          <host><status state="up"/>
+            <address addr="192.168.1.22" addrtype="ipv4"/>
+            <address addr="01:11:22:33:44:55" addrtype="mac" vendor="Multicast OUI"/>
+          </host>
+        </nmaprun>
+        """
+    )
+    monkeypatch.setattr(reporting, "lookup_mac_vendor", lambda _mac: "Acme Networks")
+
+    assets = parse_scan_xml_for_assets(xml_path)
+
+    assert assets[0]["vendor"] == "Acme Networks"
+    assert assets[0]["vendor_source"] == "MAC OUI"
+    assert assets[1]["vendor"] == ""
+    assert assets[2]["vendor"] == ""
 
 
 def test_save_scan_metadata_persists_customer_id(tmp_path):
@@ -228,7 +533,7 @@ def test_save_scan_metadata_persists_asset_snapshot_and_diff_summary_to_report_a
     assert latest_payload["asset_snapshot"][1]["ip"] == "10.0.0.20"
 
 
-def test_save_scan_metadata_persists_diff_summary_for_followup_scan(tmp_path):
+def test_save_scan_metadata_persists_diff_summary_for_followup_scan(tmp_path, monkeypatch):
     scans_root = tmp_path / "data" / "scans"
     older = scans_root / "Acme" / "2026-03-13" / "scan_010000_target"
     newer = scans_root / "Acme" / "2026-03-14" / "scan_020000_target"
@@ -298,6 +603,54 @@ def test_save_scan_metadata_persists_diff_summary_for_followup_scan(tmp_path):
     assert newer_metadata["diff_summary"]["added_hosts"] == ["10.0.0.20"]
     assert newer_metadata["diff_summary"]["new_ports"] == ["443 (https)"]
     assert newer_entry["metadata"]["diff_summary"]["baseline_path"] == "Acme/2026-03-13/scan_010000_target"
+    assert newer_metadata["diff_summary_computed"] is True
+
+    from nmapui import runtime_history
+    from persistence import load_json_document, normalize_scan_metadata_document
+
+    def unexpected_parse(_path):
+        raise AssertionError("History should use the persisted diff result")
+
+    monkeypatch.setattr(runtime_history, "parse_scan_xml_for_assets", unexpected_parse)
+    history = runtime_history.build_history_rows(
+        runtime_store=None,
+        scans_dir=scans_root,
+        load_json_document=load_json_document,
+        normalize_scan_metadata_document=normalize_scan_metadata_document,
+        logger=__import__("logging").getLogger(__name__),
+    )
+    assert len(history) == 2
+
+
+def test_failed_diff_comparison_is_not_cached_as_complete(tmp_path, monkeypatch):
+    from nmapui import reporting
+    from persistence import upsert_scan_metadata_index_entry
+
+    scans_root = tmp_path / "scans"
+    older = scans_root / "older"
+    newer = scans_root / "newer"
+    for scan_dir, timestamp in ((older, "2026-03-13T01:00:00"), (newer, "2026-03-14T01:00:00")):
+        scan_dir.mkdir(parents=True)
+        (scan_dir / "scan.xml").write_text("<nmaprun/>", encoding="utf-8")
+        metadata = {
+            "path": scan_dir.name,
+            "timestamp": timestamp,
+            "customer_id": "cust-123",
+            "target": "10.0.0.0/24",
+        }
+        (scan_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+        upsert_scan_metadata_index_entry(scans_root, scan_dir, metadata)
+
+    def failed_parse(_path):
+        raise ValueError("transient read failure")
+
+    monkeypatch.setattr(reporting, "parse_scan_xml_for_assets", failed_parse)
+    reporting.refresh_persisted_diff_summaries(scans_root, customer_id="cust-123", target="10.0.0.0/24")
+    assert json.loads((newer / "metadata.json").read_text())["diff_summary_computed"] is False
+
+    monkeypatch.setattr(reporting, "parse_scan_xml_for_assets", lambda _path: [])
+    reporting.refresh_persisted_diff_summaries(scans_root, customer_id="cust-123", target="10.0.0.0/24")
+    assert json.loads((newer / "metadata.json").read_text())["diff_summary_computed"] is True
 
 
 def test_get_most_recent_scan_xml_prefers_customer_id_over_folder_name(tmp_path):
@@ -430,13 +783,14 @@ def test_mark_scan_failure_persists_incomplete_artifact_metadata(tmp_path):
     assert runtime_calls[0]["payload"]["completed_successfully"] is False
 
 
-def test_merge_nmap_xml_files_combines_hosts_and_updates_runstats(tmp_path):
+def test_merge_nmap_xml_files_combines_hosts_and_updates_runstats(tmp_path, monkeypatch):
     first = tmp_path / "first.xml"
     second = tmp_path / "second.xml"
     merged = tmp_path / "merged.xml"
 
     first.write_text(
         """<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="nmap.xsl"?>
 <nmaprun args="nmap 192.168.1.1">
   <host starttime="100" endtime="130">
     <status state="up"/>
@@ -447,6 +801,7 @@ def test_merge_nmap_xml_files_combines_hosts_and_updates_runstats(tmp_path):
     <hosts up="1" down="0" total="1"/>
   </runstats>
 </nmaprun>
+<!-- preserved trailer -->
 """
     )
     second.write_text(
@@ -464,6 +819,14 @@ def test_merge_nmap_xml_files_combines_hosts_and_updates_runstats(tmp_path):
 """
     )
 
+    parse_calls = []
+    original_parse = ET.parse
+
+    def count_parse(path, *args, **kwargs):
+        parse_calls.append(Path(path))
+        return original_parse(path, *args, **kwargs)
+
+    monkeypatch.setattr(reporting.ET, "parse", count_parse)
     merge_nmap_xml_files([first, second], merged)
 
     root = ET.fromstring(merged.read_text())
@@ -475,6 +838,37 @@ def test_merge_nmap_xml_files_combines_hosts_and_updates_runstats(tmp_path):
     assert hosts_elem.get("up") == "2"
     assert hosts_elem.get("down") == "0"
     assert hosts_elem.get("total") == "2"
+    assert parse_calls == [first, second]
+    merged_text = merged.read_text()
+    assert merged_text.startswith(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<?xml-stylesheet type="text/xsl" href="nmap.xsl"?>\n'
+    )
+    assert merged_text.endswith("</nmaprun>\n<!-- preserved trailer -->\n")
+
+
+def test_merge_nmap_xml_files_preserves_previous_output_on_serialization_failure(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "chunk.xml"
+    output = tmp_path / "merged.xml"
+    source.write_text(
+        '<nmaprun args="nmap 192.0.2.1"><runstats><finished summary="fixture"/>'
+        '<hosts up="0" down="0" total="0"/></runstats></nmaprun>',
+        encoding="utf-8",
+    )
+    output.write_text("previous complete report", encoding="utf-8")
+
+    def fail_after_partial_write(_tree, output_file, **_kwargs):
+        output_file.write("<partial")
+        raise OSError("injected XML serialization failure")
+
+    monkeypatch.setattr(reporting.ET.ElementTree, "write", fail_after_partial_write)
+    with pytest.raises(OSError, match="injected XML serialization failure"):
+        merge_nmap_xml_files([source], output)
+
+    assert output.read_text(encoding="utf-8") == "previous complete report"
+    assert list(tmp_path.glob(".merged.xml.*.tmp")) == []
 
 
 def test_find_latest_saved_scan_for_pdf_prefers_latest_matching_customer(tmp_path):
@@ -795,7 +1189,7 @@ def test_representative_report_fixture_renders_shared_landmarks_for_web_and_pdf(
 
     xml_path.write_text(
         """<?xml version="1.0" encoding="UTF-8"?>
-<nmaprun scanner="nmap" startstr="Sat Mar 14 12:00:00 2026" version="7.94" xmloutputversion="1.05">
+<nmaprun scanner="nmap" args="nmap -sS -T3 --top-ports 100 -oA /tmp/scan 192.168.1.0/24" startstr="Sat Mar 14 12:00:00 2026" version="7.94" xmloutputversion="1.05">
   <scaninfo type="syn" protocol="tcp" numservices="1000" services="1-1000"/>
   <verbose level="0"/>
   <debugging level="0"/>
@@ -810,15 +1204,23 @@ def test_representative_report_fixture_renders_shared_landmarks_for_web_and_pdf(
       </port>
       <port protocol="tcp" portid="80">
         <state state="open" reason="syn-ack"/>
-        <service name="http" product="nginx" version="1.25.0"/>
+        <service name="http" product="nginx &lt;img src=x onerror=alert(1)&gt;" version="1.25.0"/>
         <script id="http-title">
           <elem key="title">nginx/1.25.0</elem>
+        </script>
+        <script id="vulners" output="CVE-2026-0001 9.8 https://vulners.com/cve/CVE-2026-0001">
+          <table key="cpe:/a:nginx:nginx:1.25.0">
+            <table><elem key="id">CVE-2026-0001</elem><elem key="type">cve</elem><elem key="cvss">9.8</elem></table>
+            <table><elem key="id">CVE-2026-0002</elem><elem key="type">cve</elem><elem key="cvss">7.5</elem></table>
+            <table><elem key="id">CVE-2026-0003</elem><elem key="type">cve</elem><elem key="cvss">5.0</elem></table>
+            <table><elem key="id">CVE-2026-0004</elem><elem key="type">cve</elem><elem key="cvss">3.1</elem></table>
+          </table>
         </script>
       </port>
     </ports>
   </host>
   <runstats>
-    <finished time="0" timestr="Sat Mar 14 12:01:00 2026" summary="Nmap done"/>
+    <finished time="0" timestr="Sat Mar 14 12:01:00 2026" elapsed="60.00" summary="Nmap done"/>
     <hosts up="1" down="0" total="1"/>
   </runstats>
 </nmaprun>
@@ -839,6 +1241,34 @@ def test_representative_report_fixture_renders_shared_landmarks_for_web_and_pdf(
         get_app_version=lambda: "test-version",
     )
 
+    if os.environ.get("NMAPUI_RUN_BROWSER_REGRESSION") == "1":
+        pdf_path = tmp_path / "scan_report.pdf"
+        assert convert_html_to_pdf(pdf_html_path, pdf_path)
+        assert pdf_path.read_bytes().startswith(b"%PDF-")
+        assert pdf_path.stat().st_size > 5_000
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(java_script_enabled=False)
+                page.goto(pdf_html_path.as_uri())
+                page.emulate_media(media="print")
+                assert page.locator("#keyword-input").is_hidden()
+                assert not page.get_by_text("Highlight Keywords in Services", exact=True).is_visible()
+                assert "Report generated by TM-NmapUI test-version" in page.locator("footer").inner_text()
+                assert "Report generated by Pentest Factory" not in page.locator("footer").inner_text()
+                # Long inventory fields must stay within their printed columns.
+                page.locator("#table-services tbody td").first.evaluate("cell => cell.textContent = 'long-hostname-'.repeat(30)")
+                assert page.locator("#table-services").evaluate("""table => {
+                    const bounds = table.getBoundingClientRect();
+                    return [...table.querySelectorAll('th,td')].every(cell =>
+                        cell.getBoundingClientRect().right <= bounds.right + 1 &&
+                        cell.scrollWidth <= cell.clientWidth + 1);
+                }""")
+            finally:
+                browser.close()
+
     web_html = web_html_path.read_text(encoding="utf-8")
     pdf_html = pdf_html_path.read_text(encoding="utf-8")
 
@@ -856,7 +1286,56 @@ def test_representative_report_fixture_renders_shared_landmarks_for_web_and_pdf(
         assert landmark in web_html
         assert landmark in pdf_html
 
-    assert "cdn.datatables.net" in web_html
-    assert "code.jquery.com" in web_html
-    assert "cdn.datatables.net" not in pdf_html
-    assert "code.jquery.com" not in pdf_html
+    runtime_source = (ROOT / "static" / "js" / "report_runtime.js").read_text(encoding="utf-8")
+    csp = report_content_security_policy()
+    script_policy = next(part for part in csp.split(";") if part.strip().startswith("script-src "))
+    assert "unsafe-inline" not in script_policy
+    assert "'sha256-" in script_policy
+    assert "sandbox allow-scripts" in csp
+
+    for html in (web_html, pdf_html):
+        assert '<style id="nmapui-tailwind-css">' in html
+        assert f'<script id="nmapui-report-runtime">{runtime_source}</script>' in html
+        assert 'name="nmapui-report-policy" content="v1"' in html
+        assert "script-src &#x27;sha256-" in html
+        assert "script-src &#x27;unsafe-inline" not in html
+        assert "cdn.tailwindcss.com" not in html
+        assert "cdn.datatables.net" not in html
+        assert "code.jquery.com" not in html
+        assert "fonts.googleapis.com" not in html
+        assert "fonts.gstatic.com" not in html
+        assert "onclick=" not in html
+        assert "__NMAPUI_" not in html
+        assert "&lt;img src=x onerror=alert(1)&gt;" in html
+        assert "<img src=x onerror=alert(1)>" not in html
+        assert "No findings do not prove a host is free of vulnerabilities." in html
+        for severity in ("critical", "high", "medium", "low"):
+            assert re.search(
+                rf'<span id="vuln-{severity}-count"[^>]*>\s*1\s*</span>', html
+            ), f"{severity} CVSS count should count structured findings"
+
+    assert re.search(r'<div id="vuln-critical-total"[^>]*>\s*1\s*</div>', web_html)
+    assert re.search(r'<span id="vuln-host-output-count"[^>]*>\s*1\s*</span>', web_html)
+    assert "Hosts with Vulners Output" in web_html
+
+    for html in (web_html, pdf_html):
+        assert "Target:</span>\u00a0192.168.1.0/24" in html
+        assert "IPs:</span>\u00a01" in html
+        assert "Started:</span>\u00a0Sat Mar 14 12:00:00 2026" in html
+        assert "Duration:</span>\u00a060.00s" in html
+        assert 'class="progress-bar mb-6" aria-hidden="true"' in html
+        assert "0 Down" not in html
+
+
+def test_generated_report_content_security_policy_is_isolated_and_hash_based():
+    csp = report_content_security_policy()
+    script_policy = next(part for part in csp.split(";") if part.strip().startswith("script-src "))
+
+    assert "'unsafe-inline'" not in script_policy
+    assert "'sha256-" in script_policy
+    assert "connect-src 'none'" in csp
+    assert "font-src 'none'" in csp
+    assert "fonts.googleapis.com" not in csp
+    assert "fonts.gstatic.com" not in csp
+    assert "sandbox allow-scripts" in csp
+    assert "allow-same-origin" not in csp

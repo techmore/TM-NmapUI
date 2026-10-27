@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -6,6 +7,8 @@ import socket
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta
+from urllib.parse import quote
 from urllib.request import urlopen
 
 import pytest
@@ -14,7 +17,180 @@ from persistence import remove_scan_metadata_index_entry, upsert_scan_metadata_i
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCANS_DIR = ROOT / "data" / "scans"
+
+
+def test_drive_credentials_import_sends_json_and_reports_parse_errors(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    imported = []
+
+    def receive_credentials(route):
+        imported.append(route.request.post_data_json)
+        route.fulfill(json={"success": True, "status": "Credentials imported for test"})
+
+    context.route("**/api/settings/google-drive/credentials", receive_credentials)
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        credentials = {"installed": {"client_id": "test-client", "client_secret": "synthetic-secret"}}
+        field = page.locator("#settings-google-drive-credentials-file")
+        field.set_input_files({"name": "credentials.json", "mimeType": "application/json", "buffer": json.dumps(credentials).encode()})
+        page.get_by_text("Credentials imported for test", exact=True).wait_for()
+        assert imported == [{"credentials": credentials}]
+        field.set_input_files({"name": "bad.json", "mimeType": "application/json", "buffer": b"not json"})
+        page.wait_for_function("() => document.getElementById('settings-google-drive-status').textContent.includes('Unable to import')")
+        assert len(imported) == 1
+    finally:
+        context.close()
+
+
+def test_drive_signin_opens_system_browser_target_without_opener(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    context.route("**/api/settings/google-drive/auth-url", lambda route: route.fulfill(json={
+        "success": True, "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?state=synthetic",
+    }))
+    # Keep this regression entirely local: no real Google account or consent.
+    context.route("https://accounts.google.com/**", lambda route: route.fulfill(body="<html><body>Simulated Google consent</body></html>", content_type="text/html"))
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        with page.expect_popup() as opened:
+            page.locator("#settings-google-drive-connect-btn").click()
+        popup = opened.value
+        popup.wait_for_url("https://accounts.google.com/**")
+        assert popup.evaluate("window.opener === null")
+        page.get_by_text("Complete sign-in in the browser window that opened.", exact=True).wait_for()
+    finally:
+        context.close()
+
+
+def test_drive_popup_blocking_is_a_visible_recoverable_error(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        page.evaluate("window.open = () => null")
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+    finally:
+        context.close()
+
+
+
+def test_settings_http_controls_work_before_socket_and_bind_once_after_connect(browser_server, playwright_browser):
+    """HTTP controls remain usable across initial Socket.IO failure and recovery."""
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    blocked_socket_requests = []
+    settings_posts = []
+    base_url = browser_server["base_url"]
+    original = context.request.get(f"{base_url}/api/settings").json()
+    def block_socket(route):
+        blocked_socket_requests.append(route.request.url)
+        route.abort()
+
+    context.route("**/socket.io/**", block_socket)
+    context.add_init_script("window.open = () => { window.blockedPopupAttempts = (window.blockedPopupAttempts || 0) + 1; return null; };")
+    page.on("request", lambda request: settings_posts.append(request.post_data_json)
+            if request.method == "POST" and request.url == f"{base_url}/api/settings" else None)
+    try:
+        page.goto(base_url, wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        page.get_by_text("Settings loaded from the local runtime.", exact=True).wait_for()
+        assert blocked_socket_requests
+        assert page.evaluate("window.socket.connected") is False
+
+        def save(minutes):
+            page.locator("#settings-max-scan-minutes").fill(str(minutes))
+            with page.expect_response(lambda response: response.request.method == "POST" and response.url == f"{base_url}/api/settings") as saved:
+                page.locator("#save-settings-btn").click()
+            assert saved.value.json()["success"] is True
+            page.get_by_text("Settings saved to the local runtime and this browser.", exact=True).wait_for()
+
+        save(113)
+        assert len(settings_posts) == 1
+        assert context.request.get(f"{base_url}/api/settings").json()["scan_rules"]["max_scan_minutes"] == 113
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        assert page.evaluate("window.blockedPopupAttempts") == 1
+        assert page.evaluate("window.socket.connected") is False
+
+        context.unroute("**/socket.io/**")
+        page.wait_for_function("() => window.socket.connected && window.socket.listeners('google_drive_status').length === 1")
+        page.evaluate("""() => {
+            window.receivedDriveStatus = false;
+            window.socket.once('google_drive_status', () => { window.receivedDriveStatus = true; });
+        }""")
+        browser_server["app_module"].socketio.emit("google_drive_status", {
+            "success": True, "connected": True, "config": {"enabled": True}, "status": "Background status arrived",
+        })
+        page.wait_for_function("() => window.receivedDriveStatus")
+        assert page.locator("#settings-google-drive-enabled").is_checked()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        page.evaluate("initializeSettingsTab(window.socket); initializeSettingsTab(window.socket)")
+        assert page.evaluate("window.socket.listeners('google_drive_status').length") == 1
+        save(114)
+        assert len(settings_posts) == 2
+        page.locator("#settings-google-drive-connect-btn").click()
+        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
+        assert page.evaluate("window.blockedPopupAttempts") == 2
+    finally:
+        context.request.post(f"{base_url}/api/settings", data=original)
+        context.close()
+
+
+@pytest.fixture
+def tls_browser_server(browser_server):
+    """An owned TLS listener around the real app, with a temporary certificate."""
+    from werkzeug.serving import make_server
+
+    app_module = browser_server["app_module"]
+    server = make_server("127.0.0.1", 0, app_module.app, threaded=True, ssl_context="adhoc")
+    origin = f"https://127.0.0.1:{server.server_port}"
+    engine = app_module.socketio.server.eio
+    original_origins = engine.cors_allowed_origins
+    engine.cors_allowed_origins = [*original_origins, origin]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield origin
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        engine.cors_allowed_origins = original_origins
+
+
+@pytest.mark.parametrize("bootstrap", ["template_bootstrap.js", "app_bootstrap.js"])
+def test_https_socket_uses_page_origin_and_serves_real_job_request(
+    tls_browser_server, playwright_browser, bootstrap,
+):
+    context = playwright_browser.new_context(ignore_https_errors=True)
+    # Both supported entry points share the real template's DOM. Substitute
+    # only the legacy entry point's production bootstrap, without mocking io.
+    if bootstrap == "app_bootstrap.js":
+        context.route("**/static/js/template_bootstrap.js", lambda route: route.fulfill(
+            body=(ROOT / "static/js" / bootstrap).read_text(), content_type="application/javascript"))
+    page = context.new_page()
+    socket_urls = []
+    page.on("request", lambda request: socket_urls.append(request.url)
+            if "/socket.io/" in request.url else None)
+    try:
+        page.goto(tls_browser_server, wait_until="domcontentloaded")
+        page.wait_for_function("() => window.socket && window.socket.connected")
+        assert page.evaluate("window.socket.io.uri") == tls_browser_server
+        page.evaluate("""() => {
+            window.tlsJobSnapshots = [];
+            window.socket.on('job_status', job => window.tlsJobSnapshots.push(job.job_type));
+            window.socket.emit('get_job_status');
+        }""")
+        page.wait_for_function("() => ['scan', 'report'].every(kind => window.tlsJobSnapshots.includes(kind))")
+        assert socket_urls
+        assert all(url.startswith(tls_browser_server + "/socket.io/") for url in socket_urls)
+    finally:
+        context.close()
 
 
 def _require_browser_regression_enabled():
@@ -47,12 +223,14 @@ def _get_browser(playwright):
     try:
         return playwright.chromium.launch(headless=True)
     except Exception as error:  # pragma: no cover - only exercised in gated mode
-        pytest.fail(f"Browser coverage enabled but Chromium is not available: {error}")
+        pytest.fail(f"Browser regression coverage was enabled but Chromium could not launch: {error}")
 
 
 def _connect_socket(browser_server):
-    # In-process Flask test_client replaces packet senders and breaks real browsers.
+    # Flask-SocketIO's in-process test_client replaces the server's packet
+    # senders globally, breaking the real browser connections under test.
     import socketio
+
     client = socketio.Client(handle_sigint=False, reconnection=False, request_timeout=5)
     client.connect(browser_server["base_url"], transports=["polling"])
     return client
@@ -62,79 +240,132 @@ def _get_socket_sid(client):
     return client.get_sid("/")
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def browser_server(tmp_path_factory):
     _require_browser_regression_enabled()
+
+    managed_environment_keys = (
+        "NMAPUI_TRUST_LOCAL_UI",
+        "NMAPUI_ALLOW_UNSAFE_WERKZEUG",
+        "NMAPUI_DEBUG",
+        "NMAPUI_USERNAME",
+        "NMAPUI_PASSWORD",
+        "NMAPUI_ENABLE_NETWORK_FINGERPRINT",
+        "NMAPUI_ENABLE_UPDATE_CHECK",
+        "NMAPUI_ENABLE_VULNERS",
+        "NMAPUI_SOCKET_AUTH_DISABLED",
+        "NMAPUI_PORT",
+        "NMAPUI_DATA_DIR",
+    )
+    previous_environment = {
+        key: os.environ.get(key) for key in managed_environment_keys
+    }
 
     os.environ.setdefault("NMAPUI_TRUST_LOCAL_UI", "true")
     os.environ.setdefault("NMAPUI_ALLOW_UNSAFE_WERKZEUG", "true")
     os.environ.setdefault("NMAPUI_DEBUG", "false")
     os.environ.setdefault("NMAPUI_USERNAME", "scanner")
     os.environ.setdefault("NMAPUI_PASSWORD", "secret-pass")
-    # The socketio test client and Playwright pages do not carry the loopback
+    os.environ["NMAPUI_ENABLE_NETWORK_FINGERPRINT"] = "false"
+    os.environ["NMAPUI_ENABLE_UPDATE_CHECK"] = "false"
+    os.environ["NMAPUI_ENABLE_VULNERS"] = "false"
+    # The network Socket.IO client and Playwright pages do not carry the loopback
     # token; disable socket auth for browser regressions.
     os.environ.setdefault("NMAPUI_SOCKET_AUTH_DISABLED", "true")
 
     port = _find_free_port()
+    # The app builds its explicit origin allowlist at import time. Use that
+    # same port for the test server rather than binding a different one later.
     os.environ["NMAPUI_PORT"] = str(port)
-    os.environ["NMAPUI_DATA_DIR"] = str(tmp_path_factory.mktemp("browser-runtime"))
-    # Install public-request stubs before app import (which may warm caches).
-    import requests
-    original_requests_get = requests.get
+    data_dir = tmp_path_factory.mktemp("browser-runtime")
+    os.environ["NMAPUI_DATA_DIR"] = str(data_dir)
+    app_module = importlib.import_module("app")
+
+    # Opening the UI requests a network key. Keep the browser regression
+    # isolated from the host network and its customer scan history.
+    from nmapui.client_state import DEFAULT_NETWORK_KEY
+
+    original_traceroute = app_module.run_traceroute_runtime
+    original_requests_get = app_module.requests.get
+    allowed_external_lookups = []
+    expected_external_lookups = []
+    unexpected_lookups = []
+    allowed_urls = {
+        "https://api.github.com/repos/techmore/TM-NmapUI/releases/latest",
+        "https://api.ipify.org",
+    }
+
     class ResponseStub:
         text = "203.0.113.10"
-        def raise_for_status(self): pass
+
+        def raise_for_status(self):
+            return None
+
         def json(self):
-            return {"tag_name": (ROOT / "VERSION").read_text().strip(), "html_url": "https://example.invalid/release", "body": "", "assets": []}
-    def isolated_get(url, *args, **kwargs):
-        if url not in {"https://api.ipify.org", "https://api.github.com/repos/techmore/TM-NmapUI/releases/latest", "https://api.github.com/repos/techmore/NmapUI/releases/latest"}:
-            raise AssertionError(f"Unexpected external browser test request: {url}")
+            return {
+                "tag_name": app_module.get_app_version(),
+                "html_url": "https://github.com/techmore/TM-NmapUI/releases/latest",
+                "body": "",
+                "assets": [],
+            }
+
+    def isolated_requests_get(url, *args, **kwargs):
+        if url not in allowed_urls:
+            unexpected_lookups.append(url)
+            raise RuntimeError(f"Unexpected external request in browser test: {url}")
+        allowed_external_lookups.append(url)
         return ResponseStub()
-    requests.get = isolated_get
-    app_module = importlib.import_module("app")
-    from nmapui.client_state import DEFAULT_NETWORK_KEY
-    original_traceroute = app_module.run_traceroute_runtime
-    def isolated_traceroute(*, target, sid=None, deps):
-        key = {**DEFAULT_NETWORK_KEY, "target": target, "total_hops": 1,
-               "hops": [{"ip": target, "is_private": False}],
-               "public_hops": [{"ip": target, "is_private": False}], "exit_ip": target}
+
+    def test_traceroute(*, target, sid=None, deps):
+        key = {
+            **DEFAULT_NETWORK_KEY,
+            "target": target,
+            "total_hops": 1,
+            "hops": [{"ip": target, "is_private": False}],
+            "public_hops": [{"ip": target, "is_private": False}],
+            "exit_ip": target,
+        }
         app_module.set_network_key_state(key, sid=sid)
         return key
-    app_module.run_traceroute_runtime = isolated_traceroute
-    app_module.requests.get = isolated_get
 
-    if not hasattr(app_module, "_browser_test_whoami_registered"):
-        from flask import request
-        from flask_socketio import emit
-
-        @app_module.socketio.on("whoami")
-        def _browser_test_whoami():
-            emit("whoami", {"sid": request.sid})
-
-        app_module._browser_test_whoami_registered = True
-
-    server_thread = threading.Thread(
-        target=lambda: app_module.socketio.run(
-            app_module.app,
-            host="127.0.0.1",
-            port=port,
-            debug=False,
-            allow_unsafe_werkzeug=True,
-        ),
-        daemon=True,
-    )
-    server_thread.start()
-
-    _wait_for_url(f"http://127.0.0.1:{port}/api/health/live", timeout=90)
+    app_module.run_traceroute_runtime = test_traceroute
+    app_module.requests.get = isolated_requests_get
 
     try:
+        server_thread = threading.Thread(
+            target=lambda: app_module.socketio.run(
+                app_module.app,
+                host="127.0.0.1",
+                port=port,
+                debug=False,
+                allow_unsafe_werkzeug=True,
+            ),
+            daemon=True,
+        )
+        server_thread.start()
+
+        _wait_for_url(f"http://127.0.0.1:{port}/api/health/live", timeout=90)
         yield {
             "app_module": app_module,
             "base_url": f"http://127.0.0.1:{port}",
+            "scans_dir": data_dir / "scans",
+            "external_lookups": allowed_external_lookups,
+            "expected_external_lookups": expected_external_lookups,
         }
+        assert not unexpected_lookups, f"Unexpected external test requests: {unexpected_lookups}"
+        assert allowed_external_lookups == expected_external_lookups, (
+            "managed-service opt-outs should block automatic external requests; "
+            "only explicit user actions may request the documented release endpoint: "
+            f"observed={allowed_external_lookups}, expected={expected_external_lookups}"
+        )
     finally:
         app_module.run_traceroute_runtime = original_traceroute
         app_module.requests.get = original_requests_get
+        for key, value in previous_environment.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 @pytest.fixture
@@ -152,10 +383,10 @@ def playwright_browser():
 
 @pytest.fixture
 def scan_fixture(browser_server):
-    SCANS_DIR = browser_server["app_module"].SCANS_DIR
+    scans_dir = browser_server["scans_dir"]
     fixture_id = uuid.uuid4().hex[:8]
     customer_name = f"Browser Regression {fixture_id}"
-    customer_root = SCANS_DIR / customer_name
+    customer_root = scans_dir / customer_name
     primary_dir = customer_root / "2026-03-14" / "scan_120000_198.51.100.0_24"
     baseline_dir = customer_root / "2026-03-13" / "scan_110000_198.51.100.0_24"
 
@@ -192,8 +423,11 @@ def scan_fixture(browser_server):
             "status": "completed",
             "completed_successfully": True,
             "diff_summary": diff_summary,
-            "asset_snapshot": ([{"ip": "198.51.100.10", "ports": "80,443"}, {"ip": "198.51.100.12", "ports": "22"}]
-                               if diff_summary else [{"ip": "198.51.100.10", "ports": "80"}]),
+            "asset_snapshot": (
+                [{"ip": "198.51.100.10", "ports": "80,443"},
+                 {"ip": "198.51.100.12", "ports": "22"}]
+                if diff_summary else [{"ip": "198.51.100.10", "ports": "80"}]
+            ),
         }
         (scan_dir / "metadata.json").write_text(__import__("json").dumps(metadata, indent=2))
         (scan_dir / "scan_web.html").write_text(
@@ -201,13 +435,13 @@ def scan_fixture(browser_server):
         )
         (scan_dir / "scan_report.pdf").write_bytes(b"%PDF-1.4\n% browser fixture\n")
         (scan_dir / "scan.xml").write_text("<nmaprun></nmaprun>")
-        upsert_scan_metadata_index_entry(SCANS_DIR, scan_dir, metadata)
+        upsert_scan_metadata_index_entry(scans_dir, scan_dir, metadata)
         # Mirror into the runtime sqlite store: /api/runtime/reports reads only from
         # the store, so JSON-index-only writes are invisible to the running server.
         import sys as _sys
         runtime_store = getattr(_sys.modules.get("app"), "runtime_store", None)
         if runtime_store is not None:
-            rel = str(scan_dir.relative_to(SCANS_DIR))
+            rel = str(scan_dir.relative_to(scans_dir))
             runtime_store.upsert_report_artifact(
                 scan_path=rel,
                 customer_id=str(metadata.get("customer_id", "") or ""),
@@ -222,13 +456,14 @@ def scan_fixture(browser_server):
         yield {
             "customer_name": customer_name,
             "report_title": f"{customer_name} Report",
+            "primary_dir": primary_dir,
         }
     finally:
         for scan_dir in (primary_dir, baseline_dir):
+            if runtime_store is not None:
+                runtime_store.delete_report_artifact(str(scan_dir.relative_to(scans_dir)))
             if scan_dir.exists():
-                remove_scan_metadata_index_entry(SCANS_DIR, scan_dir)
-                if runtime_store is not None:
-                    runtime_store.delete_report_artifact(str(scan_dir.relative_to(SCANS_DIR)))
+                remove_scan_metadata_index_entry(scans_dir, scan_dir)
         if customer_root.exists():
             shutil.rmtree(customer_root, ignore_errors=True)
 
@@ -254,6 +489,405 @@ def test_reports_tab_renders_saved_report_and_view_action(browser_server, playwr
     context.close()
 
 
+def test_quick_start_shows_tool_versions_as_unchecked_not_missing(
+    browser_server, playwright_browser
+):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.wait_for_function(
+            """() => document.getElementById('settings-nmap-version').textContent === 'Nmap: Not checked'
+            && document.getElementById('settings-vulners-version').textContent === 'Vulners: Not checked'
+            && document.getElementById('settings-arpscan-version').textContent === 'ARP-Scan: Not checked'"""
+        )
+    finally:
+        context.close()
+
+
+def test_remote_sync_secret_is_not_persisted_in_browser_storage(
+    browser_server, playwright_browser
+):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    secret = "browser-regression-remote-sync-secret"
+    legacy_settings = json.dumps(
+        {
+            "scanOnlyMode": False,
+            "excludedTargets": "",
+            "remoteSyncApiKey": secret,
+        }
+    )
+    page.add_init_script(
+        f"localStorage.setItem('gemini-nmap-settings', {json.dumps(legacy_settings)});"
+    )
+    settings_posts = []
+    page.on(
+        "request",
+        lambda request: settings_posts.append(json.loads(request.post_data))
+        if request.method == "POST" and request.url.endswith("/api/settings")
+        else None,
+    )
+
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        page.get_by_text("Settings loaded from the local runtime.", exact=True).wait_for()
+
+        assert page.locator("#settings-remote-sync-api-key").input_value() == ""
+        stored = page.evaluate(
+            "() => JSON.parse(localStorage.getItem('gemini-nmap-settings') || '{}')"
+        )
+        assert "remoteSyncApiKey" not in stored
+        assert secret not in json.dumps(stored)
+
+        page.locator("#settings-remote-sync-api-key").fill(secret)
+        page.locator("#save-settings-btn").click()
+        page.get_by_text("Settings saved to the local runtime and this browser.", exact=True).wait_for()
+        assert settings_posts[-1]["sync"]["remote_sync"]["api_key"] == secret
+        assert page.locator("#settings-remote-sync-api-key").input_value() == ""
+        stored = page.evaluate(
+            "() => JSON.parse(localStorage.getItem('gemini-nmap-settings') || '{}')"
+        )
+        assert "remoteSyncApiKey" not in stored
+        assert secret not in json.dumps(stored)
+
+        settings_doc = page.evaluate(
+            "async () => (await fetch('/api/settings')).json()"
+        )
+        remote_sync = settings_doc["sync"]["remote_sync"]
+        assert remote_sync["api_key"] == ""
+        assert remote_sync["api_key_configured"] is True
+
+        secret_path = browser_server["app_module"].REMOTE_SYNC_SECRET_FILE
+        key_path = browser_server["app_module"].REMOTE_SYNC_SECRET_KEY_FILE
+        from nmapui.settings import load_remote_sync_secret
+
+        assert secret not in secret_path.read_text(encoding="utf-8")
+        assert load_remote_sync_secret(
+            secret_path=secret_path,
+            key_path=key_path,
+        ) == secret
+
+        page.reload(wait_until="domcontentloaded")
+        page.locator("#tab-settings-btn").click()
+        page.get_by_text(
+            "A key is stored encrypted on this scanner. Leave this field blank to keep it, or enter a replacement.",
+            exact=True,
+        ).wait_for()
+        assert page.locator("#settings-remote-sync-api-key").input_value() == ""
+    finally:
+        context.close()
+
+
+def test_browser_security_policy_blocks_inline_scripts_and_delegates_actions(
+    browser_server, playwright_browser
+):
+    browser = playwright_browser
+    context = browser.new_context()
+    page = context.new_page()
+    csp_violations = []
+
+    def capture_csp_violations(message):
+        if "content security policy" in message.text.lower():
+            csp_violations.append(message.text)
+
+    page.on("console", capture_csp_violations)
+    font_requests = []
+    page.on(
+        "request",
+        lambda request: font_requests.append(request.url)
+        if "fonts.googleapis.com" in request.url or "fonts.gstatic.com" in request.url
+        else None,
+    )
+
+    try:
+        response = page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        assert response is not None
+        policy = response.headers.get("content-security-policy", "")
+        script_policy = next(
+            directive for directive in policy.split(";") if directive.strip().startswith("script-src ")
+        )
+        assert "'unsafe-inline'" not in script_policy
+        assert "base-uri 'self'" in policy
+        assert "object-src 'none'" in policy
+        assert "form-action 'self'" in policy
+        assert "frame-ancestors 'none'" in policy
+        assert "fonts.googleapis.com" not in policy
+        assert "fonts.gstatic.com" not in policy
+        assert response.headers["referrer-policy"] == "same-origin"
+        assert page.evaluate(
+            """() => Array.from(document.scripts).every((script) =>
+                new URL(script.src, window.location.href).origin === window.location.origin
+            )"""
+        )
+
+        page.locator("#scan-target").wait_for()
+        for font in ('16px Inter', '16px "Instrument Serif"'):
+            # FontFaceSet.ready can resolve before a later layout requests a
+            # swap font. Explicitly load the Latin face and require a real face.
+            assert page.evaluate(
+                """async (font) => {
+                    const faces = await document.fonts.load(font, 'Network Scanner');
+                    return faces.length > 0 && faces.every(face => face.status === 'loaded')
+                        && document.fonts.check(font, 'Network Scanner');
+                }""", font,
+            )
+        assert page.locator('link[href="/static/vendor/fonts.css"]').count() == 1
+        assert page.evaluate("typeof window.lucide?.createIcons === 'function'")
+        assert page.locator("script:not([src])").count() == 0
+        assert page.locator("[onclick], [onchange], [oninput], [onsubmit]").count() == 0
+        assert page.locator("[data-action]").count() > 0
+
+        log_panel = page.locator("#log-panel")
+        assert "hidden" in log_panel.get_attribute("class")
+        assert log_panel.evaluate("element => getComputedStyle(element).display") == "none"
+        update_modal = page.locator("#update-modal")
+        assert update_modal.evaluate("element => getComputedStyle(element).display") == "none"
+        page.locator("#log-panel-toggle-btn").click()
+        assert "hidden" not in log_panel.get_attribute("class")
+        page.locator("#log-panel-toggle-btn").click()
+        assert "hidden" in log_panel.get_attribute("class")
+        assert not csp_violations
+        assert font_requests == []
+    finally:
+        context.close()
+
+
+def test_stop_scan_button_cancels_active_job_and_returns_controls_to_idle(
+    browser_server, playwright_browser
+):
+    app_module = browser_server["app_module"]
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    sid = None
+
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#stop-scan-btn").wait_for()
+        page.wait_for_function("() => window.socket && window.socket.connected")
+        sid = page.evaluate("window.socket.id")
+        assert app_module.job_registry.start(sid, "scan", {"target": "127.0.0.1"})
+        app_module.emit_job_status(sid, "scan")
+        page.wait_for_function(
+            "() => document.getElementById('start-scan-btn').classList.contains('ring-4')"
+        )
+        page.evaluate(
+            "window.__scanCancelled = null; "
+            "window.socket.once('job_cancelled', message => "
+            "{ window.__scanCancelled = message; })"
+        )
+
+        page.locator("#stop-scan-btn").click()
+        page.wait_for_function("() => window.__scanCancelled !== null", timeout=5_000)
+        cancellation = page.evaluate("window.__scanCancelled")
+
+        assert cancellation == {"job_type": "scan", "message": "Cancelling scan job..."}
+        assert app_module.job_registry.get(sid, "scan")["status"] == "cancelling"
+
+        # Model the worker's final cancelled status; no Nmap process is started
+        # by this UI-to-handler regression.
+        app_module.job_registry.complete(sid, "scan", status="cancelled")
+        app_module.emit_job_status(sid, "scan")
+        page.wait_for_function(
+            "() => !document.getElementById('start-scan-btn').classList.contains('ring-4')"
+        )
+        assert page.locator("#start-scan-btn").is_enabled()
+    finally:
+        if sid and app_module.job_registry.get(sid, "scan"):
+            app_module.job_registry.complete(sid, "scan", status="cancelled")
+        context.close()
+
+
+def test_stop_report_button_cancels_active_job_and_returns_controls_to_idle(
+    browser_server, playwright_browser
+):
+    app_module = browser_server["app_module"]
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    sid = None
+
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#stop-report-btn").wait_for(state="attached")
+        page.wait_for_function("() => window.socket && window.socket.connected")
+        page.wait_for_function(
+            "() => window.socket.listeners('job_status').length >= 2"
+        )
+        sid = page.evaluate("window.socket.id")
+        assert app_module.job_registry.start(
+            sid, "report", {"target": "127.0.0.1", "chunked": False}
+        )
+        app_module.emit_job_status(sid, "report")
+        page.wait_for_function(
+            "() => !document.getElementById('stop-report-btn').classList.contains('hidden')"
+        )
+        page.evaluate(
+            "window.__reportCancelled = null; "
+            "window.socket.once('job_cancelled', message => "
+            "{ window.__reportCancelled = message; })"
+        )
+
+        page.locator("#stop-report-btn").click()
+        page.wait_for_function("() => window.__reportCancelled !== null", timeout=5_000)
+
+        assert page.evaluate("window.__reportCancelled") == {
+            "job_type": "report",
+            "message": "Cancelling report job...",
+        }
+        assert app_module.job_registry.get(sid, "report")["status"] == "cancelling"
+
+        # Model the worker's final cancelled status; no report or Nmap job is
+        # started by this UI-to-handler regression.
+        app_module.job_registry.complete(sid, "report", status="cancelled")
+        app_module.emit_job_status(sid, "report")
+        page.wait_for_function(
+            "() => document.getElementById('stop-report-btn').classList.contains('hidden')"
+        )
+        assert not page.locator("#generate-report-btn").evaluate(
+            "element => element.classList.contains('card-pulsing')"
+        )
+    finally:
+        if sid and app_module.job_registry.get(sid, "report"):
+            app_module.job_registry.complete(sid, "report", status="cancelled")
+        context.close()
+
+
+def test_generated_report_uses_hash_csp_embedded_css_and_safe_runtime(
+    browser_server, playwright_browser, scan_fixture
+):
+    from nmapui.reporting import convert_xml_to_html
+
+    scan_dir = scan_fixture["primary_dir"]
+    xml_path = scan_dir / "scan.xml"
+    xml_path.write_text(
+        """<?xml version="1.0"?>
+<nmaprun version="7.94" startstr="today" args="nmap -sV 192.0.2.1">
+  <scaninfo type="syn" protocol="tcp" numservices="1000" services="1-1000"/>
+  <host><status state="up" reason="syn-ack"/><address addr="192.0.2.1" addrtype="ipv4"/>
+    <hostnames><hostname name="router.local" type="PTR"/></hostnames><ports>
+      <port protocol="tcp" portid="80"><state state="open" reason="syn-ack"/>
+        <service name="http" product="nginx" version="  =1+1"/>
+        <script id="http-title"><elem key="title">&lt;img src=x onerror=window.__reportXss=true&gt;</elem></script>
+      </port>
+    </ports>
+  </host>
+  <runstats><finished time="1" timestr="today" summary="Nmap done"/><hosts up="1" down="0" total="1"/></runstats>
+</nmaprun>
+""",
+        encoding="utf-8",
+    )
+    assert convert_xml_to_html(
+        xml_path,
+        scan_dir / "scan_web.html",
+        stylesheet=ROOT / "nmap-modern.xsl",
+        get_app_version=lambda: "browser-test",
+    )
+
+    relative_scan_path = str(scan_dir.relative_to(browser_server["scans_dir"]))
+    report_url = (
+        f"{browser_server['base_url']}/api/runtime/reports/"
+        f"{quote(relative_scan_path, safe='/')}/html"
+    )
+    context = playwright_browser.new_context(accept_downloads=True)
+    page = context.new_page()
+    csp_violations = []
+    page.on(
+        "console",
+        lambda message: csp_violations.append(message.text)
+        if "content security policy" in message.text.lower()
+        else None,
+    )
+    try:
+        response = page.goto(report_url, wait_until="load")
+        assert response is not None and response.status == 200
+        policy = response.headers.get("content-security-policy", "")
+        script_policy = next(
+            directive for directive in policy.split(";") if directive.strip().startswith("script-src ")
+        )
+        assert "'sha256-" in script_policy
+        assert "'unsafe-inline'" not in script_policy
+        assert "sandbox allow-scripts" in policy
+
+        state = page.evaluate(
+            """() => ({
+                scriptCount: document.scripts.length,
+                onlyEmbeddedRuntime: document.scripts.length === 1
+                    && document.scripts[0].id === 'nmapui-report-runtime'
+                    && !document.scripts[0].src,
+                headingFontSize: getComputedStyle(document.querySelector('#scannedhosts h2')).fontSize,
+                jquery: typeof window.jQuery,
+                tailwindRuntime: typeof window.tailwind,
+                injectedElements: document.querySelectorAll('img[onerror], svg[onload]').length,
+                payloadAsText: document.body.textContent.includes('<img src=x onerror=window.__reportXss=true>'),
+                hostContentInitiallyVisible: !document.getElementById('content-192-0-2-1').hidden,
+            })"""
+        )
+        assert state["onlyEmbeddedRuntime"]
+        assert state["headingFontSize"] == "30px"
+        assert state["jquery"] == "undefined"
+        assert state["tailwindRuntime"] == "undefined"
+        assert state["injectedElements"] == 0
+        assert state["payloadAsText"]
+        assert state["hostContentInitiallyVisible"]
+        assert page.evaluate("window.__reportXss") is None
+
+        page.locator(".report-table-controls input").nth(1).fill("not-present")
+        assert page.locator("#table-services tbody tr:visible").count() == 0
+        page.locator(".report-table-controls input").nth(1).fill("nginx")
+        assert page.locator("#table-services tbody tr:visible").count() == 1
+        with page.expect_download() as download_info:
+            page.locator(".report-table-controls").nth(1).get_by_role(
+                "button", name="Download CSV"
+            ).click()
+        csv_download = download_info.value
+        assert csv_download.suggested_filename == "table-services.csv"
+        csv_text = Path(csv_download.path()).read_text(encoding="utf-8")
+        assert "nginx" in csv_text
+        assert '"\'  =1+1"' in csv_text
+        page.locator("#keyword-input").fill("nginx")
+        page.locator("#highlight-button").click()
+        assert page.locator("#table-services mark.report-keyword").count() > 0
+        page.locator("[data-collapse-target='content-192-0-2-1']").click()
+        assert page.locator("#content-192-0-2-1").evaluate("element => element.hidden")
+
+        legacy_response = page.goto(
+            f"{browser_server['base_url']}/api/scans/"
+            f"{quote(relative_scan_path, safe='/')}/html",
+            wait_until="load",
+        )
+        assert legacy_response is not None and legacy_response.status == 200
+        assert legacy_response.headers.get("content-security-policy") == policy
+        assert not csp_violations
+    finally:
+        context.close()
+
+
+def test_archive_button_opens_and_closes_scan_history(browser_server, playwright_browser):
+    browser = playwright_browser
+    context = browser.new_context()
+    page = context.new_page()
+
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#scan-target").wait_for()
+        page.wait_for_function("() => window.socket && window.socket.connected")
+        page.wait_for_function(
+            "() => document.getElementById('view-history-btn')?.dataset.historyWired === 'true'"
+        )
+
+        history_modal = page.locator("#history-modal")
+        page.locator("#view-history-btn").click()
+        page.get_by_role("heading", name="Scan History").wait_for(state="visible")
+        assert "hidden" not in history_modal.get_attribute("class")
+
+        page.get_by_role("button", name="Close scan history dialog").click()
+        assert "hidden" in history_modal.get_attribute("class")
+    finally:
+        context.close()
+
+
 def test_history_tab_renders_diff_summary(browser_server, playwright_browser, scan_fixture):
     context = playwright_browser.new_context()
     page = context.new_page()
@@ -262,6 +896,7 @@ def test_history_tab_renders_diff_summary(browser_server, playwright_browser, sc
     page.locator("#tab-history-btn").click()
     page.locator("#history-focus-all-btn").click()
 
+    page.get_by_role("navigation", name="Saved scans").get_by_role("button").filter(has_text=scan_fixture["customer_name"]).first.click()
     history_list = page.locator("#history-tab-list")
     fixture_card = history_list.locator("article").filter(
         has=page.locator("h3", has_text=scan_fixture["customer_name"])
@@ -272,6 +907,267 @@ def test_history_tab_renders_diff_summary(browser_server, playwright_browser, sc
     fixture_card.get_by_text("1 changed host(s)").wait_for()
 
     context.close()
+
+
+def test_history_target_is_rendered_as_text_not_html(
+    browser_server, playwright_browser, scan_fixture
+):
+    app_module = browser_server["app_module"]
+    scan_dir = scan_fixture["primary_dir"]
+    metadata_path = scan_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    attack = '<img src=x onerror="window.__nmapuiHistoryXss = true">'
+    metadata["target"] = attack
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    upsert_scan_metadata_index_entry(browser_server["scans_dir"], scan_dir, metadata)
+    app_module.runtime_store.upsert_report_artifact(
+        scan_path=str(scan_dir.relative_to(browser_server["scans_dir"])),
+        customer_id=str(metadata["customer_id"]),
+        target=attack,
+        html_path=str(scan_dir / "scan_web.html"),
+        pdf_path=str(scan_dir / "scan_report.pdf"),
+        xml_path=str(scan_dir / "scan.xml"),
+        payload=metadata,
+    )
+
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#tab-history-btn").click()
+        page.locator("#history-focus-all-btn").click()
+        page.get_by_role("navigation", name="Saved scans").get_by_role("button").filter(has_text=scan_fixture["customer_name"]).first.click()
+        card = page.locator("#history-tab-list article").filter(
+            has=page.locator("h3", has_text=scan_fixture["customer_name"])
+        ).first
+        target = card.locator("p").filter(has_text="Target:").first
+        target.get_by_text(attack, exact=False).wait_for()
+        assert target.locator("img").count() == 0
+        assert page.evaluate("window.__nmapuiHistoryXss") is None
+    finally:
+        context.close()
+
+
+def test_socket_history_duration_is_rendered_as_text_not_html(
+    browser_server, playwright_browser
+):
+    browser = playwright_browser
+    context = browser.new_context()
+    page = context.new_page()
+    attack = '<img src=x onerror="window.__nmapuiDurationXss = true">'
+
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.locator("#scan-target").wait_for()
+        page.wait_for_function(
+            "() => window.socket && window.socket.connected && window.socket.listeners('history_data').length && window.socket.listeners('reports_data').length"
+        )
+        page.evaluate(
+            """(duration) => {
+                window.__nmapuiDurationXss = false;
+                const payload = [{
+                    timestamp: new Date().toISOString(),
+                    duration,
+                    status: 'completed',
+                    target: '192.0.2.10',
+                    hostCount: 1,
+                    customerProfile: { baseName: 'Security Test', folderName: 'security-test' },
+                    reportUrl: '',
+                    pdfUrl: ''
+                }];
+                window.socket.listeners('history_data').forEach((handler) => handler(payload));
+                window.socket.listeners('reports_data').forEach((handler) => handler([{
+                    date: new Date().toISOString(),
+                    duration,
+                    folder: 'security-test',
+                    name: 'Failed report security test',
+                    status: 'failed',
+                    url: '',
+                    pdfUrl: '',
+                    xmlUrl: '',
+                    driveHtmlUrl: '',
+                    drivePdfUrl: ''
+                }]));
+            }""",
+            attack,
+        )
+
+        assert page.locator("#history-tab-list img").count() == 0
+        assert page.locator("#reports-tab-list img").count() == 0
+        assert attack in page.locator("#history-tab-list").text_content()
+        assert attack in page.locator("#reports-tab-list").text_content()
+        assert page.evaluate("window.__nmapuiDurationXss") is False
+    finally:
+        context.close()
+
+
+def test_deep_scan_results_reject_javascript_cve_urls(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        result = page.evaluate(
+            """() => {
+                const ip = '198.51.100.44';
+                const row = document.createElement('tr');
+                for (const column of ['status', 'ip', 'mac', 'vendor', 'hostname', 'open_ports', 'version', 'cves']) {
+                    const cell = document.createElement('td');
+                    cell.dataset.column = column;
+                    if (column === 'ip') cell.textContent = ip;
+                    row.appendChild(cell);
+                }
+                document.querySelector('#discovery-table tbody').appendChild(row);
+                window.discoveryRowsByIp = new Map([[ip, row]]);
+                window.currentHosts = { [ip]: { ip } };
+                window.__nmapuiDeepScanXss = false;
+                window.updateRowWithResults({
+                    ip,
+                    ports: [{ port: 80, service: '<img src=x onerror=window.__nmapuiDeepScanXss=true>' }],
+                    cves: [{
+                        id: 'CVE-2026-0001',
+                        score: 9.8,
+                        url: 'javascript:window.__nmapuiDeepScanXss=true'
+                    }]
+                });
+                return {
+                    versionText: row.querySelector('[data-column="version"]').textContent,
+                    versionImages: row.querySelectorAll('[data-column="version"] img').length,
+                    cveAnchors: row.querySelectorAll('[data-column="cves"] a').length,
+                    cveText: row.querySelector('[data-column="cves"]').textContent,
+                    executed: window.__nmapuiDeepScanXss
+                };
+            }"""
+        )
+        assert result["versionText"] == '<img src=x onerror=window.__nmapuiDeepScanXss=true>'
+        assert result["versionImages"] == 0
+        assert result["cveAnchors"] == 0
+        assert "CVE-2026-0001" in result["cveText"]
+        assert result["executed"] is False
+    finally:
+        context.close()
+
+
+def test_foreign_browser_origin_cannot_fetch_loopback_socket_token(
+    browser_server, playwright_browser
+):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    attacker_origin = "http://localhost.evil.example"
+    socket_token_url = f"{browser_server['base_url']}/api/socket-token"
+    api_statuses = []
+    failed_api_requests = []
+
+    page.on(
+        "response",
+        lambda response: api_statuses.append(response.status)
+        if response.url == socket_token_url
+        else None,
+    )
+    page.on(
+        "requestfailed",
+        lambda request: failed_api_requests.append(request.failure)
+        if request.url == socket_token_url
+        else None,
+    )
+
+    try:
+        # Chromium may block public-origin-to-loopback access before Flask sees
+        # it. If the request reaches the service, its origin guard must reject
+        # it with 401; either way, an untrusted page must never get a token.
+        page.route(
+            f"{attacker_origin}/**",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body="<html><body>untrusted origin</body></html>",
+            ),
+        )
+        page.goto(attacker_origin, wait_until="domcontentloaded")
+
+        fetch_result = page.evaluate(
+            """async url => {
+                try {
+                    const response = await fetch(url, { credentials: 'include' });
+                    return { status: response.status };
+                } catch (error) {
+                    return { blocked: true, error: String(error) };
+                }
+            }""",
+            socket_token_url,
+        )
+
+        assert fetch_result.get("status") != 200
+        assert not api_statuses or api_statuses == [401]
+        assert api_statuses or failed_api_requests
+    finally:
+        context.close()
+
+
+def test_same_site_form_cannot_mutate_an_authenticated_session(
+    browser_server, playwright_browser, monkeypatch
+):
+    from flask import Flask, jsonify
+    from nmapui import auth, session
+    from werkzeug.serving import make_server
+
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "false")
+    monkeypatch.setenv("NMAPUI_COOKIE_SECURE", "false")
+    monkeypatch.delenv("NMAPUI_ALLOWED_ORIGINS", raising=False)
+    mutations = []
+
+    @auth.require_auth
+    def isolated_disconnect():
+        mutations.append("disconnect")
+        return jsonify({"success": True})
+
+    app = browser_server["app_module"].app
+    monkeypatch.setitem(app.view_functions, "google_drive_disconnect_route", isolated_disconnect)
+    base_url = browser_server["base_url"]
+    target = f"{base_url}/api/settings/google-drive/disconnect"
+    attacker_app = Flask("csrf-regression")
+
+    @attacker_app.route("/")
+    def attacker_form():
+        return (f'<iframe name="result"></iframe><form method="POST" '
+                f'action="{target}" target="result"><button>Submit</button></form>')
+
+    attacker_server = make_server("127.0.0.1", 0, attacker_app)
+    attacker_thread = threading.Thread(target=attacker_server.serve_forever, daemon=True)
+    attacker_thread.start()
+    attacker_origin = f"http://127.0.0.1:{attacker_server.server_port}"
+    context = playwright_browser.new_context()
+    context.add_cookies([{
+        "name": session.SESSION_COOKIE,
+        "value": session.issue_token(auth._session_signing_secret(), "scanner"),
+        "url": base_url,
+        "sameSite": "Lax",
+        "httpOnly": True,
+    }])
+    page = context.new_page()
+    try:
+        page.goto(base_url, wait_until="domcontentloaded")
+        status = page.evaluate(
+            "async url => (await fetch(url, {method: 'POST'})).status", target
+        )
+        assert status == 200
+        assert mutations == ["disconnect"]
+
+        page.goto(attacker_origin, wait_until="domcontentloaded")
+        with page.expect_response(target) as submitted:
+            page.get_by_role("button", name="Submit").click()
+        response = submitted.value
+        headers = response.request.all_headers()
+        assert headers["origin"] == attacker_origin
+        assert headers["sec-fetch-site"] == "same-site"
+        assert session.SESSION_COOKIE in headers.get("cookie", "")
+        assert response.status == 403
+        assert mutations == ["disconnect"]
+    finally:
+        context.close()
+        attacker_server.shutdown()
+        attacker_server.server_close()
+        attacker_thread.join(timeout=5)
 
 
 def test_history_tab_compares_selected_scan_pair(browser_server, playwright_browser, scan_fixture):
@@ -285,8 +1181,11 @@ def test_history_tab_compares_selected_scan_pair(browser_server, playwright_brow
     history_cards = page.locator("#history-tab-list article").filter(
         has=page.locator("h3", has_text=scan_fixture["customer_name"])
     )
-    history_cards.nth(1).get_by_role("button", name="Select Base").click()
-    history_cards.first.get_by_role("button", name="Compare to Base").click()
+    # Select the newest fixture; comparison chooses its compatible predecessor.
+    timeline = page.get_by_role("navigation", name="Saved scans")
+    timeline.get_by_role("button").filter(has_text=scan_fixture["customer_name"]).first.click()
+    assert history_cards.count() == 1
+    history_cards.first.get_by_role("button", name="Compare with previous scan").click()
 
     page.locator("#history-compare-panel").wait_for()
     page.locator("#history-compare-summary").get_by_text("new host(s)").wait_for()
@@ -339,6 +1238,7 @@ def test_second_tab_replays_active_report_state(browser_server, playwright_brows
         for page in (first_page, second_page):
             page.goto(browser_server["base_url"], wait_until="domcontentloaded")
             page.locator("#scan-target").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
             page.wait_for_function(
                 "() => document.getElementById('scan-target').value === '198.51.100.0/24'"
             )
@@ -349,7 +1249,7 @@ def test_second_tab_replays_active_report_state(browser_server, playwright_brows
                 "() => document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
             )
             page.wait_for_function(
-                "() => !document.getElementById('start-scan-btn').classList.contains('card-pulsing')"
+                "() => !document.getElementById('start-scan-btn').classList.contains('ring-4')"
             )
     finally:
         app_module.broadcaster.end_job(owner_sid, job_type="report")
@@ -401,6 +1301,7 @@ def test_second_tab_replays_active_scan_state(browser_server, playwright_browser
         for page in (first_page, second_page):
             page.goto(browser_server["base_url"], wait_until="domcontentloaded")
             page.locator("#scan-target").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
             page.wait_for_function(
                 "() => document.getElementById('scan-target').value === '198.51.100.0/24'"
             )
@@ -408,10 +1309,10 @@ def test_second_tab_replays_active_scan_state(browser_server, playwright_browser
                 "() => document.getElementById('report-status-text').textContent.includes('Running quick scan')"
             )
             page.wait_for_function(
-                "() => document.getElementById('feedback-container').textContent.includes('Running quick scan on 198.51.100.0/24')"
+                "() => document.getElementById('report-status-text').textContent.includes('Running quick scan on 198.51.100.0/24')"
             )
             page.wait_for_function(
-                "() => document.getElementById('start-scan-btn').classList.contains('card-pulsing')"
+                "() => document.getElementById('start-scan-btn').classList.contains('ring-4')"
             )
             page.wait_for_function(
                 "() => !document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
@@ -420,6 +1321,102 @@ def test_second_tab_replays_active_scan_state(browser_server, playwright_browser
         app_module.broadcaster.end_job(owner_sid, job_type="scan")
         app_module.job_registry.complete(owner_sid, "scan", status="completed")
         owner_client.disconnect()
+        context.close()
+
+
+def _scan_pause_ui(page):
+    return page.evaluate(
+        "() => ({"
+        "pauseDisabled: document.getElementById('suspend-scan-btn').disabled,"
+        "resumeDisabled: document.getElementById('resume-scan-btn').disabled,"
+        "pauseText: document.getElementById('suspend-scan-btn').textContent.trim(),"
+        "state: document.getElementById('resume-scan-btn').dataset.pauseState,"
+        "status: document.getElementById('scan-pause-status').textContent"
+        "})"
+    )
+
+
+def test_pause_and_resume_scan_state_is_shared_by_every_open_tab(browser_server, playwright_browser):
+    app_module = browser_server["app_module"]
+    context = playwright_browser.new_context()
+    first_page = context.new_page()
+    second_page = context.new_page()
+    late_page = None
+    owner_client = None
+
+    try:
+        for page in (first_page, second_page):
+            page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+            page.locator("#suspend-scan-btn").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
+            # Idle: nothing to pause or resume.
+            assert page.locator("#suspend-scan-btn").is_disabled()
+            assert page.locator("#resume-scan-btn").is_disabled()
+
+        owner_client = _connect_socket(browser_server)
+        owner_sid = _get_socket_sid(owner_client)
+        app_module.set_last_scan_target_state(value="198.51.100.0/24", sid=owner_sid)
+        app_module.job_registry.start(
+            owner_sid, "scan", {"message": "Running quick scan", "target": "198.51.100.0/24"}
+        )
+        app_module.broadcaster.start_job(owner_sid, job_type="scan")
+        app_module.emit_job_status(owner_sid, "scan")
+
+        for page in (first_page, second_page):
+            page.wait_for_function("() => document.getElementById('suspend-scan-btn').dataset.pauseState === 'running'")
+            assert page.locator("#suspend-scan-btn").is_enabled()
+            assert page.locator("#resume-scan-btn").is_disabled()
+
+        # Pausing from one tab pauses the scan for all of them.
+        first_page.locator("#suspend-scan-btn").click()
+        for page in (first_page, second_page):
+            page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState !== 'running'")
+        job = app_module.job_registry.get(owner_sid, "scan")
+        assert job["pause_requested"] is True and job["status"] == "running"
+        # No scan process is attached; the workflow reaches its next checkpoint.
+        parked = threading.Thread(target=app_module.ensure_job_not_cancelled, args=(owner_sid, "scan"))
+        parked.start()
+        for page in (first_page, second_page):
+            page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState === 'paused'")
+            ui = _scan_pause_ui(page)
+            assert ui["pauseDisabled"] is True and ui["resumeDisabled"] is False
+            assert "paused" in ui["status"].lower()
+            assert page.locator("#scan-pause-status").is_visible()
+
+        # A tab opened while the scan is paused starts out showing it as paused.
+        late_page = context.new_page()
+        late_page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        late_page.wait_for_function("() => window.socket && window.socket.connected")
+        late_page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState === 'paused'")
+        assert late_page.locator("#resume-scan-btn").is_enabled()
+        assert late_page.locator("#suspend-scan-btn").is_disabled()
+
+        # Resuming from a different tab resumes it everywhere.
+        second_page.locator("#resume-scan-btn").click()
+        parked.join(timeout=5)
+        assert not parked.is_alive()
+        for page in (first_page, second_page, late_page):
+            page.wait_for_function("() => document.getElementById('suspend-scan-btn').dataset.pauseState === 'running'")
+            assert page.locator("#suspend-scan-btn").is_enabled()
+            assert page.locator("#resume-scan-btn").is_disabled()
+        job = app_module.job_registry.get(owner_sid, "scan")
+        assert job["paused"] is False and job["pause_requested"] is False
+
+        # Stopping a paused scan cancels it instead of leaving it stuck paused.
+        first_page.locator("#suspend-scan-btn").click()
+        first_page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState !== 'running'")
+        first_page.locator("#stop-scan-btn").click()
+        first_page.wait_for_function("() => document.getElementById('resume-scan-btn').dataset.pauseState === 'cancelling'")
+        job = app_module.job_registry.get(owner_sid, "scan")
+        assert job["status"] == "cancelling" and job["paused"] is False and job["pause_requested"] is False
+        assert first_page.locator("#suspend-scan-btn").is_disabled()
+        assert first_page.locator("#resume-scan-btn").is_disabled()
+    finally:
+        if owner_client is not None:
+            if app_module.job_registry.get(owner_sid, "scan"):
+                app_module.job_registry.complete(owner_sid, "scan", status="cancelled")
+            app_module.broadcaster.end_job(owner_sid, job_type="scan")
+            owner_client.disconnect()
         context.close()
 
 
@@ -434,6 +1431,7 @@ def test_existing_open_tabs_receive_live_report_state(browser_server, playwright
         for page in (first_page, second_page):
             page.goto(browser_server["base_url"], wait_until="domcontentloaded")
             page.locator("#scan-target").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
 
         owner_client = _connect_socket(browser_server)
         owner_sid = _get_socket_sid(owner_client)
@@ -468,7 +1466,7 @@ def test_existing_open_tabs_receive_live_report_state(browser_server, playwright
                     "() => document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
                 )
                 page.wait_for_function(
-                    "() => !document.getElementById('start-scan-btn').classList.contains('card-pulsing')"
+                    "() => !document.getElementById('start-scan-btn').classList.contains('ring-4')"
                 )
                 page.wait_for_function(
                     "() => document.getElementById('report-status-text').textContent.includes('Generating report')"
@@ -492,6 +1490,7 @@ def test_existing_open_tabs_receive_live_scan_state(browser_server, playwright_b
         for page in (first_page, second_page):
             page.goto(browser_server["base_url"], wait_until="domcontentloaded")
             page.locator("#scan-target").wait_for()
+            page.wait_for_function("() => window.socket && window.socket.connected")
 
         owner_client = _connect_socket(browser_server)
         owner_sid = _get_socket_sid(owner_client)
@@ -519,13 +1518,13 @@ def test_existing_open_tabs_receive_live_scan_state(browser_server, playwright_b
 
             for page in (first_page, second_page):
                 page.wait_for_function(
-                    "() => document.getElementById('start-scan-btn').classList.contains('card-pulsing')"
+                    "() => document.getElementById('start-scan-btn').classList.contains('ring-4')"
                 )
                 page.wait_for_function(
                     "() => !document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
                 )
                 page.wait_for_function(
-                    "() => document.getElementById('feedback-container').textContent.includes('Running quick scan on 198.51.100.0/24')"
+                    "() => document.getElementById('report-status-text').textContent.includes('Running quick scan on 198.51.100.0/24')"
                 )
         finally:
             app_module.broadcaster.end_job(owner_sid, job_type="scan")
@@ -535,138 +1534,291 @@ def test_existing_open_tabs_receive_live_scan_state(browser_server, playwright_b
         context.close()
 
 
-def test_flask_settings_persist_auto_monitor_and_import_drive_credentials(browser_server, playwright_browser):
-    """Flask controls must call existing APIs, independently of the native bridge."""
-    from copy import deepcopy
-    import json
-    from nmapui.settings import DEFAULT_APP_SETTINGS
-
-    settings = deepcopy(DEFAULT_APP_SETTINGS)
-    saved = []
-    imported = []
-    context = playwright_browser.new_context()
+def test_completed_scan_job_status_updates_last_duration(browser_server, playwright_browser):
+    app_module = browser_server["app_module"]
+    browser = playwright_browser
+    context = browser.new_context()
     page = context.new_page()
+    owner_client = None
 
-    def settings_api(route):
-        if route.request.method == "POST":
-            payload = route.request.post_data_json
-            saved.append(payload)
-            route.fulfill(json={"success": True, "settings": payload})
-        else:
-            route.fulfill(json=settings)
-
-    def credentials_api(route):
-        imported.append(route.request.post_data_json)
-        route.fulfill(json={"success": True, "status": "Test credentials imported"})
-
-    page.route("**/api/settings", settings_api)
-    page.route("**/api/runtime/settings-summary", lambda route: route.fulfill(json={"persisted_counts": {"report_artifacts": 3}}))
-    page.route("**/api/settings/google-drive/status", lambda route: route.fulfill(json={"success": True, "configured": bool(imported), "connected": False,
-        "status": "Test credentials imported" if imported else "Credentials missing"}))
-    page.route("**/api/settings/google-drive/credentials", credentials_api)
     try:
         page.goto(browser_server["base_url"], wait_until="domcontentloaded")
-        page.wait_for_function("() => window.socket && window.socket.connected && typeof window.initializeSettingsTab === 'function'")
-        page.locator("#tab-settings-btn").click()
-        page.wait_for_function("() => settingsTabLoaded === true")
-        page.locator("#settings-auto-monitor-time").fill("02:30")
-        page.locator("#settings-auto-monitor-recurrence").select_option("monthly")
-        page.locator("#save-settings-btn").click()
-        page.wait_for_function("() => document.getElementById('settings-tab-status').textContent.includes('saved')")
-        assert saved and saved[-1]["auto_monitor"]["defaults"]["time"] == "02:30"
-        assert saved[-1]["auto_monitor"]["defaults"]["recurrence"] == "monthly"
-        credentials = {"installed": {"client_id": "test-only", "client_secret": "test-only"}}
-        page.locator("#settings-google-drive-credentials-file").set_input_files({
-            "name": "credentials.json", "mimeType": "application/json", "buffer": json.dumps(credentials).encode(),
-        })
-        page.wait_for_function("() => document.getElementById('settings-google-drive-status').textContent.includes('imported')")
-        assert imported == [{"credentials": credentials}]
-        assert page.evaluate("localStorage.getItem('gemini-nmap-settings')") is None
+        page.locator("#scan-target").wait_for()
+        page.wait_for_function("() => window.socket && window.socket.connected")
+
+        owner_client = _connect_socket(browser_server)
+        owner_sid = _get_socket_sid(owner_client)
+        started_at = (datetime.now() - timedelta(seconds=10)).isoformat()
+        assert app_module.job_registry.start(owner_sid, "scan", {"target": "127.0.0.1"})
+        app_module.job_registry.update(owner_sid, "scan", started_at=started_at)
+        app_module.broadcaster.start_job(owner_sid, job_type="scan")
+        app_module.emit_job_status(owner_sid, "scan")
+
+        page.wait_for_function(
+            "() => document.getElementById('start-scan-btn').classList.contains('ring-4')"
+        )
+        app_module.job_registry.complete(owner_sid, "scan", status="completed")
+        app_module.emit_job_status(owner_sid, "scan")
+
+        page.wait_for_function(
+            "() => !document.getElementById('last-scan-duration').classList.contains('hidden')"
+        )
+        duration_text = page.locator("#last-scan-time-val").text_content().strip()
+        assert duration_text.endswith("s")
+        assert 9 <= float(duration_text[:-1]) <= 11
+        assert page.locator("#start-scan-btn").is_enabled()
+    finally:
+        if owner_client is not None:
+            owner_sid = _get_socket_sid(owner_client)
+            app_module.broadcaster.end_job(owner_sid, job_type="scan")
+            app_module.job_registry.complete(owner_sid, "scan", status="completed")
+            owner_client.disconnect()
+        context.close()
+
+
+def test_release_metadata_is_checked_only_after_explicit_user_action(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+    release_url = "https://api.github.com/repos/techmore/TM-NmapUI/releases/latest"
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.wait_for_function("() => window.socket && window.socket.connected")
+        page.wait_for_function(
+            "() => document.getElementById('app-version').textContent !== 'v--.--.--.__'"
+        )
+        assert browser_server["external_lookups"] == []
+
+        browser_server["expected_external_lookups"].append(release_url)
+        page.locator("#check-app-updates").click()
+        page.wait_for_function(
+            "() => document.getElementById('update-check-status').textContent.includes('Up to date')"
+        )
+        assert browser_server["external_lookups"] == [release_url]
     finally:
         context.close()
 
 
-def test_flask_settings_http_controls_precede_transport_setup_and_bind_once(browser_server, playwright_browser):
-    """Delay token retrieval and block Socket.IO while real HTTP Settings stays available."""
+def _open_dashboard(page, browser_server):
+    page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+    page.locator("#scan-target").wait_for()
+    page.wait_for_function("() => window.socket && window.socket.connected")
+    page.wait_for_function(
+        "() => document.getElementById('view-history-btn')?.dataset.historyWired === 'true'"
+    )
+
+
+def test_rejected_scan_target_is_reported_in_the_status_region(browser_server, playwright_browser):
+    """`scan_error` used to have no listener: a bad target produced no feedback at all."""
+    app_module = browser_server["app_module"]
     context = playwright_browser.new_context()
     page = context.new_page()
-    base_url = browser_server["base_url"]
-    original = context.request.get(f"{base_url}/api/settings").json()
-    saved = []
-    blocked = []
-    paused = []
-    cdp = context.new_cdp_session(page)
-    cdp.on("Fetch.requestPaused", lambda event: paused.append(event["requestId"]))
-    cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*/api/socket-token"}]})
-    def block_socket(route):
-        blocked.append(route.request.url)
-        route.abort()
-    context.route(f"{base_url}/socket.io/**", block_socket)
-    context.route("**/api/settings/google-drive/status", lambda route: route.fulfill(json={
-        "success": True, "configured": True, "connected": False, "status": "Background status arrived",
-    }))
-    context.add_init_script("window.open = () => { window.blockedPopupAttempts = (window.blockedPopupAttempts || 0) + 1; return null; };")
-    page.on("request", lambda request: saved.append(request.post_data_json)
-            if request.method == "POST" and request.url == f"{base_url}/api/settings" else None)
+    sid = None
+
     try:
-        page.goto(base_url, wait_until="domcontentloaded")
-        page.locator("#tab-settings-btn").click()
-        page.wait_for_function("() => settingsTabLoaded === true")
-        assert paused
-        assert page.evaluate("window.socket === null")
-        def save(minutes):
-            page.locator("#settings-max-scan-minutes").fill(str(minutes))
-            with page.expect_response(lambda response: response.request.method == "POST" and response.url == f"{base_url}/api/settings") as response:
-                page.locator("#save-settings-btn").click()
-            assert response.value.json()["success"] is True
-            page.get_by_text("Settings saved.", exact=True).wait_for()
-        save(113)
-        assert len(saved) == 1
-        assert context.request.get(f"{base_url}/api/settings").json()["scan_rules"]["max_scan_minutes"] == 113
-        page.locator("#settings-google-drive-connect-btn").click()
-        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
-        assert page.evaluate("window.blockedPopupAttempts") == 1
-        with page.expect_request(lambda request: request.url.startswith(f"{base_url}/socket.io/")):
-            for request_id in paused:
-                cdp.send("Fetch.continueRequest", {"requestId": request_id})
-            cdp.send("Fetch.disable")
-        page.wait_for_function("() => window.socket !== null")
-        assert blocked
-        context.unroute(f"{base_url}/socket.io/**")
-        page.wait_for_function("() => window.socket.connected")
-        page.evaluate("() => loadGoogleDriveAuthStatus()")
-        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
-        page.evaluate("initializeSettingsTab(); initializeSettingsTab();")
-        save(114)
-        assert len(saved) == 2
-        page.locator("#settings-google-drive-connect-btn").click()
-        page.get_by_text("Allow pop-ups for NmapUI, then click Connect Google Drive again.", exact=True).wait_for()
-        assert page.evaluate("window.blockedPopupAttempts") == 2
+        _open_dashboard(page, browser_server)
+        sid = page.evaluate("window.socket.id")
+        # Send the request over the live socket rather than through the input:
+        # the connect-time `sync_state`/`local_ip` replies can overwrite the
+        # target field a moment after a fill, and a valid prefilled target
+        # would start a real scan. The handler under test is the listener.
+        page.evaluate(
+            "() => window.socket.emit('start_quick_scan', { target: 'not a target; rm -rf /' })"
+        )
+        page.wait_for_function(
+            "() => document.getElementById('report-status-text').textContent.includes('Invalid target')",
+            timeout=5_000,
+        )
+        status = page.locator("#report-status")
+        assert "hidden" not in status.get_attribute("class")
+        assert status.get_attribute("role") == "alert"
+        assert status.get_attribute("aria-live") == "assertive"
+        # Nothing started, so the controls stay usable.
+        assert app_module.job_registry.get(sid, "scan") is None
+        assert page.locator("#start-scan-btn").is_enabled()
     finally:
-        cdp.send("Fetch.disable")
-        context.request.post(f"{base_url}/api/settings", data=original)
+        if sid and app_module.job_registry.get(sid, "scan"):
+            app_module.job_registry.complete(sid, "scan", status="cancelled")
         context.close()
 
 
-def test_flask_drive_signin_keeps_the_browser_gesture_and_removes_opener(browser_server, playwright_browser):
+def test_escape_closes_history_dialog_and_restores_focus(browser_server, playwright_browser):
     context = playwright_browser.new_context()
     page = context.new_page()
-    context.route("**/api/settings/google-drive/status", lambda route: route.fulfill(json={
-        "success": True, "configured": True, "connected": False, "status": "Ready",
-    }))
-    context.route("**/api/settings/google-drive/auth-url", lambda route: route.fulfill(json={
-        "success": True, "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?state=synthetic",
-    }))
-    context.route("https://accounts.google.com/**", lambda route: route.fulfill(body="<html><body>Simulated consent</body></html>", content_type="text/html"))
+
+    try:
+        _open_dashboard(page, browser_server)
+        history_modal = page.locator("#history-modal")
+        assert history_modal.get_attribute("role") == "dialog"
+
+        page.locator("#view-history-btn").focus()
+        page.keyboard.press("Enter")
+        page.get_by_role("heading", name="Scan History").wait_for(state="visible")
+        page.wait_for_function(
+            "() => document.getElementById('history-modal').contains(document.activeElement)"
+        )
+
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.getElementById('history-modal').classList.contains('hidden')"
+        )
+        page.wait_for_function("() => document.activeElement?.id === 'view-history-btn'")
+    finally:
+        context.close()
+
+
+def test_tab_strip_supports_arrow_key_navigation(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        _open_dashboard(page, browser_server)
+        page.wait_for_function(
+            "() => document.querySelector('[role=\"tablist\"]')?.dataset.keyboardWired === 'true'"
+        )
+        page.locator("#tab-dashboard-btn").focus()
+        page.keyboard.press("ArrowRight")
+        page.wait_for_function(
+            "() => document.getElementById('tab-history-btn').getAttribute('aria-selected') === 'true'"
+        )
+        assert page.evaluate("() => document.activeElement.id") == "tab-history-btn"
+        assert "hidden" not in page.locator("#history-tab-panel").get_attribute("class")
+        assert "hidden" in page.locator("#dashboard-tab-panel").get_attribute("class")
+        assert page.locator("#tab-dashboard-btn").get_attribute("aria-selected") == "false"
+        assert page.locator("#tab-dashboard-btn").get_attribute("tabindex") == "-1"
+
+        page.keyboard.press("End")
+        page.wait_for_function(
+            "() => document.getElementById('tab-settings-btn').getAttribute('aria-selected') === 'true'"
+        )
+        page.keyboard.press("Home")
+        page.wait_for_function(
+            "() => document.getElementById('tab-dashboard-btn').getAttribute('aria-selected') === 'true'"
+        )
+        assert "hidden" not in page.locator("#dashboard-tab-panel").get_attribute("class")
+    finally:
+        context.close()
+
+
+def test_results_table_shows_empty_state_until_hosts_arrive(browser_server, playwright_browser):
+    context = playwright_browser.new_context()
+    page = context.new_page()
+
+    try:
+        _open_dashboard(page, browser_server)
+        page.wait_for_function(
+            "() => document.querySelector('#discovery-table tbody')?.dataset.emptyStateWired === 'true'"
+        )
+        assert page.locator("#discovery-empty-state").is_visible()
+        assert "hidden" in page.locator("#discovery-table").get_attribute("class")
+
+        page.evaluate(
+            "() => { const row = document.createElement('tr');"
+            " const cell = document.createElement('td'); cell.textContent = '198.51.100.1';"
+            " row.appendChild(cell); document.querySelector('#discovery-table tbody').appendChild(row); }"
+        )
+        page.wait_for_function(
+            "() => !document.getElementById('discovery-table').classList.contains('hidden')"
+        )
+        assert not page.locator("#discovery-empty-state").is_visible()
+
+        page.evaluate("() => { document.querySelector('#discovery-table tbody').replaceChildren(); }")
+        page.wait_for_function(
+            "() => document.getElementById('discovery-table').classList.contains('hidden')"
+        )
+        assert page.locator("#discovery-empty-state").is_visible()
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("job_type", ["scan", "report"])
+@pytest.mark.parametrize("terminal", ["completed", "cancelled"])
+def test_terminal_job_status_cannot_be_reopened_by_late_same_run_events(browser_server, playwright_browser, monkeypatch, job_type, terminal):
+    """Real Socket.IO packets may arrive terminal, idle, then stale cancelling/running."""
+    # Bootstrap requests the real registry's idle snapshot asynchronously. It
+    # must finish before this test injects a synthetic running job that does
+    # not exist in that registry, or a legitimate idle response can clear it.
+    handlers = browser_server["app_module"].socketio.server.handlers["/"]
+    original_status_handler = handlers["get_job_status"]
+    initial_snapshot_sent = threading.Event()
+
+    def status_with_receipt(*args, **kwargs):
+        result = original_status_handler(*args, **kwargs)
+        initial_snapshot_sent.set()
+        return result
+
+    monkeypatch.setitem(handlers, "get_job_status", status_with_receipt)
+    context = playwright_browser.new_context()
+    page = context.new_page()
     try:
         page.goto(browser_server["base_url"], wait_until="domcontentloaded")
-        page.locator("#tab-settings-btn").click()
-        page.wait_for_function("() => settingsTabLoaded === true")
-        with page.expect_popup() as opened:
-            page.locator("#settings-google-drive-connect-btn").click()
-        popup = opened.value
-        popup.wait_for_url("https://accounts.google.com/**")
-        assert popup.evaluate("window.opener === null")
-        page.get_by_text("Complete sign-in in the browser window that opened.", exact=True).wait_for()
+        page.wait_for_function("() => window.socket?.connected && window.socket.listeners('job_status').length >= 3")
+        assert initial_snapshot_sent.wait(timeout=10), "Bootstrap did not request its job snapshot"
+        # An acknowledged request drains the already-enqueued snapshot over
+        # the actual transport. This uses neither sleeps nor mocked packets.
+        page.evaluate("""() => new Promise((resolve, reject) => {
+            window.socket.timeout(10000).emit('get_job_status', error => {
+                if (error) reject(new Error('Startup snapshot acknowledgement timed out'));
+                else resolve();
+            });
+        })""")
+        sid = page.evaluate("window.socket.id")
+        page.evaluate("""() => {
+            window.lastTestJobReceipt = null;
+            window.socket.on('job_status', job => {
+                if (job.browser_test_receipt) window.lastTestJobReceipt = job.browser_test_receipt;
+            });
+        }""")
+        started = (datetime.now() - timedelta(seconds=8)).isoformat()
+        first_id, next_id = str(uuid.uuid4()), str(uuid.uuid4())
+
+        def send(status, run_id=first_id, **fields):
+            receipt = str(uuid.uuid4())
+            payload = {"job_type": job_type, "status": status, "started_at": started,
+                       "details": {"target": "127.0.0.1", "chunked": False}, "browser_test_receipt": receipt, **fields}
+            if run_id is not None:
+                payload["source_job_id"] = run_id
+            browser_server["app_module"].socketio.emit("job_status", payload, to=sid)
+            page.wait_for_function("receipt => window.lastTestJobReceipt === receipt", arg=receipt)
+
+        def state():
+            return page.evaluate("""kind => kind === 'scan' ? {
+                active: activeScanKind !== null, timer: activePhaseTimer !== null, run: activeScanSourceJobId,
+                control: document.getElementById('start-scan-btn').disabled,
+                pause: document.getElementById('suspend-scan-btn').disabled,
+                resume: document.getElementById('resume-scan-btn').disabled
+            } : {
+                active: reportActionPending, timer: reportTimerInterval !== null, started: reportStartTime,
+                control: !document.getElementById('stop-report-btn').classList.contains('hidden'),
+                pulse: document.getElementById('generate-report-btn').classList.contains('card-pulsing')
+            }""", job_type)
+
+        send("running")
+        assert state()["active"] and state()["timer"]
+        send("running", paused=True, paused_at=datetime.now().isoformat())
+        assert state()["active"]
+        if job_type == "scan":
+            assert state()["pause"] and not state()["resume"]
+        send("running", paused=False)
+        assert state()["active"] and state()["timer"]
+        send(terminal, finished_at=datetime.now().isoformat())
+        ended = state()
+        assert not ended["active"] and not ended["timer"] and not ended["control"]
+        if job_type == "report":
+            assert not ended["pulse"]
+        send("idle", run_id=None)
+        for late_status in ["cancelling", "running"]:
+            send(late_status)
+            assert state() == ended
+        send("running", run_id=next_id, started_at=datetime.now().isoformat())
+        next_running = state()
+        assert next_running["active"] and next_running["timer"]
+        send("running")  # Older run must also stay terminal after a different run starts.
+        assert state() == next_running
+        send("cancelled", run_id=next_id, finished_at=datetime.now().isoformat())
+        assert not state()["active"] and not state()["timer"]
+        send("running", run_id=None)  # Missing IDs retain the legacy event behavior.
+        assert state()["active"] and state()["timer"]
+        send("cancelled", run_id=None, finished_at=datetime.now().isoformat())
+        assert not state()["active"] and not state()["timer"]
     finally:
         context.close()

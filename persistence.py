@@ -4,6 +4,8 @@ from typing import Any
 
 import yaml
 
+from nmapui.private_storage import atomic_replace_private_bytes
+
 CURRENT_ASSIGNMENT_SCHEMA_VERSION = 1
 SCAN_METADATA_SCHEMA_VERSION = 1
 SCAN_METADATA_INDEX_SCHEMA_VERSION = 1
@@ -27,10 +29,7 @@ def _read_text(path: Path) -> str | None:
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(content)
-    tmp_path.replace(path)
+    atomic_replace_private_bytes(path, content.encode("utf-8"))
 
 
 def load_json_document(path: Path, default: Any) -> Any:
@@ -134,6 +133,7 @@ def normalize_scan_metadata_document(document: Any) -> dict[str, Any]:
         if isinstance(completed_successfully, bool)
         else None,
         "diff_summary": diff_summary if isinstance(diff_summary, dict) else None,
+        "diff_summary_computed": bool(document.get("diff_summary_computed", False)),
     }
 
 

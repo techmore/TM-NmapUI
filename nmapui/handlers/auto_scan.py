@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import threading
 
 from flask import jsonify, request
@@ -6,11 +6,13 @@ from flask_socketio import emit
 
 from nmapui.auto_monitor import get_due_auto_monitor_rules, normalize_auto_monitor_settings
 from nmapui.auto_scan import (
+    AUTO_SCAN_CONFIG_LOCK,
     build_auto_scan_status_payload,
     validate_auto_scan_config_update as default_validate_auto_scan_config_update,
 )
 from nmapui.auth import require_auth, require_socket_auth
 from nmapui.paths import AUTO_SCAN_SCHEDULER_LOCK_FILE
+from nmapui.settings import SETTINGS_STATE_LOCK
 
 try:
     import fcntl
@@ -35,15 +37,25 @@ def register_auto_scan_handlers(app, socketio, deps):
             emit("auto_scan_error", {"error": error})
             return
 
-        auto_scan_config.update(data)
-        save_auto_scan_config(auto_scan_config)
-        emit("auto_scan_status", build_auto_scan_status_payload(auto_scan_config), broadcast=True)
+        try:
+            with AUTO_SCAN_CONFIG_LOCK:
+                updated_config = {**auto_scan_config, **data}
+                save_auto_scan_config(updated_config)
+                auto_scan_config.update(updated_config)
+                status_payload = build_auto_scan_status_payload(updated_config)
+        except Exception:
+            logger.exception("Failed to save auto-scan configuration")
+            emit("auto_scan_error", {"error": "Could not save auto-scan settings"})
+            return
+        emit("auto_scan_status", status_payload, broadcast=True)
         logger.info("Auto scan updated: %s", auto_scan_config)
 
     @app.route("/api/auto_scan/status")
     @require_auth
     def get_auto_scan_status():
-        return jsonify(build_auto_scan_status_payload(auto_scan_config))
+        with AUTO_SCAN_CONFIG_LOCK:
+            status_payload = build_auto_scan_status_payload(dict(auto_scan_config))
+        return jsonify(status_payload)
 
     @app.route("/api/auto_scan/update", methods=["POST"])
     @require_auth
@@ -53,54 +65,142 @@ def register_auto_scan_handlers(app, socketio, deps):
         if not is_valid:
             return jsonify({"success": False, "error": error}), 400
 
-        auto_scan_config.update(config)
-        save_auto_scan_config(auto_scan_config)
+        try:
+            with AUTO_SCAN_CONFIG_LOCK:
+                updated_config = {**auto_scan_config, **config}
+                save_auto_scan_config(updated_config)
+                auto_scan_config.update(updated_config)
+        except Exception:
+            logger.exception("Failed to save auto-scan configuration")
+            return jsonify({"success": False, "error": "Could not save auto-scan settings"}), 500
         logger.info("Auto scan config updated: %s", auto_scan_config)
         return jsonify({"success": True})
 
 
-def auto_scan_loop(*, socketio, auto_scan_config, settings_state=None, should_run_auto_scan, startup_at, startup_grace_seconds, execute_auto_scan, execute_auto_monitor_rule=None, logger):
+def auto_scan_loop(
+    *,
+    socketio,
+    auto_scan_config,
+    settings_state=None,
+    should_run_auto_scan,
+    startup_at,
+    startup_grace_seconds,
+    execute_auto_scan,
+    execute_auto_monitor_rule=None,
+    maintenance_task=None,
+    logger,
+):
     """Background loop to check and execute auto scans."""
     last_check_minute = None
+    last_maintenance_date = None
+    worker_running = threading.Event()
+
+    def run_due_work(run_auto_scan, due_rules, run_maintenance, maintenance_date):
+        nonlocal last_maintenance_date
+        try:
+            if run_maintenance:
+                try:
+                    maintenance_task()
+                    last_maintenance_date = maintenance_date
+                except Exception:
+                    logger.exception("Automatic runtime maintenance failed")
+            if run_auto_scan:
+                try:
+                    with AUTO_SCAN_CONFIG_LOCK:
+                        current_auto_scan = dict(auto_scan_config)
+                    if current_auto_scan.get("enabled") and should_run_auto_scan(
+                        current_auto_scan,
+                        now=datetime.now(),
+                        startup_at=startup_at,
+                        startup_grace_seconds=startup_grace_seconds,
+                    ):
+                        execute_auto_scan()
+                    else:
+                        logger.info("Skipping queued auto scan after its settings changed")
+                except Exception:
+                    logger.exception("Automatic scan failed")
+            if execute_auto_monitor_rule is not None:
+                for rule in due_rules:
+                    try:
+                        with SETTINGS_STATE_LOCK:
+                            current_settings = normalize_auto_monitor_settings(
+                                (settings_state or {}).get("auto_monitor", {})
+                            )
+                        current_due = get_due_auto_monitor_rules(
+                            current_settings,
+                            now=datetime.now(),
+                            startup_at=startup_at,
+                            startup_grace_seconds=startup_grace_seconds,
+                        )
+                        current_rule = next(
+                            (entry for entry in current_due if entry.get("id") == rule.get("id")),
+                            None,
+                        )
+                        if current_rule is None:
+                            logger.info("Skipping queued auto-monitor rule %s after its settings changed", rule.get("id"))
+                            continue
+                        execute_auto_monitor_rule(current_rule)
+                    except Exception:
+                        logger.exception("Auto-monitor rule %s failed", rule.get("id"))
+        finally:
+            worker_running.clear()
 
     while True:
         try:
             now = datetime.now()
-            current_minute = now.strftime("%H:%M")
+            current_minute = now.strftime("%Y-%m-%d %H:%M")
             if current_minute != last_check_minute:
                 last_check_minute = current_minute
-                if should_run_auto_scan(
-                    auto_scan_config,
+                with AUTO_SCAN_CONFIG_LOCK:
+                    auto_scan_snapshot = dict(auto_scan_config)
+                run_auto_scan = should_run_auto_scan(
+                    auto_scan_snapshot,
                     now=now,
                     startup_at=startup_at,
                     startup_grace_seconds=startup_grace_seconds,
-                ):
-                    last_run = auto_scan_config.get("last_run")
-                    if last_run:
-                        last_run_time = datetime.fromisoformat(last_run)
-                        if (now - last_run_time).total_seconds() < 3600:
-                            socketio.sleep(60)
-                            continue
-
-                    logger.info("Executing auto scan")
-                    execute_auto_scan()
-
-                auto_monitor_settings = normalize_auto_monitor_settings(
-                    (settings_state or {}).get("auto_monitor", {})
                 )
-                for rule in get_due_auto_monitor_rules(
+                if run_auto_scan:
+                    last_run = auto_scan_snapshot.get("last_run")
+                    if last_run:
+                        try:
+                            last_run_time = datetime.fromisoformat(last_run)
+                            elapsed = (
+                                (now.astimezone(timezone.utc) - last_run_time.astimezone(timezone.utc)).total_seconds()
+                                if last_run_time.tzinfo is not None
+                                else (now - last_run_time).total_seconds()
+                            )
+                            if 0 <= elapsed < 3600:
+                                run_auto_scan = False
+                        except (TypeError, ValueError):
+                            logger.warning("Ignoring invalid auto-scan last_run: %r", last_run)
+
+                with SETTINGS_STATE_LOCK:
+                    auto_monitor_settings = normalize_auto_monitor_settings(
+                        (settings_state or {}).get("auto_monitor", {})
+                    )
+                due_rules = get_due_auto_monitor_rules(
                     auto_monitor_settings,
                     now=now,
                     startup_at=startup_at,
                     startup_grace_seconds=startup_grace_seconds,
-                ):
-                    logger.info(
-                        "Executing auto-monitor rule %s for customer %s",
-                        rule.get("id"),
-                        rule.get("customer_name"),
-                    )
-                    if execute_auto_monitor_rule is not None:
-                        execute_auto_monitor_rule(rule)
+                )
+                run_maintenance = (
+                    maintenance_task is not None
+                    and now.date() != last_maintenance_date
+                )
+                if (run_auto_scan or due_rules or run_maintenance) and not worker_running.is_set():
+                    worker_running.set()
+                    try:
+                        socketio.start_background_task(
+                            run_due_work,
+                            run_auto_scan,
+                            due_rules,
+                            run_maintenance,
+                            now.date(),
+                        )
+                    except Exception:
+                        worker_running.clear()
+                        raise
         except Exception as exc:
             logger.error("Auto scan loop error: %s", exc)
 
@@ -128,7 +228,21 @@ def acquire_auto_scan_scheduler_lock(*, lock_file=AUTO_SCAN_SCHEDULER_LOCK_FILE)
     return handle
 
 
-def start_auto_scan_thread(*, thread_ref, socketio, auto_scan_config, settings_state=None, should_run_auto_scan, startup_at, startup_grace_seconds, execute_auto_scan, execute_auto_monitor_rule=None, logger, acquire_scheduler_lock=acquire_auto_scan_scheduler_lock):
+def start_auto_scan_thread(
+    *,
+    thread_ref,
+    socketio,
+    auto_scan_config,
+    settings_state=None,
+    should_run_auto_scan,
+    startup_at,
+    startup_grace_seconds,
+    execute_auto_scan,
+    execute_auto_monitor_rule=None,
+    maintenance_task=None,
+    logger,
+    acquire_scheduler_lock=acquire_auto_scan_scheduler_lock,
+):
     """Start the auto-scan worker once per process."""
     if thread_ref["thread"] and thread_ref["thread"].is_alive():
         return
@@ -152,6 +266,7 @@ def start_auto_scan_thread(*, thread_ref, socketio, auto_scan_config, settings_s
             "startup_grace_seconds": startup_grace_seconds,
             "execute_auto_scan": execute_auto_scan,
             "execute_auto_monitor_rule": execute_auto_monitor_rule,
+            "maintenance_task": maintenance_task,
             "logger": logger,
         },
         daemon=True,
