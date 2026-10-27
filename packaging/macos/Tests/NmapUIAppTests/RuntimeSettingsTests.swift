@@ -2229,7 +2229,7 @@ struct RuntimeSettingsTests {
             },
             presentFailure: { _ in Issue.record("Unexpected authorization failure") }
         )
-        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState, autoScanServices: services)
+        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState, autoScanServices: services, allowsLegacy: { true })
 
         let initial = dispatcher.dispatch(
             RuntimeClientRequestEnvelope(event: .getInitialData),
@@ -2324,7 +2324,7 @@ struct RuntimeSettingsTests {
     @Test("parses Swift-owned scan start requests")
     func parsesSwiftOwnedScanStartRequests() throws {
         let sessionState = AppSessionState(eventRouter: RuntimeEventRecorder())
-        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState)
+        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState, allowsLegacy: { true })
 
         let quick = dispatcher.scanStartPayload(from: RuntimeClientRequestEnvelope(
             event: .startQuickScan,
@@ -2361,7 +2361,7 @@ struct RuntimeSettingsTests {
     @Test("parses Swift-owned settings and Google Drive request payloads")
     func parsesSwiftOwnedSettingsAndGoogleDriveRequestPayloads() throws {
         let sessionState = AppSessionState(eventRouter: RuntimeEventRecorder())
-        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState)
+        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState, allowsLegacy: { true })
 
         let autoScan = dispatcher.autoScanPayload(from: RuntimeClientRequestEnvelope(
             event: .enableAutoScan,
@@ -2402,7 +2402,7 @@ struct RuntimeSettingsTests {
     @Test("builds scan coordinator requests from typed scan payloads")
     func buildsScanCoordinatorRequestsFromTypedScanPayloads() throws {
         let sessionState = AppSessionState(eventRouter: RuntimeEventRecorder())
-        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState)
+        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState, allowsLegacy: { true })
 
         let quick = dispatcher.scanCoordinatorRequest(from: RuntimeClientRequestEnvelope(
             event: .startQuickScan,

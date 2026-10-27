@@ -12,7 +12,7 @@ final class ScanRunLock: @unchecked Sendable {
         self.runID = runID
     }
 
-    static func acquire(in dataDirectory: URL, runID: UUID = UUID()) -> ScanRunLock? {
+    static func acquire(in dataDirectory: URL, runID: UUID = UUID(), recordMarker: Bool = true) -> ScanRunLock? {
         do {
             try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
         } catch {
@@ -28,9 +28,11 @@ final class ScanRunLock: @unchecked Sendable {
             return nil
         }
 
-        let marker = "\(runID.uuidString)\n".data(using: .utf8) ?? Data()
-        ftruncate(descriptor, 0)
-        _ = marker.withUnsafeBytes { write(descriptor, $0.baseAddress, marker.count) }
+        if recordMarker {
+            let marker = "\(runID.uuidString)\n".data(using: .utf8) ?? Data()
+            ftruncate(descriptor, 0)
+            _ = marker.withUnsafeBytes { write(descriptor, $0.baseAddress, marker.count) }
+        }
         return ScanRunLock(descriptor: descriptor, runID: runID)
     }
 

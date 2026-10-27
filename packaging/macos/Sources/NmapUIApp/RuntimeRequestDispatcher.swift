@@ -30,10 +30,12 @@ struct RuntimeAutoScanServices {
 final class RuntimeRequestDispatcher: RuntimeRequestDispatching {
     private let sessionState: AppSessionState
     private let autoScanServices: RuntimeAutoScanServices
+    private let allowsLegacy: () -> Bool
 
-    init(sessionState: AppSessionState, autoScanServices: RuntimeAutoScanServices = .live) {
+    init(sessionState: AppSessionState, autoScanServices: RuntimeAutoScanServices = .live, allowsLegacy: @escaping () -> Bool = { ExecutionSourceStore.live.resolve().source == .legacy }) {
         self.sessionState = sessionState
         self.autoScanServices = autoScanServices
+        self.allowsLegacy = allowsLegacy
     }
 
     func dispatch(
@@ -41,6 +43,10 @@ final class RuntimeRequestDispatcher: RuntimeRequestDispatching {
         dataDirectory: URL,
         version: String
     ) -> RuntimeRequestDispatchResult {
+        guard allowsLegacy() else {
+            sessionState.scanFeedback = "Legacy bridge effects are unavailable in Shared or unselected mode. No native scanner, helper or scheduler was started."
+            return RuntimeRequestDispatchResult()
+        }
         switch request.event {
         case .getInitialData:
             return RuntimeRequestDispatchResult(events: initialDataMessages())
@@ -181,6 +187,7 @@ final class RuntimeRequestDispatcher: RuntimeRequestDispatching {
     }
 
     func scanCoordinatorRequest(from request: RuntimeClientRequestEnvelope) -> ScanCoordinator.ScanRequest? {
+        guard allowsLegacy() else { return nil }
         guard [.startQuickScan, .startCompleteScan, .startDragnetScan].contains(request.event) else {
             return nil
         }

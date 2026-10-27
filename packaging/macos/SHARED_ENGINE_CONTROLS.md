@@ -39,8 +39,28 @@ identity races, cancel of running and stopped groups, and canonical errors.
 Separate stdlib fixtures exercise HTTP and polling redirect/challenge refusal.
 No scheduler, native helper, Keychain, installed service or LAN scan is used.
 
-This slice does not change AppDelegate or route native UI actions. A follow-up
-must construct the HTTP and Socket.IO clients together on attach, clear the UI
-password, expose one coherent canonical scan flow, and keep legacy archives and
-schedules explicitly separate until migration is implemented. It must not
-claim full write-path parity or launch the old native engine on control errors.
+The app-level source router now connects this transport to SwiftUI, menu,
+keyboard, and both compatibility WebKit entrypoints. New installs are unselected
+until the operator chooses; existing native installations retain compatibility
+Legacy behavior without losing enabled schedules. Shared/unselected startup
+never runs native bootstrap, preferences, helper, Keychain, network fingerprint
+or scheduler effects. Explicit mode changes hold the real scan flock until
+restart, reject active local work, cancel deferred effects, and preserve all
+Legacy metadata and agent/config files. An unmanaged other-binary LaunchAgent
+requires explicit Legacy cleanup before Shared selection. Scheduled-run
+admission checks source before any bootstrap and again under the real lock.
+
+Shared attach constructs HTTP/control clients from the same memory-only fields,
+then clears the password field. Buttons capture the rendered source UUID;
+menus retain the UUID observed when opened. Unscoped errors require both fresh
+job snapshots before an explicit uncertainty acknowledgement. Detach/quit leave
+service jobs running; another authenticated frontend may subsequently observe
+and explicitly cancel them. Isolated native-view tests exercise this behavior
+against the pinned Gunicorn/fake-scanner fixture and verify zero local effects.
+HTTP readiness in that UI fixture uses an injected scheduler-heartbeat spy;
+no actual scheduler/helper/Keychain is invoked. Light/dark PNGs are retained.
+
+This is one canonical scan path, not full migration parity. New canonical report
+generation, customer writes, lossless Legacy archive import and scheduling
+handoff remain separate work. Legacy Complete/Dragnet/VPN controls never fall
+back from Shared errors or get silently relabelled as canonical presets.

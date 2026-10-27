@@ -23,7 +23,7 @@ struct RuntimeAutoScanEffectTests {
             sync: { _, _, _ in scheduled += 1; return .failure(error) },
             presentFailure: { _ in presented += 1 }
         )
-        let dispatcher = RuntimeRequestDispatcher(sessionState: state, autoScanServices: services)
+        let dispatcher = RuntimeRequestDispatcher(sessionState: state, autoScanServices: services, allowsLegacy: { true })
         _ = dispatcher.dispatch(RuntimeClientRequestEnvelope(event: .enableAutoScan), dataDirectory: directory, version: "test")
         for _ in 0..<20 where state.runtimeAutoScanSnapshot.enabled { await Task.yield() }
         #expect(authorized == 1)

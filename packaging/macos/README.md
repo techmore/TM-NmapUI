@@ -134,21 +134,50 @@ listener. For Flask runtime-store migration, use
 
 ## Verification and compatibility clients
 
-### Shared scanner review in SwiftUI
+### Explicit execution source in SwiftUI
 
-The **Shared scanner** tab connects explicitly to an existing scanner on this Mac.
-Enter `http://127.0.0.1:9000` (or `http://[::1]:PORT`) and, when required, its
-username/password, then choose **Attach / check access**. Credentials stay in
-memory for the attachment; the address and credentials are not saved. Strict
-authentication works with `NMAPUI_TRUST_LOCAL_UI=false`. This tab never starts a
-host service or changes its authentication settings.
+New installations start with an execution-source choice and recommend **Shared
+scanner**. Shared mode connects explicitly to an existing canonical Flask
+scanner on this Mac. Enter `http://127.0.0.1:PORT` (or `http://[::1]:PORT`) and,
+when required, its credentials, then choose **Attach / check access**. The HTTP
+and Socket.IO clients are constructed together before the password field is
+cleared. Credentials and the endpoint remain in memory only. Strict
+`NMAPUI_TRUST_LOCAL_UI=false` access uses UTF-8 Basic authentication plus the
+separately fetched Socket.IO CSRF token. Nothing connects before Attach, and
+Shared startup never installs/starts a service or initializes native preferences,
+helper authorization, Keychain access, network fingerprinting or LaunchAgent
+synchronization.
 
-The view shows actual shared-engine activity, saved scan history and report
-artifacts, updating every ten seconds only after attachment. Leaving the tab
-detaches it. Disconnected observations remain visibly out of date, and artifact
-actions stay disabled until a fresh attachment succeeds. Native scanner controls,
-the **Native archive**, customer records and native LaunchAgent schedules remain
-separate; this view neither starts shared scans nor imports or changes schedules.
+Shared controls start the canonical discovery/scan workflow with the scanner's
+settings and an explicit optional host-discovery override. Live job status,
+source run UUIDs, pause/resume and Stop use the canonical Socket.IO events. UI,
+menu, keyboard and both compatibility bridge ports consult the same execution
+router. Unknown statuses remain unknown; stale UUIDs cannot control a replacement
+run. Disconnected commands are rejected rather than queued. An uncertain start
+is never replayed; both fresh job statuses must arrive before the operator can
+acknowledge its uncertainty. Native Complete/Dragnet/VPN presets are rejected in
+Shared mode instead of being silently assigned different canonical semantics.
+New report generation is not yet exposed in this native Shared mode; saved
+reports/history remain available through the authenticated shared HTTP client.
+
+Detach and Quit disconnect only. Service jobs continue until explicitly stopped
+by an authenticated frontend with their observed source run ID. A cached HTTP
+history snapshot is labeled separately from authoritative live job state.
+
+An existing native installation (runtime metadata, native schedule configuration
+or LaunchAgent) without a source marker remains in **Legacy compatibility**.
+This preserves already enabled schedules on upgrade. Changing source is an
+explicit, restart-required operation: the actual cross-process scan lock must
+be free, deferred Legacy work is revoked, and active Legacy authorization or
+downloads must finish or be explicitly cancelled. Pending restart blocks new
+local UI, menu and bridge work. Shared source selection suppresses subsequent
+native scheduled-run admission without deleting or translating its config.
+An existing agent that launches a different/unreadable older app copy blocks the
+Shared transition; disable that schedule explicitly in Legacy first. Histories,
+customer records and recurrence/configuration bytes are never auto-imported.
+The selected source alone is saved in
+`~/Library/Application Support/com.techmore.NmapUI/execution-source.json`.
+It contains no address, credentials or shared-job state.
 
 PDF/XML/HTML actions download using the same authenticated connection before
 opening a private local copy in the default document viewer. Every redirect is
@@ -184,17 +213,20 @@ needs Flask 3.1.3. Tests render the SwiftUI view through `NSHostingView` without
 launching the application delegate, and Chromium verifies offline policy,
 report layout and hash-authorized filter/CSV behavior.
 
-Moving execution to the shared engine is a separate migration: native
-`history.json`/`reports_archive` and `customers.json` do not match the shared
-`scans/*/metadata.json`, SQLite artifacts and customer registry. Native hourly
-schedules also have no exact counterpart in current shared customer monitoring.
-Preserve native files and their existing scheduler until an explicit, reversible
-import and single-owner scheduling handoff are implemented.
+Lossless data/schedule migration remains an open release gate: native
+`history.json`/`reports_archive` and UUID customers differ from shared SQLite
+artifacts, scan folders and opaque customer IDs. Native hourly schedules have no
+exact shared recurrence equivalent. Legacy compatibility is a separate engine,
+not evidence of shared-backend parity. Preserve its files and original branch
+until explicit reversible import, canonical report/customer writes and a
+single-owner scheduling handoff are qualified. Installed older binaries and
+physical-host/service migration still require deployment qualification.
 
 CI keeps the Flask unit/browser/wrapper jobs and additionally requires the full
 SwiftPM test suite and an optimized native bundle with strict signature/resource
-checks. Tests use temporary data and loopback listeners; they never launch the
-native GUI or install its service. The browser suite uses real Socket.IO clients
+checks. Tests use temporary data and loopback listeners, render isolated native views
+and inject local effects; they never run the app's live bootstrap or register
+its service. The browser suite uses real Socket.IO clients
 and has no expected-failure masks.
 
 `templates/index.html` uses the compatible Flask API modules. The retained native

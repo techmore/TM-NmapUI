@@ -115,17 +115,19 @@ struct SharedEngineSocketTests {
 
     @Test("owned fixture readiness preserves MainActor responsiveness")
     func readinessHeartbeat() async throws {
+        let release = FileManager.default.temporaryDirectory.appendingPathComponent("nmapui-mainactor-heartbeat-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: release) }
         var heartbeat = false
-        let beat = Task { @MainActor in
-            try await Task.sleep(for: .milliseconds(50))
-            heartbeat = true
-        }
-        async let pending = ControlFixture(policy: "delayed-ready")
-        try await Task.sleep(for: .milliseconds(100))
+        let fixture = try await ControlFixture(policy: "heartbeat-ready", readinessRelease: release, onReadinessWait: {
+            Task { @MainActor in
+                heartbeat = true
+                try Data("main-actor-responsive".utf8).write(to: release)
+            }
+        })
+        // The fixture withholds readiness until this MainActor task writes the
+        // release marker. A synchronous pipe read would prevent it from doing so.
         #expect(heartbeat)
-        let fixture = try await pending
         fixture.stop()
-        try await beat.value
     }
 
     @Test("vendored Engine.IO copies private session configuration on every reset")
@@ -210,7 +212,7 @@ private final class ControlFixture {
     let endpoint: SharedEngineEndpoint
     let root: URL
     let diagnostics: URL
-    init(policy: String? = nil, interpreter: String? = nil) async throws {
+    init(policy: String? = nil, interpreter: String? = nil, readinessRelease: URL? = nil, onReadinessWait: (() -> Void)? = nil) async throws {
         process = Process()
         let ready = Pipe()
         diagnostics = FileManager.default.temporaryDirectory.appendingPathComponent("nmapui-control-fixture-\(UUID()).log")
@@ -220,12 +222,14 @@ private final class ControlFixture {
             URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent(policy == nil ? "Fixtures/canonical_control_server.py" : "Fixtures/control_policy_server.py").path]
         process.environment = ProcessInfo.processInfo.environment
         process.environment?["NMAPUI_CONTROL_POLICY"] = policy
+        process.environment?["NMAPUI_CONTROL_READY_RELEASE"] = readinessRelease?.path
         process.standardOutput = ready; process.standardError = try FileHandle(forWritingTo: diagnostics)
         try process.run()
         try ready.fileHandleForWriting.close()
         // The Python launcher has its own bounded readiness deadline and
         // prints diagnostics on failure; EOF also resolves this read.
         let data: Data
+        onReadinessWait?()
         do { data = try await Self.readiness(from: ready.fileHandleForReading) }
         catch {
             if process.isRunning { kill(process.processIdentifier, SIGTERM) }
