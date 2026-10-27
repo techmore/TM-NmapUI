@@ -11,6 +11,8 @@
     <script src="/static/js/session_gate.js"></script>
     <script src="/static/vendor/lucide.min.js"></script>
 <style>
+    /* The olive web UI is a light theme; keep native controls light under an OS dark preference. */
+    :root { color-scheme: light; }
     #suspend-scan-btn:disabled, #resume-scan-btn:disabled { opacity: .4; cursor: not-allowed; }
     body {
         font-family: 'Inter', system-ui, sans-serif;
@@ -453,8 +455,11 @@
     #network-key-banner > div > div:first-child > div:last-child { gap: 16px; width: 100%; justify-content: space-between; }
 }
 </style>
+{% if elementary_shell %}
+    <!-- elementary OS native shell only; never served to a regular browser. -->
     <link rel="stylesheet" href="/static/css/elementary-palette.css" />
     <link rel="stylesheet" href="/static/css/elementary.css" />
+{% endif %}
 </head>
 <body class="py-8">
     <a href="#scan-target" class="skip-link">Skip to scan controls</a>
@@ -610,25 +615,25 @@
                     </div>
                     <div class="flex items-center gap-8">
                         <div class="flex flex-col items-end">
-                            <span class="text-[9px] uppercase tracking-tighter text-olive-400 font-black">Hops</span>
+                            <span class="text-[9px] uppercase tracking-tighter text-olive-600 font-black">Hops</span>
                             <span id="total-hops" class="text-sm font-mono font-bold text-olive-900">--</span>
                         </div>
                         <div class="flex flex-col items-end border-l border-olive-100 pl-4">
-                            <span class="text-[9px] uppercase tracking-tighter text-amber-500 font-black">Private</span>
-                            <span id="private-hops" class="text-sm font-mono font-bold text-amber-600">--</span>
+                            <span class="text-[9px] uppercase tracking-tighter text-amber-800 font-black">Private</span>
+                            <span id="private-hops" class="text-sm font-mono font-bold text-amber-800">--</span>
                         </div>
                         <div class="flex flex-col items-end border-l border-olive-100 pl-4">
-                            <span class="text-[9px] uppercase tracking-tighter text-emerald-500 font-black">Public</span>
-                            <span id="public-hops" class="text-sm font-mono font-bold text-emerald-600">--</span>
+                            <span class="text-[9px] uppercase tracking-tighter text-emerald-700 font-black">Public</span>
+                            <span id="public-hops" class="text-sm font-mono font-bold text-emerald-700">--</span>
                         </div>
                         <div class="flex flex-col items-end border-l border-olive-100 pl-4">
-                            <span class="text-[9px] uppercase tracking-tighter text-olive-400 font-black">Exit</span>
+                            <span class="text-[9px] uppercase tracking-tighter text-olive-600 font-black">Exit</span>
                             <span id="exit-ip" class="text-sm font-mono font-bold text-olive-900">--</span>
                         </div>
                     </div>
                 </div>
                 <div id="route-path" class="flex items-center flex-wrap gap-2 py-1">
-                    <span class="text-olive-400 text-xs italic">Mapping active route...</span>
+                    <span class="text-olive-600 text-xs italic">Mapping active route...</span>
                 </div>
             </div>
         </div>
@@ -1194,7 +1199,7 @@
             <div class="p-8">
                 <div id="update-initial" class="space-y-4">
                     <p class="text-olive-800">A new version of NmapUI is available. Would you like to download it now?</p>
-                    <div id="update-release-notes" class="p-4 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800 max-h-32 overflow-y-auto">
+                    <div id="update-release-notes" class="p-4 bg-olive-50 border border-olive-200 rounded-lg text-sm text-olive-800 max-h-32 overflow-y-auto">
                         <strong>Release Notes:</strong><br>
                         Loading...
                     </div>
@@ -1328,8 +1333,8 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
                         </svg>
                     </div>
-                    <input type="text" id="scan-target" class="w-full pl-11 pr-12 py-3 bg-olive-50 border-2 border-olive-100 rounded-xl text-olive-900 placeholder-olive-400 focus:bg-white focus:border-olive-500 focus:ring-4 focus:ring-olive-500/10 transition-all outline-none" placeholder="192.168.1.0/24 or techmore.io" aria-label="Network target for scanning">
-                    <button id="info-icon" type="button" class="absolute right-4 top-1/2 -translate-y-1/2 cursor-pointer rounded-full text-olive-300 hover:text-olive-600 transition-colors" title="Scan information" aria-label="Show valid target formats" aria-expanded="false" aria-controls="tooltip">
+                    <input type="text" id="scan-target" class="w-full pl-11 pr-12 py-3 bg-olive-50 border-2 border-olive-100 rounded-xl text-olive-900 placeholder-olive-500 focus:bg-white focus:border-olive-500 focus:ring-4 focus:ring-olive-500/10 transition-all outline-none" placeholder="192.168.1.0/24 or techmore.io" aria-label="Network target for scanning">
+                    <button id="info-icon" type="button" class="absolute right-4 top-1/2 -translate-y-1/2 cursor-pointer rounded-full text-olive-500 hover:text-olive-700 transition-colors" title="Scan information" aria-label="Show valid target formats" aria-expanded="false" aria-controls="tooltip">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                     </button>
                     <div id="tooltip" role="region" aria-label="Valid target formats" class="hidden absolute top-full right-0 mt-3 w-64 bg-olive-900 text-white p-4 rounded-xl shadow-xl border border-olive-800 text-xs z-50 leading-relaxed">
@@ -1411,7 +1416,7 @@
 
             <div class="flex items-center gap-4">
                 <div id="last-scan-container" class="hidden flex items-center gap-3 px-4 py-2 bg-white rounded-full border border-olive-100">
-                    <span class="text-[9px] font-black uppercase tracking-tighter text-olive-400">Baseline Health</span>
+                    <span class="text-[9px] font-black uppercase tracking-tighter text-olive-600">Baseline Health</span>
                     <span id="last-scan-days" class="text-xs font-bold text-olive-900">--</span>
                 </div>
                 
@@ -1502,14 +1507,14 @@
                 <!-- Auto-Monitor status row -->
                 <div class="flex items-center justify-between text-sm">
                     <span class="text-olive-600">Auto-Monitor</span>
-                    <span id="monitor-auto-scan-state" class="font-medium text-olive-400">Off</span>
+                    <span id="monitor-auto-scan-state" class="font-medium text-olive-600">Off</span>
                 </div>
                 <p id="monitor-auto-scan-detail" class="hidden font-mono text-[10px] text-olive-500"></p>
 
                 <!-- Change summary since previous scan -->
                 <div class="flex items-center justify-between text-sm">
                     <span class="text-olive-600">Changes vs last scan</span>
-                    <span id="monitor-change-summary" class="font-medium text-olive-400">--</span>
+                    <span id="monitor-change-summary" class="font-medium text-olive-600">--</span>
                 </div>
 
                 <button id="open-reports-tab-btn" class="mt-1 w-full py-1.5 text-[11px] font-bold uppercase tracking-widest bg-white border border-olive-200 text-olive-700 rounded-lg hover:bg-olive-100 transition-colors">View Reports &amp; History</button>

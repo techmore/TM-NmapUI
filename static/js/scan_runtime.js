@@ -261,7 +261,7 @@ function updateMonitoringHubAutoMonitor(config = {}) {
 
     const enabled = !!config.enabled;
     stateEl.textContent = enabled ? `On (${config.recurrence || 'daily'})` : 'Off';
-    stateEl.className = enabled ? 'font-bold text-amber-600' : 'font-medium text-olive-400';
+    stateEl.className = enabled ? 'font-bold text-amber-800' : 'font-medium text-olive-600';
     indicator?.classList.toggle('hidden', !enabled);
 
     if (detailEl) {
@@ -599,7 +599,7 @@ function initializeScanRuntime(socket) {
                 return `
                 <div class="bg-white border ${failed ? 'border-red-200' : 'border-olive-200'} rounded-2xl p-5 shadow-sm hover:shadow-md transition-shadow">
                     <div class="flex justify-between items-start mb-4">
-                        <span class="text-[10px] font-bold ${failed ? 'text-red-500' : 'text-olive-400'} uppercase tracking-widest">${new Date(item.timestamp).toLocaleString()}</span>
+                        <span class="text-[10px] font-bold ${failed ? 'text-red-700' : 'text-olive-600'} uppercase tracking-widest">${new Date(item.timestamp).toLocaleString()}</span>
                         <span class="px-2 py-1 ${failed ? 'bg-red-100 text-red-700' : 'bg-olive-100 text-olive-700'} text-[10px] font-bold rounded-lg">${failed ? 'FAILED' : `${escapeHTMLValue(item.duration)}s`}</span>
                     </div>
                     <div class="mb-4">
@@ -658,7 +658,7 @@ function initializeScanRuntime(socket) {
                                 <h4 class="truncate text-sm font-bold text-olive-900" title="${escapeHTML(report.name)}">${escapeHTML(report.name)}</h4>
                                 <p class="mt-0.5 truncate font-mono text-[10px] text-olive-500" title="${escapeHTML(report.folder || '')}">${escapeHTML(report.folder || 'reports')}</p>
                             </div>
-                            <span class="shrink-0 text-[10px] font-bold uppercase ${failed ? 'text-red-500' : 'text-olive-400'}">${failed ? 'Failed' : 'Report'}</span>
+                            <span class="shrink-0 text-[10px] font-bold uppercase ${failed ? 'text-red-700' : 'text-olive-600'}">${failed ? 'Failed' : 'Report'}</span>
                         </div>
                         <div class="mt-2 grid gap-1 text-[10px] leading-snug text-olive-600">
                             <span>${escapeHTML(reportTimestamp)}</span>
@@ -691,7 +691,7 @@ function renderHop(data) {
     const colorClass = isPrivate ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-emerald-100 text-emerald-700 border-emerald-200';
     if (data.hop > 1) {
         const arrow = document.createElement('span');
-        arrow.className = 'text-olive-300 mx-1';
+        arrow.className = 'text-olive-500 mx-1';
         arrow.textContent = '→';
         routePath.appendChild(arrow);
     }
