@@ -1,6 +1,9 @@
 // Wire tab switching immediately (pure DOM) so tab clicks work even while the
 // socket is still connecting. Data loads inside each tab handle their own readiness.
 document.addEventListener('DOMContentLoaded', () => {
+    if (typeof initializeAppTabs === 'function') {
+        initializeAppTabs();
+    }
     if (typeof initializeReportsTab === 'function') {
         initializeReportsTab();
     }

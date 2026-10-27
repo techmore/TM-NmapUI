@@ -1,6 +1,7 @@
 // Bind DOM and HTTP controls while Socket.IO is still connecting.
 // Transport listeners are attached separately once the connection is live.
 function initializeTemplateDOM() {
+    if (typeof initializeAppTabs === 'function') initializeAppTabs();
     if (typeof initializeReportsTab === 'function') initializeReportsTab();
     if (typeof initializeSettingsTab === 'function') initializeSettingsTab();
 }

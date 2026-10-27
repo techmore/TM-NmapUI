@@ -1699,6 +1699,44 @@ def test_tab_strip_supports_arrow_key_navigation(browser_server, playwright_brow
         context.close()
 
 
+
+def test_shared_tab_switch_runs_keyboard_nav_and_reports_activation(
+    browser_server, playwright_browser, scan_fixture
+):
+    """reports_tab.js used to redefine switchAppTab after site_chrome.js loaded,
+    replacing the shared switcher. Now there is one switchAppTab (site_chrome.js)
+    and the Reports tab loads through its activation hook, before Socket.IO too."""
+    context = playwright_browser.new_context()
+    context.route("**/socket.io/**", lambda route: route.abort())
+    context.add_init_script(
+        "window.__tabEvents = [];"
+        "window.addEventListener('tab:changed', (e) => window.__tabEvents.push(e.detail.tab));"
+    )
+    page = context.new_page()
+    try:
+        page.goto(browser_server["base_url"], wait_until="domcontentloaded")
+        page.wait_for_function(
+            "() => document.querySelector('[role=\"tablist\"]')?.dataset.keyboardWired === 'true'"
+        )
+        assert page.evaluate("window.socket?.connected === true") is False
+        assert page.evaluate("typeof window.registerAppTabActivation") == "function"
+
+        page.locator("#tab-dashboard-btn").focus()
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("ArrowRight")
+        page.wait_for_function(
+            "() => document.getElementById('tab-reports-btn').getAttribute('aria-selected') === 'true'"
+        )
+        assert page.evaluate("() => document.activeElement.id") == "tab-reports-btn"
+        assert "hidden" not in page.locator("#reports-tab-panel").get_attribute("class")
+        assert page.evaluate("window.location.hash") == "#reports"
+        # The shared switcher fired its hook once per switch, in order.
+        assert page.evaluate("window.__tabEvents") == ["dashboard", "history", "reports"]
+        # Reports activation (HTTP load in reports_tab.js) still happened.
+        page.locator("#reports-tab-list").get_by_text(scan_fixture["customer_name"]).first.wait_for()
+    finally:
+        context.close()
+
 def test_results_table_shows_empty_state_until_hosts_arrive(browser_server, playwright_browser):
     context = playwright_browser.new_context()
     page = context.new_page()

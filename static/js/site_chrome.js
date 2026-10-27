@@ -29,14 +29,32 @@ function initializeTabListKeyboard() {
     });
 }
 
-function initializeSiteChrome() {
-    // The header clock is driven by startPreciseClock() in layout_runtime.js.
-    // A second 1 s clock here used to overwrite it with a different format,
-    // so the text flipped between two layouts every minute.
+// Per-tab activation callbacks. A feature module that owns a tab's data
+// (reports_tab.js owns History and Reports) registers here instead of
+// redefining switchAppTab, so this file keeps the one tab switcher and its
+// shared behaviour (keyboard navigation, hash, tab:changed) always runs.
+const appTabActivationHandlers = new Map();
+
+function registerAppTabActivation(tab, handler) {
+    if (!APP_TABS.includes(tab) || typeof handler !== 'function') return;
+    appTabActivationHandlers.set(tab, handler);
+}
+
+function readAppTabFromHash() {
+    const tab = (window.location.hash || '').slice(1);
+    return APP_TABS.includes(tab) ? tab : null;
+}
+
+// Pure DOM: wire the tab strip as soon as the DOM is ready, before Socket.IO
+// connects, so tabs and their HTTP-loaded panels work without a socket.
+// Safe to call more than once.
+let appTabsInitialized = false;
+function initializeAppTabs() {
+    if (appTabsInitialized) return;
+    appTabsInitialized = true;
 
     ensureTabPanelsAreSiblings();
 
-    // Tab switching logic
     APP_TABS.forEach(tab => {
         const btn = document.getElementById(`tab-${tab}-btn`);
         if (btn) {
@@ -46,6 +64,22 @@ function initializeSiteChrome() {
         }
     });
     initializeTabListKeyboard();
+
+    // Only real tab names switch tabs, so in-page anchors such as the skip
+    // link (#scan-target) keep working.
+    window.addEventListener('hashchange', () => {
+        const tab = readAppTabFromHash();
+        if (tab && tab !== window.activeNmapUITab) switchAppTab(tab);
+    });
+    switchAppTab(readAppTabFromHash() || 'dashboard');
+}
+
+function initializeSiteChrome() {
+    // The header clock is driven by startPreciseClock() in layout_runtime.js.
+    // A second 1 s clock here used to overwrite it with a different format,
+    // so the text flipped between two layouts every minute.
+
+    initializeAppTabs();
 
     document.getElementById('refresh-history-tab-btn')?.addEventListener('click', () => {
         window.socket?.emit('get_history');
@@ -107,17 +141,8 @@ function setTabStatus(elementId, message, isError = false) {
     status.classList.toggle('text-olive-800', !isError);
 }
 
-function switchAppTab(tab) {
-    const tabs = ['dashboard', 'history', 'reports', 'customers', 'logs', 'settings'];
-    tabs.forEach(t => {
-        const panel = document.getElementById(`${t}-tab-panel`);
-        if (panel) panel.classList.toggle('hidden', t !== tab);
-        setTabButtonState(document.getElementById(`tab-${t}-btn`), t === tab);
-    });
-
-    const resultsPanel = document.getElementById('dashboard-results-panel');
-    if (resultsPanel) resultsPanel.classList.toggle('hidden', tab !== 'dashboard');
-
+// Default activation for tabs no module has registered a handler for.
+function activateAppTabDefault(tab) {
     if (tab === 'history') {
         window.socket?.emit('get_history');
     } else if (tab === 'reports') {
@@ -137,7 +162,39 @@ function switchAppTab(tab) {
     }
 }
 
+// The only switchAppTab. Do not redefine it in another module: register a
+// per-tab callback with registerAppTabActivation() or listen for the
+// `tab:changed` window event instead.
+function switchAppTab(tab) {
+    if (!APP_TABS.includes(tab)) tab = 'dashboard';
+    const previousTab = window.activeNmapUITab || null;
+    window.activeNmapUITab = tab;
+    if (window.location.hash !== `#${tab}`) {
+        window.history.replaceState(null, '', `#${tab}`);
+    }
+
+    APP_TABS.forEach(t => {
+        const panel = document.getElementById(`${t}-tab-panel`);
+        if (panel) panel.classList.toggle('hidden', t !== tab);
+        setTabButtonState(document.getElementById(`tab-${t}-btn`), t === tab);
+    });
+
+    const resultsPanel = document.getElementById('dashboard-results-panel');
+    if (resultsPanel) resultsPanel.classList.toggle('hidden', tab !== 'dashboard');
+
+    const handler = appTabActivationHandlers.get(tab);
+    if (handler) {
+        handler({ tab, previousTab });
+    } else {
+        activateAppTabDefault(tab);
+    }
+
+    window.dispatchEvent(new CustomEvent('tab:changed', { detail: { tab, previousTab } }));
+}
+
 window.switchAppTab = switchAppTab;
+window.registerAppTabActivation = registerAppTabActivation;
+window.initializeAppTabs = initializeAppTabs;
 
 function initializeAuditLog() {
     const logEntries = document.getElementById('log-entries');
