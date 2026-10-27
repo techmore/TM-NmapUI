@@ -241,15 +241,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.imagePosition = .imageOnly
         button.toolTip = "NmapUI"
 
-        let runtimeStatusItem = NSMenuItem(title: "Native: Starting...", action: nil, keyEquivalent: "")
+        let runtimeStatusItem = NSMenuItem(title: "Runtime: Starting\u{2026}", action: nil, keyEquivalent: "")
         runtimeStatusItem.isEnabled = false
 
-        let openItem = NSMenuItem(title: "Starting NmapUI...", action: #selector(openApp), keyEquivalent: "o")
+        let openItem = NSMenuItem(title: "Starting NmapUI\u{2026}", action: #selector(openApp), keyEquivalent: "o")
         openItem.isEnabled = false
 
         let aboutItem = NSMenuItem(title: "About NmapUI", action: #selector(showAbout), keyEquivalent: "")
 
-        let preferencesItem = NSMenuItem(title: "Preferences...", action: #selector(openPreferences), keyEquivalent: ",")
+        let preferencesItem = NSMenuItem(title: "Settings\u{2026}", action: #selector(openPreferences), keyEquivalent: ",")
 
         let restartItem = NSMenuItem(title: executionRouter.source == .shared ? "Refresh Shared Scanner" : "Refresh Legacy State", action: #selector(restartRuntime), keyEquivalent: "r")
 
@@ -257,9 +257,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
 
-        let uninstallItem = NSMenuItem(title: "Uninstall NmapUI", action: #selector(uninstallApp), keyEquivalent: "")
+        let uninstallItem = NSMenuItem(title: "Uninstall NmapUI\u{2026}", action: #selector(uninstallApp), keyEquivalent: "")
 
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit NmapUI", action: #selector(quitApp), keyEquivalent: "q")
 
         let menu = appMenuBuilder.buildMenu(
             target: self,
@@ -278,10 +278,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem.isEnabled = executionRouter.allowsLegacy
         if executionRouter.source == .shared {
             let items: [(String, Selector, Int)] = [
-                ("Start canonical discovery / scan", #selector(startSharedMenuScan), 7101),
-                ("Stop observed shared scan", #selector(stopSharedMenuScan(_:)), 7102),
-                ("Pause observed shared scan", #selector(pauseSharedMenuScan(_:)), 7103),
-                ("Resume observed shared scan", #selector(resumeSharedMenuScan(_:)), 7104)
+                ("Start Scan", #selector(startSharedMenuScan), 7101),
+                ("Stop Scan", #selector(stopSharedMenuScan(_:)), 7102),
+                ("Pause Scan", #selector(pauseSharedMenuScan(_:)), 7103),
+                ("Resume Scan", #selector(resumeSharedMenuScan(_:)), 7104)
             ]
             menu.insertItem(.separator(), at: 3)
             for (index, item) in items.enumerated() {

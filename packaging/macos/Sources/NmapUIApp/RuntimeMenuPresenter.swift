@@ -37,9 +37,12 @@ final class RuntimeMenuPresenter {
     }
 
     func syncRuntimeMenuState(isReady: Bool, statusText: String, sourceLabel: String = "Native", allowsLegacyControls: Bool = true) {
-        runtimeStatusMenuItem?.title = "\(sourceLabel): \(statusText)"
+        // The status row reads "Runtime: <state>" as in the shipped menu; the
+        // execution source is detail, so it lives in the tooltip.
+        runtimeStatusMenuItem?.title = "Runtime: \(statusText)"
+        runtimeStatusMenuItem?.toolTip = "Execution source: \(sourceLabel)"
         let canOpenUIAnyway = statusText == "Waiting"
-        openAppMenuItem?.title = isReady ? "Open NmapUI" : (canOpenUIAnyway ? "Open UI Anyway" : "Starting NmapUI...")
+        openAppMenuItem?.title = isReady ? "Open NmapUI" : (canOpenUIAnyway ? "Open UI Anyway" : "Starting NmapUI\u{2026}")
         openAppMenuItem?.isEnabled = isReady || canOpenUIAnyway
         restartRuntimeMenuItem?.isEnabled = true
         openDataDirectoryMenuItem?.isEnabled = allowsLegacyControls
