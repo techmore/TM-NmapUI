@@ -176,6 +176,11 @@ def test_ci_workflow_covers_browser_and_packaged_smoke_jobs():
     assert "cancel-in-progress: true" in ci_source
     import yaml
     workflow = yaml.safe_load(ci_source)
+    events = workflow.get("on", workflow.get(True))
+    assert events["push"]["branches"] == ["main", "dev", "swift-native"]
+    assert "pull_request" in events and "workflow_dispatch" in events
+    assert workflow["permissions"] == {"contents": "read"}
+    assert all(0 < job["timeout-minutes"] <= 30 for job in workflow["jobs"].values())
     # runner context is unavailable until execution steps, not in jobs.*.env.
     for job in workflow["jobs"].values():
         assert all("${{ runner." not in str(value) for value in job.get("env", {}).values())

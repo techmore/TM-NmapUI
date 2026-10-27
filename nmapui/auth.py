@@ -68,7 +68,7 @@ def _url_origin(value, *, allow_path=False):
 
 def browser_request_origin_allowed():
     """Validate browser mutations while preserving headerless Basic API clients."""
-    expected = _url_origin(request.host_url.rstrip("/"))
+    expected = _url_origin(f"{request.scheme}://{request.host}")
     allowed = {
         origin
         for value in os.environ.get("NMAPUI_ALLOWED_ORIGINS", "").split(",")
@@ -89,7 +89,7 @@ def request_is_local_ui():
     if not local_ui_trusted():
         return False
     allowed_hosts = {"127.0.0.1", "localhost", "::1"}
-    host_origin = _url_origin(request.host_url.rstrip("/"))
+    host_origin = _url_origin(f"{request.scheme}://{request.host}")
     if host_origin is None or host_origin[1] not in allowed_hosts:
         return False
     remote_addr = (request.remote_addr or "").lower()

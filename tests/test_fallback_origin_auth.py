@@ -3,6 +3,8 @@
 import base64
 
 from flask import Flask
+from werkzeug.test import create_environ
+from werkzeug.wrappers import Response
 import pytest
 
 from nmapui.handlers.settings import register_settings_routes
@@ -69,7 +71,11 @@ def test_untrusted_browser_metadata_never_gets_local_bypass(origin_app, monkeypa
 def test_malformed_host_never_gets_local_bypass(origin_app, monkeypatch, host):
     monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
     app, calls = origin_app
-    response = app.test_client().get("/api/settings/google-drive/status", headers={"Host": host})
+    # Pass raw WSGI input: newer Werkzeug rejects malformed Host headers
+    # while constructing a test URL, before the auth guard can inspect them.
+    environ = create_environ(path="/api/settings/google-drive/status", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+    environ["HTTP_HOST"] = host
+    response = Response.from_app(app, environ)
     assert response.status_code == 401
     assert calls == []
 

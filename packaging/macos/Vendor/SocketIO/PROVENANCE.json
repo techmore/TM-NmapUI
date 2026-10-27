@@ -1,0 +1,111 @@
+{
+  "upstream": "https://github.com/socketio/socket.io-client-swift",
+  "revision": "42da871d9369f290d6ec4930636c40672143905b",
+  "tag": "v16.1.1",
+  "files": {
+    "LICENSE": {
+      "upstream_sha256": "97a00016e4ceff85ecd788e7f2ef38c56e9eab5dcba8278fc4437ec1c083bd8b",
+      "vendored_sha256": "97a00016e4ceff85ecd788e7f2ef38c56e9eab5dcba8278fc4437ec1c083bd8b"
+    },
+    "Package.swift": {
+      "upstream_sha256": "744a4c802f88cfe469fb3210886df2f0ad390539e13c1f28676a416a9de5d387",
+      "vendored_sha256": "63fdf7f2c3a8e7cf0a4b82419d0a9725f83efef846d1fb439e2b042835c53cd3"
+    },
+    "Sources/SocketIO/Ack/SocketAckEmitter.swift": {
+      "upstream_sha256": "b5234b0e222ec904a98788a4cdbc732d203ccec772702bd3f0c99342e7dba794",
+      "vendored_sha256": "b5234b0e222ec904a98788a4cdbc732d203ccec772702bd3f0c99342e7dba794"
+    },
+    "Sources/SocketIO/Ack/SocketAckManager.swift": {
+      "upstream_sha256": "7a1a82141e1de534c2084589c752723c27efd3fdb84b6be5b90092136953f3c3",
+      "vendored_sha256": "7a1a82141e1de534c2084589c752723c27efd3fdb84b6be5b90092136953f3c3"
+    },
+    "Sources/SocketIO/Client/SocketAnyEvent.swift": {
+      "upstream_sha256": "355c93e8c58a8b5b6cad61f00a70972e4f1ae0be9977139d1387b52a4a9d958b",
+      "vendored_sha256": "355c93e8c58a8b5b6cad61f00a70972e4f1ae0be9977139d1387b52a4a9d958b"
+    },
+    "Sources/SocketIO/Client/SocketEventHandler.swift": {
+      "upstream_sha256": "fc5f7fef00350873bdf0f7fd7edeef07757fbbd644af0c2c86b1fbec71b912b3",
+      "vendored_sha256": "fc5f7fef00350873bdf0f7fd7edeef07757fbbd644af0c2c86b1fbec71b912b3"
+    },
+    "Sources/SocketIO/Client/SocketIOClient.swift": {
+      "upstream_sha256": "698117bc7d02a17f8deb942f3bc81c28dfcdae0ae476b5e460700fb914ed1f5b",
+      "vendored_sha256": "698117bc7d02a17f8deb942f3bc81c28dfcdae0ae476b5e460700fb914ed1f5b"
+    },
+    "Sources/SocketIO/Client/SocketIOClientConfiguration.swift": {
+      "upstream_sha256": "18806d9606a4c96384bc6ea3f2b93ae5a06925a8e1901d783d2255ec57cfb5f5",
+      "vendored_sha256": "18806d9606a4c96384bc6ea3f2b93ae5a06925a8e1901d783d2255ec57cfb5f5"
+    },
+    "Sources/SocketIO/Client/SocketIOClientOption.swift": {
+      "upstream_sha256": "b4ab88211ecb76f74d08a08e1e724efde7c6a74448805816b0fe912a2eded39b",
+      "vendored_sha256": "e21562412796f038fd12934b92809e4a7989b5e4ff66fea6b6557fc4785a5ccf"
+    },
+    "Sources/SocketIO/Client/SocketIOClientSpec.swift": {
+      "upstream_sha256": "ffa7e0152965157936cfabfee77715566b36df437535181be57b26a115efdd28",
+      "vendored_sha256": "ffa7e0152965157936cfabfee77715566b36df437535181be57b26a115efdd28"
+    },
+    "Sources/SocketIO/Client/SocketIOStatus.swift": {
+      "upstream_sha256": "58db96e14e72c3489e22c0384757f619be9ffcbaa25120fa026a3fdf909d3164",
+      "vendored_sha256": "58db96e14e72c3489e22c0384757f619be9ffcbaa25120fa026a3fdf909d3164"
+    },
+    "Sources/SocketIO/Client/SocketRawView.swift": {
+      "upstream_sha256": "81f67a51f28c9ab3c985a8b3a772358da39d4a8257a3f6056c20bd7c80561b13",
+      "vendored_sha256": "81f67a51f28c9ab3c985a8b3a772358da39d4a8257a3f6056c20bd7c80561b13"
+    },
+    "Sources/SocketIO/Engine/SocketEngine.swift": {
+      "upstream_sha256": "d11abeff3ee18bf45895f6215086000a2174c106c9d46ca2bd3456646f54b27c",
+      "vendored_sha256": "448876251153d5e5362084be11986c137cfb85d5a3ac5f6ecb63f269322111b3"
+    },
+    "Sources/SocketIO/Engine/SocketEngineClient.swift": {
+      "upstream_sha256": "bf0a582b684b5c5037fe2bedb0a5c3235eb1e60a74d29dcc1d23ee31b99cbdab",
+      "vendored_sha256": "bf0a582b684b5c5037fe2bedb0a5c3235eb1e60a74d29dcc1d23ee31b99cbdab"
+    },
+    "Sources/SocketIO/Engine/SocketEnginePacketType.swift": {
+      "upstream_sha256": "8cc647cacd58244072a5f0dab7e151ed5510a0f5f3fa4430ccbd6b0d674e4730",
+      "vendored_sha256": "8cc647cacd58244072a5f0dab7e151ed5510a0f5f3fa4430ccbd6b0d674e4730"
+    },
+    "Sources/SocketIO/Engine/SocketEnginePollable.swift": {
+      "upstream_sha256": "10008ace0ec143f62192190149d5b264ae9613cfc6513239e6fb64b1f716b080",
+      "vendored_sha256": "10008ace0ec143f62192190149d5b264ae9613cfc6513239e6fb64b1f716b080"
+    },
+    "Sources/SocketIO/Engine/SocketEngineSpec.swift": {
+      "upstream_sha256": "82e288520784855df81e14980de9df5729f510d878448cc2ad636bfbd7b5253a",
+      "vendored_sha256": "82e288520784855df81e14980de9df5729f510d878448cc2ad636bfbd7b5253a"
+    },
+    "Sources/SocketIO/Engine/SocketEngineWebsocket.swift": {
+      "upstream_sha256": "68963c2188f0d1c2f062aa5ac8646e7e0b01f46188bcef61d068fb8ac36d5bb2",
+      "vendored_sha256": "68963c2188f0d1c2f062aa5ac8646e7e0b01f46188bcef61d068fb8ac36d5bb2"
+    },
+    "Sources/SocketIO/Manager/SocketManager.swift": {
+      "upstream_sha256": "49e7d56d423b93a98c54807c0e27e22e01027386a803c31878db71a24de68f74",
+      "vendored_sha256": "49e7d56d423b93a98c54807c0e27e22e01027386a803c31878db71a24de68f74"
+    },
+    "Sources/SocketIO/Manager/SocketManagerSpec.swift": {
+      "upstream_sha256": "89e6fa0382da2261090e813b8901e720c3a806fab370ff802fa2caa97067d173",
+      "vendored_sha256": "89e6fa0382da2261090e813b8901e720c3a806fab370ff802fa2caa97067d173"
+    },
+    "Sources/SocketIO/Parse/SocketPacket.swift": {
+      "upstream_sha256": "0aa2e8707b15b41026b4623ab2d4ac10c2c8dcb664f30e5f27c60b53bdf7b37e",
+      "vendored_sha256": "0aa2e8707b15b41026b4623ab2d4ac10c2c8dcb664f30e5f27c60b53bdf7b37e"
+    },
+    "Sources/SocketIO/Parse/SocketParsable.swift": {
+      "upstream_sha256": "3ae362ff65d924492d7170d91a5ef311d59c087639a8c2e464de4d8260c6c20f",
+      "vendored_sha256": "3ae362ff65d924492d7170d91a5ef311d59c087639a8c2e464de4d8260c6c20f"
+    },
+    "Sources/SocketIO/Util/SocketExtensions.swift": {
+      "upstream_sha256": "7ecf15bfd79099909988957357627c6b310d81750a46779b1a91266d49870617",
+      "vendored_sha256": "7ecf15bfd79099909988957357627c6b310d81750a46779b1a91266d49870617"
+    },
+    "Sources/SocketIO/Util/SocketLogger.swift": {
+      "upstream_sha256": "03c9950cf426c0737ca3efbad3c1778869e40a23080137d0c3a641ff184768e5",
+      "vendored_sha256": "03c9950cf426c0737ca3efbad3c1778869e40a23080137d0c3a641ff184768e5"
+    },
+    "Sources/SocketIO/Util/SocketStringReader.swift": {
+      "upstream_sha256": "937c934dc3d3e057bf7b69ca6427b2a563eb2e1abc54cbea839922e2ac76e2c2",
+      "vendored_sha256": "937c934dc3d3e057bf7b69ca6427b2a563eb2e1abc54cbea839922e2ac76e2c2"
+    },
+    "Sources/SocketIO/Util/SocketTypes.swift": {
+      "upstream_sha256": "d2d010afac05e651e9421c93fcc2f48ac84639c30e3330c77c26b052a4c2966a",
+      "vendored_sha256": "d2d010afac05e651e9421c93fcc2f48ac84639c30e3330c77c26b052a4c2966a"
+    }
+  }
+}

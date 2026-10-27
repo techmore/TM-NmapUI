@@ -1,0 +1,3 @@
+# Preserve pinned upstream bytes and unified-diff context whitespace.
+Sources/** -whitespace
+privacy-session.patch -whitespace
