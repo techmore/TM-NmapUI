@@ -13,6 +13,35 @@ cd packaging/macos && ./run.sh
 
 The command launches the Swift-native macOS interface directly. There is no local dashboard HTTP server or loopback URL.
 
+## Branches and platforms
+
+One scanner engine, several front ends. The engine (Flask + Socket.IO, `app.py` and `nmapui/`)
+lives on `main`; this branch adds the native macOS app and keeps a Flask fallback.
+
+| Where | Platform | What it is |
+|---|---|---|
+| [`main`](https://github.com/techmore/TM-NmapUI/tree/main) | Web UI on macOS and Ubuntu scanner hosts | The product: Flask engine, browser UI, reports, scheduler, the Swift menu-bar launcher and the LaunchDaemon/systemd installers. CI-gated. |
+| `swift-native` (this branch) | Native macOS (SwiftUI) | Native app with its own scan, report, Drive and privilege-helper code, qualified against a pinned commit of the shared engine. Periodically synced with `main`. |
+| [TM-NmapUI-elementary](https://github.com/techmore/TM-NmapUI-elementary) | Native elementary OS (Granite/GTK 4) | Native window, Wingpanel indicator and per-user `nmapui.service` that runs the shared engine with Gunicorn on `127.0.0.1:9000`. Separate repository. |
+| [TM-NMapUI-www](https://github.com/techmore/TM-NMapUI-www) | Marketing site | Static pages and screenshots. |
+
+For the Flask engine's macOS LaunchDaemon and Ubuntu service installers, see the
+[`main` README](https://github.com/techmore/TM-NmapUI/blob/main/README.md) and
+[the setup guide](docs/guides/SETUP.md).
+
+## Shared Flask engine
+
+The scan engine merged from `main` is a Python 3.11+ Flask application (`app.py` and
+the `nmapui/` package). On this branch it backs the retained Flask wrapper and the
+pinned shared-engine fixture the native tests qualify against. To run it as an
+unattended macOS service, use `packaging/macos/install-daemon.sh` from a root-owned
+Python toolchain (see [the setup guide](docs/guides/SETUP.md)). Local loopback access
+needs no sign-in; set `NMAPUI_USERNAME` and `NMAPUI_PASSWORD` to enable remote browser
+or API access, or for the wrapper's strict mode (`NMAPUI_TRUST_LOCAL_UI=false`).
+
+`server.js` and `package.json` are the legacy Node/Express build, kept only as a
+rollback reference (`releases/TM-NmapUI-mac-known-good.md`).
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -156,7 +185,7 @@ HTML and PDF reports are generated after each scan. Reports include:
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
 
 The retained Flask wrapper uses the selected local runtime URL (the default
 local loopback URL is `http://127.0.0.1:9000`). Native SwiftUI does not need that

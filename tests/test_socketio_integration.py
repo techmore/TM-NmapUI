@@ -99,6 +99,24 @@ def test_cancel_job_is_scoped_to_requesting_client(monkeypatch):
     assert client_b.get_received() == []
 
 
+def test_legacy_stop_scan_event_cancels_the_requesting_clients_scan(monkeypatch):
+    configure_auth(monkeypatch)
+    registry = ClientJobRegistry()
+    app, socketio = build_history_app(registry)
+    client = socketio.test_client(app, headers=basic_auth_header())
+    sid = get_socket_sid(client)
+    assert registry.start(sid, "scan", {"target": "10.0.0.0/24"}) is True
+
+    client.emit("stop_scan")
+
+    assert registry.get(sid, "scan")["status"] == "cancelling"
+    assert any(
+        event["name"] == "job_cancelled"
+        and event["args"] == [{"job_type": "scan", "message": "Cancelling scan job..."}]
+        for event in client.get_received()
+    )
+
+
 def test_get_job_status_reports_only_the_current_client_jobs(monkeypatch):
     configure_auth(monkeypatch)
     registry = ClientJobRegistry()
@@ -219,3 +237,99 @@ def test_history_handlers_reject_unauthenticated_socket_events(monkeypatch):
         for event in received
     )
     assert not any(event["name"] == "job_status" for event in received)
+
+
+def _feedback(client):
+    return [event["args"][0] for event in client.get_received() if event["name"] == "scan_feedback"]
+
+
+def test_pause_and_resume_job_events_drive_the_requesting_clients_scan(monkeypatch):
+    configure_auth(monkeypatch)
+    registry = ClientJobRegistry()
+    app, socketio = build_history_app(registry)
+    client = socketio.test_client(app, headers=basic_auth_header())
+    sid = get_socket_sid(client)
+    assert registry.start(sid, "scan", {"target": "10.0.0.0/24"}) is True
+
+    client.emit("pause_job", {"job_type": "scan"})
+    assert registry.get(sid, "scan")["pause_requested"] is True
+    client.get_received()
+
+    client.emit("pause_job", {"job_type": "scan"})  # double pause
+    assert any("already paused" in message for message in _feedback(client))
+    assert registry.get(sid, "scan")["pause_requested"] is True
+
+    client.emit("resume_job", {"job_type": "scan"})
+    job = registry.get(sid, "scan")
+    assert job["pause_requested"] is False and job["paused"] is False and job["status"] == "running"
+    client.get_received()
+
+    client.emit("resume_job", {"job_type": "scan"})  # not paused
+    assert any("not paused" in message for message in _feedback(client))
+
+
+def test_pause_job_is_rejected_for_idle_finished_and_cancelled_scans(monkeypatch):
+    configure_auth(monkeypatch)
+    registry = ClientJobRegistry()
+    app, socketio = build_history_app(registry)
+    client = socketio.test_client(app, headers=basic_auth_header())
+    sid = get_socket_sid(client)
+
+    client.emit("pause_job", {"job_type": "scan"})
+    assert any("nothing to pause" in message for message in _feedback(client))
+
+    assert registry.start(sid, "scan") is True
+    registry.complete(sid, "scan")
+    client.emit("pause_job", {"job_type": "scan"})
+    assert any("no longer running" in message for message in _feedback(client))
+    assert registry.get(sid, "scan")["paused"] is False
+
+    assert registry.start(sid, "scan") is True
+    assert registry.cancel(sid, "scan") is True
+    client.emit("pause_job", {"job_type": "scan"})
+    assert any("no longer running" in message for message in _feedback(client))
+
+    client.emit("pause_job", {"job_type": "bogus"})
+    assert any(event["name"] == "scan_error" for event in client.get_received())
+
+
+def test_cancel_while_paused_cancels_the_scan(monkeypatch):
+    configure_auth(monkeypatch)
+    registry = ClientJobRegistry()
+    app, socketio = build_history_app(registry)
+    client = socketio.test_client(app, headers=basic_auth_header())
+    sid = get_socket_sid(client)
+    assert registry.start(sid, "scan") is True
+    client.emit("pause_job", {"job_type": "scan"})
+
+    client.emit("cancel_job", {"job_type": "scan"})
+
+    job = registry.get(sid, "scan")
+    assert job["status"] == "cancelling"
+    assert job["paused"] is False and job["pause_requested"] is False
+
+
+def test_another_tab_can_pause_and_resume_the_active_scan_by_source_job(monkeypatch):
+    from nmapui.jobs import ScanBroadcaster
+
+    configure_auth(monkeypatch)
+    registry = ClientJobRegistry()
+    broadcaster = ScanBroadcaster()
+    app, socketio = build_history_app(registry, broadcaster=broadcaster)
+    headers = basic_auth_header()
+    owner = socketio.test_client(app, headers=headers)
+    observer = socketio.test_client(app, headers=headers)
+    owner_sid = get_socket_sid(owner)
+    assert registry.start(owner_sid, "scan") is True
+    source = registry.get(owner_sid, "scan")["source_job_id"]
+    broadcaster.start_job(owner_sid, job_type="scan", source_job_id=source)
+
+    observer.emit("pause_job", {"job_type": "scan", "source_job_id": "stale-run"})
+    assert registry.get(owner_sid, "scan")["pause_requested"] is False
+    assert any("no longer active" in message for message in _feedback(observer))
+
+    observer.emit("pause_job", {"job_type": "scan", "source_job_id": source})
+    assert registry.get(owner_sid, "scan")["pause_requested"] is True
+
+    observer.emit("resume_job", {"job_type": "scan", "source_job_id": source})
+    assert registry.get(owner_sid, "scan")["pause_requested"] is False

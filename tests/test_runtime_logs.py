@@ -11,7 +11,8 @@ from nmapui.startup_checks import run_startup_checks
 from nmapui.traceroute import run_traceroute
 
 
-def test_runtime_logs_route_returns_persisted_entries():
+def test_runtime_logs_route_returns_persisted_entries(monkeypatch):
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
     class RuntimeStoreStub:
         def get_recent_logs(self, category=None, limit=200):
             return [
@@ -175,7 +176,13 @@ def test_runtime_report_file_routes_serve_persisted_artifacts(monkeypatch, tmp_p
     scan_dir.mkdir(parents=True, exist_ok=True)
     (scan_dir / "runtime.html").write_text("<html><body>runtime report</body></html>")
     (scan_dir / "runtime.pdf").write_bytes(b"%PDF-1.4 runtime")
-    (scan_dir / "runtime.xml").write_text("<nmaprun><host /></nmaprun>")
+    (scan_dir / "runtime.xml").write_text(
+        '<nmaprun><host><status state="up"/><address addr="192.168.222.10" addrtype="ipv4"/>'
+        '<address addr="AA:BB:CC:DD:EE:FF" addrtype="mac" vendor="Example Vendor"/>'
+        '<hostnames><hostname name="print-node" type="PTR"/></hostnames><ports>'
+        '<port protocol="tcp" portid="631"><state state="open"/><service name="ipp"/></port>'
+        '</ports></host></nmaprun>'
+    )
 
     class RuntimeStoreStub:
         def get_report_artifact(self, scan_path):
@@ -247,6 +254,21 @@ def test_runtime_report_file_routes_serve_persisted_artifacts(monkeypatch, tmp_p
         environ_overrides=environ,
     )
 
+    from nmapui.handlers import routes as route_handlers
+    generated_html = []
+
+    def fake_inventory_pdf(html_path, pdf_path):
+        generated_html.append(html_path.read_text(encoding="utf-8"))
+        pdf_path.write_bytes(b"%PDF-1.4 inventory fixture")
+        return True
+
+    monkeypatch.setattr(route_handlers, "convert_html_to_pdf", fake_inventory_pdf)
+    inventory_response = client.get(
+        "/api/runtime/reports/Acme/2026-03-14/scan_120000_192.168.222.0_24/inventory?orientation=portrait&color=bw",
+        headers=headers,
+        environ_overrides=environ,
+    )
+
     assert html_response.status_code == 200
     assert b"runtime report" in html_response.data
     assert pdf_response.status_code == 200
@@ -255,6 +277,16 @@ def test_runtime_report_file_routes_serve_persisted_artifacts(monkeypatch, tmp_p
     assert xml_response.status_code == 200
     assert "filename=" in xml_response.headers["Content-Disposition"]
     assert "Acme_HQ" in xml_response.headers["Content-Disposition"]
+    assert inventory_response.status_code == 200
+    assert inventory_response.mimetype == "application/pdf"
+    assert inventory_response.data.startswith(b"%PDF-")
+    assert "attachment" in inventory_response.headers["Content-Disposition"]
+    assert "192.168.222.10" in generated_html[0]
+    assert "print-node" in generated_html[0]
+    assert "DEVICE NAME" in generated_html[0]
+    assert "LOCATION" in generated_html[0]
+    assert "@page { size: Letter portrait" in generated_html[0]
+    assert '<body class="monochrome portrait">' in generated_html[0]
 
 
 def test_runtime_history_delete_route_removes_scan_and_runtime_artifact(monkeypatch, tmp_path):
@@ -543,7 +575,8 @@ def test_runtime_backfill_route_runs_authenticated_backfill(monkeypatch, tmp_pat
     assert snapshot_calls[0][1]["last_backfilled"] == 1
 
 
-def test_runtime_settings_summary_includes_backfill_status():
+def test_runtime_settings_summary_includes_backfill_status(monkeypatch):
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
     class RuntimeStoreStub:
         def get_runtime_snapshot(self, key):
             if key == "maintenance_backfill_status":
@@ -576,7 +609,8 @@ def test_runtime_settings_summary_includes_backfill_status():
     assert payload["maintenance_backfill"]["last_run_at"] == "2026-03-14T21:00:00+00:00"
 
 
-def test_runtime_settings_summary_includes_retention_status():
+def test_runtime_settings_summary_includes_retention_status(monkeypatch):
+    monkeypatch.setenv("NMAPUI_TRUST_LOCAL_UI", "true")
     class RuntimeStoreStub:
         def get_runtime_snapshot(self, key):
             if key == "maintenance_retention_status":
@@ -586,6 +620,8 @@ def test_runtime_settings_summary_includes_retention_status():
                     "deleted_customer_scan_history": 8,
                     "after_bytes": 4096,
                 }
+            if key == "automatic_retention_status":
+                return {"run_date": "2026-03-14", "deleted_jobs": 2}
             return None
 
         def count_report_artifacts(self):
@@ -619,6 +655,7 @@ def test_runtime_settings_summary_includes_retention_status():
     assert payload["maintenance_retention"]["deleted_runtime_logs"] == 25
     assert payload["maintenance_retention"]["deleted_customer_scan_history"] == 8
     assert payload["maintenance_retention"]["after_bytes"] == 4096
+    assert payload["automatic_retention"]["deleted_jobs"] == 2
 
 
 def test_runtime_backfill_route_requires_auth(monkeypatch, tmp_path):
@@ -874,6 +911,101 @@ def test_startup_checks_append_runtime_log_entries(monkeypatch, startup_tracerou
         "Startup checks completed",
     ]
     assert probes == (["1.1.1.1"] if startup_traceroute else [])
+
+
+def test_startup_checks_respect_network_fingerprint_opt_out(monkeypatch):
+    monkeypatch.setenv("NMAPUI_STARTUP_TRACEROUTE", "true")
+    monkeypatch.setenv("NMAPUI_ENABLE_NETWORK_FINGERPRINT", "false")
+    startup_state = {}
+
+    def unexpected_probe(_target):
+        raise AssertionError("startup ignored the network-fingerprint opt-out")
+
+    run_startup_checks(
+        {
+            "begin_startup_state": lambda state, quick=False: state.update(
+                {"startup_complete": False}
+            ),
+            "check_arp_scan": lambda: False,
+            "check_nmap": lambda: "nmap 7.97",
+            "check_vulners": lambda _path: True,
+            "complete_startup_state": lambda state, traceroute_initialized=False: state.update(
+                {
+                    "startup_complete": True,
+                    "traceroute_initialized": traceroute_initialized,
+                }
+            ),
+            "get_app_version": lambda: "v1.0.0",
+            "get_default_interface_cached": lambda: "en0",
+            "get_versions": lambda: {"app": "v1.0.0"},
+            "load_auto_scan_config": lambda _config: None,
+            "load_current_assignment": lambda: None,
+            "logger": type("LoggerStub", (), {"info": lambda *_args, **_kwargs: None})(),
+            "run_traceroute": unexpected_probe,
+            "safe_emit": lambda *_args, **_kwargs: None,
+            "startup_state": startup_state,
+            "tool_versions": type(
+                "ToolVersionsStub", (), {"set_version": lambda *_args, **_kwargs: None}
+            )(),
+            "auto_scan_config": {"enabled": False},
+            "runtime_store": None,
+            "vulners_script": __import__("pathlib").Path("."),
+        },
+        quick=True,
+    )
+
+    assert startup_state["startup_complete"] is True
+    assert startup_state["traceroute_initialized"] is False
+
+
+def test_startup_checks_records_missing_dependencies_without_exiting():
+    """Missing nmap/vulners must degrade readiness, not terminate the process."""
+    startup_state = {}
+    versions = {}
+
+    run_startup_checks(
+        {
+            "begin_startup_state": lambda state, quick=False: state.update(
+                {"startup_complete": False, "errors": []}
+            ),
+            "check_arp_scan": lambda: False,
+            "check_nmap": lambda: None,
+            "check_vulners": lambda path: False,
+            "complete_startup_state": lambda state, traceroute_initialized=False: state.update(
+                {"startup_complete": True, "traceroute_initialized": traceroute_initialized}
+            ),
+            "get_app_version": lambda: "v1.0.0",
+            "get_default_interface_cached": lambda: "en0",
+            "get_versions": lambda: {"app": "v1.0.0"},
+            "load_auto_scan_config": lambda config: None,
+            "load_current_assignment": lambda: None,
+            "logger": type(
+                "LoggerStub",
+                (),
+                {
+                    "info": lambda self, *a, **k: None,
+                    "error": lambda self, *a, **k: None,
+                },
+            )(),
+            "run_traceroute": lambda target: {"target": target, "total_hops": 3},
+            "safe_emit": lambda *args, **kwargs: None,
+            "startup_state": startup_state,
+            "tool_versions": type(
+                "ToolVersionsStub",
+                (),
+                {"set_version": lambda self, key, value: versions.__setitem__(key, value)},
+            )(),
+            "auto_scan_config": {"enabled": False},
+            "runtime_store": None,
+            "vulners_script": __import__("pathlib").Path("/nonexistent/vulners.nse"),
+        },
+        quick=False,
+    )
+
+    assert startup_state["dependencies_ok"] is False
+    assert any("nmap" in error for error in startup_state["errors"])
+    assert any("Vulners" in error for error in startup_state["errors"])
+    assert versions["nmap"] == "Not installed"
 
 
 def test_traceroute_appends_success_runtime_log():

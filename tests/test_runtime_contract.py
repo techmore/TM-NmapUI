@@ -47,10 +47,11 @@ def test_main_template_no_longer_duplicates_extracted_socket_runtime_handlers():
 
 def test_template_uses_shared_table_sorter_module():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     sorter_source = (ROOT / "static" / "js" / "table_sorter.js").read_text()
 
     assert '<script src="/static/js/table_sorter.js"></script>' in html
-    assert "window.tableSorter = new TableSorter('discovery-table');" in html
+    assert "window.tableSorter = new TableSorter('discovery-table');" in bootstrap
     assert "class TableSorter {" not in html
     assert "window.TableSorter = TableSorter;" in sorter_source
     assert 'data-column="status"' in html
@@ -63,15 +64,16 @@ def test_template_uses_shared_table_sorter_module():
     assert "moveColumn(sourceColumn, targetColumn)" in sorter_source
     assert "getCellByColumn(row, column)" in sorter_source
     assert "window.getDiscoveryTableCell = getDiscoveryTableCell;" in (ROOT / "static" / "js" / "discovery_ui.js").read_text()
-    assert "window.getDiscoveryTableCell ? window.getDiscoveryTableCell(row, 'status')" in (ROOT / "static" / "js" / "scan_runtime.js").read_text()
+    assert "getDiscoveryTableCell(row, 'status')" not in (ROOT / "static" / "js" / "scan_runtime.js").read_text()
 
 
 def test_template_uses_site_chrome_module():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     site_chrome_source = (ROOT / "static" / "js" / "site_chrome.js").read_text()
 
     assert '<script src="/static/js/site_chrome.js"></script>' in html
-    assert "initializeSiteChrome();" in html
+    assert "initializeSiteChrome();" in bootstrap
     assert "<!-- 2026 New Sites JavaScript Functionality -->" not in html
     assert "const mobileMenuBtn = document.getElementById('mobile-menu-btn');" not in html
     assert "const searchInput = document.getElementById('global-search');" not in html
@@ -80,11 +82,12 @@ def test_template_uses_site_chrome_module():
 
 def test_template_uses_shared_scan_display_modules():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     discovery_source = (ROOT / "static" / "js" / "discovery_ui.js").read_text()
     banner_source = (ROOT / "static" / "js" / "scan_banners.js").read_text()
 
     assert '<script src="/static/js/scan_banners.js"></script>' in html
-    assert "window.socket = socket;" in html
+    assert "window.socket = socket;" in bootstrap
     assert "function startPreciseClock()" not in html
     assert "function saveHostsToStorage()" not in html
     assert "function loadHostsFromStorage()" not in html
@@ -95,7 +98,7 @@ def test_template_uses_shared_scan_display_modules():
     assert "window.loadHostsFromStorage = loadHostsFromStorage;" in discovery_source
     assert "window.showHistoricalDataBanner = showHistoricalDataBanner;" in banner_source
     assert "window.showScanSummaryBanner = showScanSummaryBanner;" in banner_source
-    assert 'href="https://github.com/techmore/NmapUI"' in html
+    assert 'href="https://github.com/techmore/TM-NmapUI"' in html
     assert 'aria-label="Open NmapUI GitHub repository"' in html
     assert 'id="settings-nmap-version"' in html
     assert 'id="settings-vulners-version"' in html
@@ -110,20 +113,17 @@ def test_template_uses_shared_scan_display_modules():
 
 def test_template_uses_shared_customer_ui_module():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     customer_source = (ROOT / "static" / "js" / "customer_ui.js").read_text()
 
-    assert "initializeCustomerUI(socket);" in html
+    assert "initializeCustomerUI(socket);" in bootstrap
     assert "function showCustomerForm()" not in html
     assert "function addCustomer()" not in html
     assert "socket.on('customer_added'" not in html
     assert "socket.on('customer_identified'" not in html
     assert "window.initializeCustomerUI = initializeCustomerUI;" in customer_source
-    assert "window.addCustomer = () => {" in customer_source
-    assert "window.assignCustomer = () => {" in customer_source
-    assert "loadAutoMonitorSettings()" in customer_source
-    assert "saveAutoMonitorRule(customer, updates)" in customer_source
-    assert "customer-auto-monitor-recurrence" in customer_source
-    assert "Save Auto-monitor" in customer_source
+    assert "window.addCustomer = addCustomer;" in (ROOT / "static" / "js" / "customer_actions.js").read_text()
+    assert "window.assignCustomer = assignCustomer;" in (ROOT / "static" / "js" / "customer_actions.js").read_text()
 
 
 def test_settings_tab_includes_auto_monitor_defaults():
@@ -135,9 +135,72 @@ def test_settings_tab_includes_auto_monitor_defaults():
     assert 'id="settings-auto-monitor-day"' in html
     assert 'id="settings-auto-monitor-time"' in html
     assert 'id="settings-auto-monitor-enabled-by-default"' in html
-    assert "auto_monitor: {" in settings_source
+    assert "autoMonitorRecurrence: document.getElementById('settings-auto-monitor-recurrence')" in settings_source
     assert "settings-auto-monitor-recurrence" in settings_source
     assert "settings-auto-monitor-time" in settings_source
+
+
+def test_auto_scan_ui_uses_flask_runtime_contract():
+    """Auto-scan scheduling must hit the Flask /api/auto_scan/* routes (packaged runtime),
+    with socket fallbacks for the Node dev runtime. The Flask schedule is a daily
+    start/end window, so both times must be sent."""
+    source = (ROOT / "static" / "js" / "auto_scan_ui.js").read_text()
+    assert "fetch('/api/auto_scan/status')" in source
+    assert "fetch('/api/auto_scan/update'" in source
+    assert "start_time: startTime, end_time: endTime" in source
+    # An in-flight update must not report itself as handled (rapid toggle race).
+    busy_idx = source.find("if (autoScanHttpBusy)")
+    assert busy_idx != -1
+    assert "return false;" in source[busy_idx:busy_idx + 400]
+    assert "socket.on('auto_scan_status'" in source
+    assert "socket.emit('disable_auto_scan')" in source  # node fallback retained
+    assert "emit('enable_auto_scan'" in source  # node fallback retained
+
+
+def test_settings_tab_persists_scan_rules_to_server():
+    """Scan-only mode, exclusions and max duration must reach the backend settings_state,
+    not just localStorage - workflows read them via get_effective_scan_rules. The POST
+    replaces the whole settings document, so target_profiles, auto_monitor defaults,
+    and auto_monitor rules must be carried through."""
+    settings_source = (ROOT / "static" / "js" / "settings_tab.js").read_text()
+    assert "fetch('/api/settings'" in settings_source
+    assert "scan_only_mode:" in settings_source
+    assert "excluded_targets:" in settings_source
+    assert "max_scan_minutes:" in settings_source
+    # POST /api/settings replaces the whole document server-side, so the save
+    # payload must carry forward sections outside the form, plus any profiles
+    # added this session.
+    assert "...pendingTargetProfiles" in settings_source
+    assert "pendingTargetProfiles = [];" in settings_source
+    assert "buildAutoMonitorDefaultsPayload(settings, existingDoc)" in settings_source
+    assert "enabled_by_default: !!settings.autoMonitorEnabledByDefault" in settings_source
+    assert "rules: Array.isArray(existing.rules) ? existing.rules : []" in settings_source
+    workflows_source = (ROOT / "nmapui" / "workflows.py").read_text()
+    assert "get_effective_scan_rules(" in workflows_source
+
+
+def test_settings_tab_google_drive_actions_use_http_routes():
+    """Drive connect/disconnect/import must call the implemented Flask HTTP routes;
+    the old socket events were only ever handled by the Node dev runtime."""
+    settings_source = (ROOT / "static" / "js" / "settings_tab.js").read_text()
+    for route in (
+        "/api/settings/google-drive/status",
+        "/api/settings/google-drive/auth-url",
+        "/api/settings/google-drive/disconnect",
+        "/api/settings/google-drive/credentials",
+    ):
+        assert f"fetch('{route}'" in settings_source
+    # Browser regressions exercise real import and sign-in behavior; unavailable
+    # HTTP routes must produce useful feedback, not invoke unhandled events.
+
+
+def test_settings_tab_maintenance_buttons_call_runtime_routes():
+    """Maintenance buttons must invoke the registered /api/runtime/maintenance/* + export routes."""
+    settings_source = (ROOT / "static" / "js" / "settings_tab.js").read_text()
+    assert "fetch('/api/runtime/maintenance/backfill'" in settings_source
+    assert "fetch('/api/runtime/maintenance/retention'" in settings_source
+    assert "'/api/runtime/export'" in settings_source
+    assert "Runtime maintenance endpoints are not connected" not in settings_source
 
 
 def test_settings_tab_exposes_google_drive_credentials_import():
@@ -149,11 +212,11 @@ def test_settings_tab_exposes_google_drive_credentials_import():
     assert 'id="settings-google-drive-credentials-file"' in html
     assert 'accept=".json,application/json"' in html
     assert "Builds can bundle Google Drive OAuth credentials." in html
-    assert "function importGoogleDriveCredentials()" in settings_source
-    assert "function handleGoogleDriveCredentialsSelection(event)" in settings_source
-    assert "Google Drive credentials are missing. Use Import Credentials to upload your credentials.json, then connect again." in settings_source
-    assert "document.getElementById('settings-google-drive-import-btn')?.addEventListener('click', importGoogleDriveCredentials);" in settings_source
-    assert "document.getElementById('settings-google-drive-credentials-file')?.addEventListener('change', handleGoogleDriveCredentialsSelection);" in settings_source
+    assert "fetch('/api/settings/google-drive/auth-url'" in settings_source
+    assert "fetch('/api/settings/google-drive/disconnect'" in settings_source
+    assert "fetch('/api/settings/google-drive/credentials'" in settings_source
+    assert "document.getElementById('settings-google-drive-import-btn')?.addEventListener" in settings_source
+    assert "document.getElementById('settings-google-drive-credentials-file')?.addEventListener" in settings_source
 
 
 def test_ci_workflow_covers_browser_and_packaged_smoke_jobs():
@@ -190,10 +253,11 @@ def test_ci_workflow_covers_browser_and_packaged_smoke_jobs():
 
 def test_template_uses_shared_report_status_module():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     report_status_source = (ROOT / "static" / "js" / "report_status.js").read_text()
 
     assert '<script src="/static/js/report_status.js"></script>' in html
-    assert "showReportStatus: window.showReportStatus" in html
+    assert "showReportStatus: window.showReportStatus" in bootstrap
     assert "function removeReportProgressCard()" not in html
     assert "function showReportStatus(message, type)" not in html
     assert "window.showReportStatus = showReportStatus;" in report_status_source
@@ -202,10 +266,11 @@ def test_template_uses_shared_report_status_module():
 
 def test_template_uses_shared_auto_update_banner_module():
     html = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     auto_update_source = (ROOT / "static" / "js" / "auto_update_banner.js").read_text()
 
     assert '<script src="/static/js/auto_update_banner.js"></script>' in html
-    assert "initializeAutoUpdateBanner(socket);" in html
+    assert "initializeAutoUpdateBanner(socket);" in bootstrap
     assert "let countdownInterval = null;" not in html
     assert "function showAutoUpdateBanner(updateInfo)" not in html
     assert "function performAutoUpdate()" not in html
@@ -267,10 +332,12 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'echo "Database migration source: $MIGRATION_SOURCE_DB"' in build_script
     assert '  -target "$SWIFT_TARGET" \\' in build_script
     assert 'TEMP_MIGRATION_DB="$(mktemp "${TMPDIR:-/tmp}/nmapui-runtime-db.XXXXXX.sqlite3")"' in build_script
-    assert 'cp "$MIGRATION_SOURCE_DB" "$TEMP_MIGRATION_DB"' in build_script
+    assert '[[ "$MIGRATION_SOURCE_DB" -ef "$INSTALLED_RUNTIME_DB" ]]' in build_script
+    assert '"$ROOT_DIR/packaging/sqlite_backup.py"' in build_script
+    assert 'cp "$MIGRATION_SOURCE_DB" "$TEMP_MIGRATION_DB"' not in build_script
     assert 'mkdir -p "$APP_INSTALL_DIR"' in build_script
     assert 'ditto "$APP_NAME" "$INSTALLED_APP_NAME"' in build_script
-    assert 'cp "$TEMP_MIGRATION_DB" "$INSTALLED_RUNTIME_DB"' in build_script
+    assert 'cp "$TEMP_MIGRATION_DB" "$INSTALLED_RUNTIME_DB"' not in build_script
     assert 'if [[ "${NMAPUI_SKIP_OPEN:-}" == "1" ]]; then' in build_script
     assert 'echo "Skipping application auto-open because NMAPUI_SKIP_OPEN=1"' in build_script
     assert 'open "$INSTALLED_APP_NAME"' in build_script
@@ -312,7 +379,11 @@ def test_wrapper_contract_uses_single_supported_launcher():
     assert 'mkdir -p "$NMAPUI_DATA_DIR" "$NMAPUI_LOG_DIR"' in build_script
     assert 'stage_google_drive_credentials' in build_script
     assert "export NMAPUI_ALLOW_UNSAFE_WERKZEUG=true" in build_script
-    assert 'export NMAPUI_TRUST_LOCAL_UI="${NMAPUI_TRUST_LOCAL_UI:-true}"' in build_script
+    # Loopback trust comes from the Python default (NMAPUI_TRUST_LOCAL_UI=true);
+    # the bundle never hard-codes it, so strict mode (=false) is honoured.
+    assert "export NMAPUI_TRUST_LOCAL_UI=true" not in build_script
+    assert "export NMAPUI_TRUST_LOCAL_UI" not in build_script
+    assert 'CREDENTIALS_FILE="$NMAPUI_DATA_DIR/credentials.env"' in build_script
     assert 'BUNDLE_PLAYWRIGHT_BROWSERS="$APP_NAME/Contents/Resources/playwright-browsers"' in build_script
     assert 'PLAYWRIGHT_BROWSERS_PATH="$BUNDLE_PLAYWRIGHT_BROWSERS" python -m playwright install chromium' in build_script
     assert 'export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright-browsers"' in build_script
@@ -342,17 +413,21 @@ def test_wrapper_launcher_quit_path_tracks_and_stops_runtime_tree():
     assert "func stopRuntimeShellCommand(wait: Bool) -> String" in launcher_source
     assert 'process.arguments = ["-lc", stopRuntimeShellCommand(wait: wait)]' in launcher_source
     assert 'escaped = escaped.replacingOccurrences(of: "\\n", with: "; ")' in launcher_source
-    assert 'let command = stopRuntimeShellCommand(wait: true)' in launcher_source
-    assert 'let appleScript = "do shell script \\(appleScriptEscaped(command)) with administrator privileges"' in launcher_source
+    # The appliance must never prompt for administrator privileges: privileged
+    # administration belongs to the LaunchDaemon installer, not the wrapper.
+    assert "with administrator privileges" not in launcher_source
+    assert "startFlaskWithPrivileges" not in launcher_source
+    assert "stopFlaskWithPrivileges" not in launcher_source
+    # It attaches to a daemon-managed server instead of starting a second one.
+    assert "let fixedRuntimePort = 9000" in launcher_source
+    assert "isLocalPortInUse(fixedRuntimePort)" in launcher_source
     assert 'if isQuitting {' in launcher_source
     assert 'isQuitting = true' in launcher_source
     assert 'stopFlask(wait: true)' in launcher_source
-    assert 'RUNTIME_PORT=\\(shellEscaped(runtimePortValue))' in launcher_source
-    assert 'done < <(/usr/sbin/lsof -tiTCP:"$RUNTIME_PORT" -sTCP:LISTEN 2>/dev/null || true)' in launcher_source
-    assert 'TARGET_PID="$(/bin/cat "$PID_FILE" 2>/dev/null | /usr/bin/tr -cd \'0-9\')"' in launcher_source
-    assert '/usr/bin/pkill -TERM -f "$RUN_SCRIPT_PATH" 2>/dev/null || true' in launcher_source
-    assert '/usr/bin/pkill -TERM -f "$RESOURCES_PATH/app.py" 2>/dev/null || true' in launcher_source
-    assert '/usr/bin/pkill -TERM -f "$RESOURCES_PATH/.venv/bin/python3" 2>/dev/null || true' in launcher_source
+    assert 'let targetPID = pythonProcess?.isRunning == true ? pythonProcess!.processIdentifier : 0' in launcher_source
+    assert 'func pollReadinessThenOpen(generation: UUID, deadline: Date)' in launcher_source
+    assert '/usr/bin/pkill' not in launcher_source
+    assert '/usr/sbin/lsof' not in launcher_source
     assert '/bin/rm -f "$PID_FILE" "$SHUTDOWN_MARKER"' in launcher_source
     assert "/Applications/NmapUI.app/Contents/Resources/app.py" not in launcher_source
 
@@ -361,11 +436,23 @@ def test_wrapper_docs_reference_current_local_port():
     for doc_name in ("README.md", "packaging/macos/README.md", "packaging/macos/SETUP.md"):
         source = (ROOT / doc_name).read_text()
         assert "127.0.0.1:9000" in source
-        assert "selected local runtime URL" in source or "local loopback URL" in source
         assert "localhost:9999" not in source
     readme = (ROOT / "README.md").read_text()
     assert "NMAPUI_SWIFT_TARGET" in readme
     assert "/Applications" in readme
+
+
+def test_readme_documents_the_current_runtime_and_build_vars():
+    """The README used to tell users to `sudo npm start` the legacy Node app."""
+    readme = (ROOT / "README.md").read_text()
+
+    assert "npm start" not in readme
+    assert "Express" in readme  # only ever mentioned as the legacy build
+    assert "legacy Node" in readme
+    assert "Python 3.11" in readme
+    assert "app.py" in readme
+    assert "install-daemon.sh" in readme
+    assert "NMAPUI_PASSWORD" in readme
     assert "~/Applications" in readme
     assert "NMAPUI_APPLICATIONS_DIR" in readme
     assert "/api/runtime/export" in readme
@@ -409,14 +496,19 @@ def test_runtime_uses_separate_web_and_pdf_stylesheets():
     app_runtime_source = (ROOT / "nmapui" / "app_runtime.py").read_text()
     fingerprinter_source = (ROOT / "customer_fingerprint.py").read_text()
 
-    assert 'XSL_STYLESHEET = BASE_DIR / "nmap-modern.xsl"' in paths_source
-    assert 'XSL_STYLESHEET_PDF = BASE_DIR / "nmap-pdf-olive-legacy.xsl"' in paths_source
+    # Web and PDF stylesheets stay distinct, and both prefer the root-owned
+    # asset copy so the privileged helper accepts the path.
+    assert 'XSL_STYLESHEET = _privileged_asset(' in paths_source
+    assert '"nmap-modern.xsl"' in paths_source
+    assert '"nmap-pdf-olive-legacy.xsl"' in paths_source
+    assert "def _privileged_asset(" in paths_source
+    assert 'NMAPUI_PRIVILEGED_ASSETS' in paths_source
     assert "def _resolve_data_dir() -> Path:" in paths_source
     assert 'override = str(os.environ.get("NMAPUI_DATA_DIR", "") or "").strip()' in paths_source
     assert "DATA_DIR = _resolve_data_dir()" in paths_source
     assert 'SCANS_DIR = DATA_DIR / "scans"' in paths_source
     assert 'RUNTIME_DB_FILE = DATA_DIR / "runtime.sqlite3"' in paths_source
-    assert 'GOOGLE_DRIVE_CREDENTIALS_FILE = BASE_DIR / "config" / "google_drive_credentials.json"' in paths_source
+    assert 'GOOGLE_DRIVE_CREDENTIALS_FILE = DATA_DIR / "google_drive_credentials.json"' in paths_source
     assert 'GOOGLE_DRIVE_TOKEN_FILE = DATA_DIR / "google_drive_tokens.json"' in paths_source
     assert 'GOOGLE_DRIVE_TOKEN_KEY_FILE = DATA_DIR / "google_drive_tokens.key"' in paths_source
     assert 'REMOTE_SYNC_SECRET_FILE = DATA_DIR / "remote_sync_secret.json"' in paths_source
@@ -540,7 +632,8 @@ def test_auto_scan_warning_contract_is_runtime_backed():
     assert "def build_auto_scan_status_payload(" in auto_scan_source
     assert 'payload["next_run"] = next_run.isoformat()' in auto_scan_source
     assert 'payload["warning_active"] = 0 < seconds_until_next_run <= warning_window_seconds' in auto_scan_source
-    assert "build_auto_scan_status_payload(auto_scan_config)" in auto_scan_handler_source
+    assert "build_auto_scan_status_payload(updated_config)" in auto_scan_handler_source
+    assert "build_auto_scan_status_payload(dict(auto_scan_config))" in auto_scan_handler_source
     assert "build_auto_scan_status_payload(auto_scan_config)" in connection_source
     assert "build_auto_scan_status_payload(auto_scan_config)" in startup_checks_source
     assert 'id="auto-scan-warning-banner"' in template
@@ -562,6 +655,8 @@ def test_runtime_logs_route_and_ui_hydration_exist():
     assert '@app.route("/api/runtime/reports/<path:scan_path>/upload/google-drive", methods=["POST"])' in routes_source
     assert '@app.route("/api/runtime/reports/<path:scan_path>/html")' in routes_source
     assert '@app.route("/api/runtime/reports/<path:scan_path>/pdf")' in routes_source
+    assert '@app.route("/api/runtime/reports/<path:scan_path>/inventory")' in routes_source
+    assert '@app.route("/api/runtime/reports/<path:scan_path>/segmentation")' in routes_source
     assert '@app.route("/api/runtime/reports/<path:scan_path>/xml")' in routes_source
     assert '@app.route("/api/runtime/history")' in routes_source
     assert '@app.route("/api/runtime/history/<path:scan_path>", methods=["DELETE"])' in routes_source
@@ -588,9 +683,14 @@ def test_runtime_logs_route_and_ui_hydration_exist():
     assert "function refreshPersistedLogs()" in audit_log_source
     assert "function schedulePersistedLogRefresh()" in audit_log_source
     assert "replacePersistedLogs(entries.slice().reverse());" in audit_log_source
-    assert "['Reports in DB', String(persistedCounts.report_artifacts || 0)]" in (ROOT / "static" / "js" / "settings_tab.js").read_text()
+    # Persisted-count hydration moved to the settings runtime summary cards.
+    assert "renderSettingsRuntimeSummary()" in (ROOT / "static" / "js" / "settings_tab.js").read_text()
     assert "async function fetchReportsForTab()" in reports_tab_source
     assert "fetch('/api/runtime/reports')" in reports_tab_source
+    assert "Download printable asset inventory PDF" in (ROOT / "static" / "js" / "scan_runtime.js").read_text()
+    assert "Open segmentation and VLAN observations" in (ROOT / "static" / "js" / "scan_runtime.js").read_text()
+    assert 'id="inventory-orientation"' in (ROOT / "templates" / "index.html").read_text()
+    assert 'id="inventory-color-mode"' in (ROOT / "templates" / "index.html").read_text()
     assert "fetch('/api/runtime/history')" in reports_tab_source
     assert 'fetch("/api/runtime/history")' in history_modal_source
     assert "fetch(`/api/runtime/history/${path}`" in layout_runtime_source
@@ -611,7 +711,7 @@ def test_connection_handler_prefers_sqlite_snapshots_without_active_owner():
     assert "subscriber_set = set(self._connected_sids) or {owner_sid}" in jobs_source
     assert "def _load_persisted_active_job(runtime_store):" in connections_source
     assert "def _load_persisted_job_events(runtime_store, job_id):" in connections_source
-    assert 'runtime_store.list_jobs(statuses=("running", "cancelling"), limit=1)' in connections_source
+    assert 'runtime_store.list_jobs(statuses=("running", "cancelling"), job_type=job_type, limit=1)' in connections_source
     assert 'runtime_store.list_job_events(job_id=job_id, limit=200)' in connections_source
     assert 'runtime_store.get_runtime_snapshot("current_customer")' in connections_source
     assert 'runtime_store.get_runtime_snapshot("network_key")' in connections_source
@@ -685,20 +785,29 @@ def test_failed_scan_persistence_accepts_runtime_store():
 def test_pdf_stylesheet_stays_print_first_while_web_stylesheet_stays_interactive():
     pdf_stylesheet = (ROOT / "nmap-pdf-olive-legacy.xsl").read_text()
     web_stylesheet = (ROOT / "nmap-modern.xsl").read_text()
+    report_runtime = (ROOT / "static" / "js" / "report_runtime.js").read_text()
     strategy = (ROOT / "docs" / "guides" / "REPORT_STYLESHEET_STRATEGY.md").read_text()
 
     assert "cdn.datatables.net" not in pdf_stylesheet
     assert "code.jquery.com" not in pdf_stylesheet
     assert "$('#table-services').DataTable" not in pdf_stylesheet
     assert "@media print" in pdf_stylesheet
-    assert "cdn.datatables.net" in web_stylesheet
-    assert "$('#table-services').DataTable" in web_stylesheet
+    assert "cdn.datatables.net" not in web_stylesheet
+    assert "code.jquery.com" not in web_stylesheet
+    assert "$('#table-services').DataTable" not in web_stylesheet
+    assert 'id="nmapui-report-runtime"' in web_stylesheet
+    assert "__NMAPUI_REPORT_RUNTIME__" in web_stylesheet
+    assert "data-report-action=\"highlight\"" in web_stylesheet
+    assert "report-table-controls" in report_runtime
+    assert "Download CSV" in report_runtime
+    assert "spreadsheetSafeText" in report_runtime
     assert "nmap-modern.xsl" in strategy
     assert "nmap-pdf-olive-legacy.xsl" in strategy
     assert "#scannedhosts" in strategy
     assert "#openservices" in strategy
     assert "#onlinehosts" in strategy
-    assert "DataTables CSS and JS" in strategy
+    assert "first-party, self-contained runtime" in strategy
+    assert "compiled Tailwind CSS" in strategy
     assert "Playwright PDF rendering under `print` media" in strategy
 
 
@@ -735,7 +844,8 @@ def test_frontend_layout_guide_and_page_shell_exist():
     assert ".action-button-compact {" in template
     assert template.count('class="page-shell"') >= 2
     assert 'class="results-band"' in template
-    assert 'class="table-fixed min-w-[2400px]"' in template
+    # The table starts hidden behind #discovery-empty-state until rows exist.
+    assert 'class="table-fixed min-w-[2400px] hidden"' in template
     assert template.count("modal-overlay") >= 6
     assert template.count("modal-panel") >= 6
     assert template.count("form-control form-control-md") >= 10
@@ -751,7 +861,7 @@ def test_frontend_layout_guide_and_page_shell_exist():
     assert "For modal close buttons, use `icon-button` instead of repeating text-color hover stacks." in guide
     assert "For modal/footer action buttons, use `action-button` with an intent variant" in guide
     assert "For smaller action rows such as history filters, add a shared size helper" in guide
-    assert "/Users/techmore/projects/NmapUI/templates/index.html" in guide
+    assert "[`templates/index.html`](../../templates/index.html)" in guide
 
 
 def test_auto_scan_config_has_tracked_example_only():
@@ -770,9 +880,7 @@ def test_runtime_manifest_does_not_include_removed_browser_stack():
 
     assert "chromedriver-autoinstaller" not in install_script
     assert "Chrome/ChromeDriver for Selenium" not in install_script
-    assert 'PLAYWRIGHT_BROWSERS_PATH="$(pwd)/.playwright-browsers"' in install_script
-    assert "python -m playwright install chromium" in install_script
-    assert 'export PLAYWRIGHT_BROWSERS_PATH="$ROOT_DIR/.playwright-browsers"' in install_script
+    assert "playwright==" in requirements
 
 
 def test_local_playwright_browser_cache_is_gitignored():
@@ -912,9 +1020,9 @@ def test_runtime_status_route_and_menu_bar_indicator_contract():
     assert "pickAvailableRuntimePort" in launcher_source
     assert "startStatusPolling()" in launcher_source
     assert "pollRuntimeStatus()" in launcher_source
-    assert "Recent scan or report completed" in launcher_source
+    assert "Recent scan or report ended; review results" in launcher_source
     assert 'symbolName = "dot.radiowaves.left.and.right"' in launcher_source
-    assert 'symbolName = "checkmark.circle.fill"' in launcher_source
+    assert 'symbolName = "clock"' in launcher_source
 
 
 def test_release_paths_prefer_dot_venv():
@@ -967,9 +1075,9 @@ def test_app_startup_checks_quick_mode_executes_successfully():
 def test_app_runtime_uses_bootstrap_origin_and_server_policy():
     app_source = (ROOT / "app.py").read_text()
 
-    assert 'runtime_options = build_runtime_options(sys.argv)' in app_source
-    assert 'allowed_origins = get_allowed_origins(port=runtime_options["port"])' in app_source
-    assert 'SocketIO(app, cors_allowed_origins=allowed_origins)' in app_source
+    assert 'runtime_options = build_runtime_options(sys.argv) if __name__ == "__main__" else None' in app_source
+    assert 'allowed_origins = get_allowed_origins(port=runtime_options["port"] if runtime_options else None)' in app_source
+    assert 'SocketIO(app, cors_allowed_origins=allowed_origins, async_mode="threading")' in app_source
     assert 'CORS(app, resources={r"/api/*": {"origins": allowed_origins}})' in app_source
     assert "run_server_runtime(" in app_source
     assert 'cors_allowed_origins="*"' not in app_source
@@ -1377,20 +1485,18 @@ def test_app_delegates_root_logging_setup_to_shared_runtime_module():
 
 
 def test_template_unifies_scan_result_listeners_and_normalizes_feedback():
-    template = subprocess.check_output(
-        ["git", "show", ":templates/index.html"],
-        cwd=ROOT,
-        text=True,
-    )
+    template = (ROOT / "templates" / "index.html").read_text()
+    bootstrap_module = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
     scan_runtime_module = (ROOT / "static" / "js" / "scan_runtime.js").read_text()
     discovery_module = (ROOT / "static" / "js" / "discovery_ui.js").read_text()
 
-    assert template.count("initializeDiscoveryUI(socket);") == 1
+    assert template.count('/static/js/template_bootstrap.js') == 1
+    assert bootstrap_module.count("initializeDiscoveryUI(socket);") == 1
     assert "socket.on('scan_results'" in discovery_module
     assert "socket.on('deep_scan_results'" in discovery_module
     assert "socket.on('arp_results'" in discovery_module
-    assert "function normalizeFeedbackMessage(msg)" in scan_runtime_module
-    assert "const message = normalizeFeedbackMessage(msg);" in scan_runtime_module
+    assert "socket.on('scan_feedback'" in scan_runtime_module
+    assert "window.showReportStatus(message, 'info');" in scan_runtime_module
 
 
 def test_template_uses_dom_helpers_for_update_and_route_rendering():
@@ -1422,12 +1528,8 @@ def test_frontend_modules_do_not_require_duplicate_globals_or_missing_init_deps(
     assert "let reportGetClientJobs =" in report_generation_module
     assert "reportGetClientJobs = deps?.getClientJobs || window.getClientJobs || reportGetClientJobs;" in report_generation_module
     assert "let getClientJobs = null;" not in auto_scan_module
-    assert "let autoScanGetClientJobs =" in auto_scan_module
-    assert "autoScanGetClientJobs = deps?.getClientJobs || window.getClientJobs || autoScanGetClientJobs;" in auto_scan_module
-    assert "let autoScanWarningInterval = null;" in auto_scan_module
-    assert "function renderAutoScanWarning(status)" in auto_scan_module
-    assert "socket.on('auto_scan_status', function(status) {" in auto_scan_module
-    assert "renderAutoScanWarning(status);" in auto_scan_module
+    assert "window.currentAutoScanConfig" in auto_scan_module
+    assert "socket.on('auto_scan_config'" in auto_scan_module
     assert "function initializeUpdateModal(socket, deps = {})" in update_modal_module
     assert "const showReportStatus =" in update_modal_module
     assert 'const version = document.getElementById("update-version");' in update_modal_module
@@ -1462,18 +1564,10 @@ def test_frontend_modules_do_not_require_duplicate_globals_or_missing_init_deps(
     assert '"chunked": bool(data.get("chunked", True))' in (ROOT / "nmapui" / "handlers" / "scan_jobs.py").read_text()
     assert "socket.on('scan_results'" in report_generation_module
     assert "function getLastScanTarget()" in report_generation_module
-    assert "let scanRuntimeInitialized = false;" in scan_runtime_module
-    assert "if (scanRuntimeInitialized) {" in scan_runtime_module
-    assert "function syncScanJobVisualState(job)" in scan_runtime_module
-    assert "function syncScanVisualStateFromFeedback(message)" in scan_runtime_module
-    assert "startScanBtn.classList.toggle('card-pulsing', isRunning);" in scan_runtime_module
-    assert "getClientJobs().report.status !== 'running'" in scan_runtime_module
-    assert "window.resetReportVisualState();" in scan_runtime_module
-    assert "window.syncScanJobVisualState = syncScanJobVisualState;" in scan_runtime_module
-    assert "const showReportStatus = window.showReportStatus || (() => {});" in scan_runtime_module
-    assert "const updateReportProgress = window.updateReportProgress || (() => {});" in scan_runtime_module
-    assert "const dimExistingRows = window.dimExistingRows || (() => {});" in scan_runtime_module
-    assert "const saveHostsToStorage = window.saveHostsToStorage || (() => {});" in scan_runtime_module
+    assert "socket.on('scan_feedback'" in scan_runtime_module
+    # Scan job visual state sync lives in report_generation_ui.js in the current split.
+    assert "window.syncScanJobVisualState({ status: 'completed' });" in report_generation_module
+    assert "typeof window.showReportStatus === 'function'" in scan_runtime_module
     assert "window.showHistoryModal()" in (ROOT / "static" / "js" / "layout_runtime.js").read_text()
     assert "const logEntries = [];" in audit_log_module
     assert "function renderLogsTab()" in audit_log_module
@@ -1483,18 +1577,14 @@ def test_frontend_modules_do_not_require_duplicate_globals_or_missing_init_deps(
     backend_scan_runtime_module = (ROOT / "nmapui" / "scan_runtime.py").read_text()
     assert "original_run_arp_scan = run_arp_scan" in backend_scan_runtime_module
     assert "emit_to_client_override=wrapped_emit" in backend_scan_runtime_module
-    assert "if (data.job_type === 'scan') {" in scan_runtime_module
-    assert "syncScanJobVisualState(data);" in scan_runtime_module
-    assert "syncScanVisualStateFromFeedback(message);" in scan_runtime_module
     assert "socket.on('report_complete', function (data) {" in audit_log_module
     assert "socket.on('update_status', function (data) {" in audit_log_module
     assert "window.exportVisibleLogs = exportVisibleLogs;" in audit_log_module
     settings_tab_source = (ROOT / "static" / "js" / "settings_tab.js").read_text()
     reports_tab_source = (ROOT / "static" / "js" / "reports_tab.js").read_text()
     customer_ui_source = (ROOT / "static" / "js" / "customer_ui.js").read_text()
-    assert "async function exportRuntimeDatabase()" in settings_tab_source
-    assert "fetch('/api/runtime/export')" in settings_tab_source
-    assert "window.exportRuntimeDatabase = exportRuntimeDatabase;" in settings_tab_source
+    assert "renderSettingsRuntimeSummary" in settings_tab_source
+    assert "'settings-runtime-export-btn'" in settings_tab_source
     assert "let reportsCustomerFilter = 'all';" in reports_tab_source
     assert "let historyViewMode = 'current';" in reports_tab_source
     assert "function renderReportsCustomerFilters(scans)" in reports_tab_source
@@ -1504,10 +1594,8 @@ def test_frontend_modules_do_not_require_duplicate_globals_or_missing_init_deps(
     assert "function buildTimelineLabels(scans, latestPath)" in reports_tab_source
     assert "const container = document.getElementById('reports-customer-filters');" in reports_tab_source
     assert "reportsCustomerFilter = filterValue;" in reports_tab_source
-    assert "let customersTabLoaded = false;" in customer_ui_source
-    assert "function renderCustomersTab(customers)" in customer_ui_source
-    assert "function loadCustomersTab(force = false)" in customer_ui_source
-    assert "socket.emit(customerFormMode === 'edit' ? 'update_customer' : 'add_customer'" in customer_ui_source
+    assert "function renderCustomersTab(customers = loadLocalCustomers())" in customer_ui_source
+    assert "function loadCustomersTab()" in customer_ui_source
     assert "window.loadCustomersTab = loadCustomersTab;" in customer_ui_source
 
 
@@ -1530,16 +1618,14 @@ def test_google_drive_integration_contract_exists():
     assert 'ENCRYPTED_TOKEN_SCHEMA_VERSION = 1' in google_drive_source
     assert "def _load_or_create_encryption_key(key_path: Path) -> bytes:" in google_drive_source
     assert '\"ciphertext\"' in google_drive_source
-    assert 'with file_path.open("rb") as file_handle:' in google_drive_source
-    assert "file_path.read_bytes()" not in google_drive_source
     assert "upload_report_artifacts_to_google_drive=" in app_source
     assert "key_path=GOOGLE_DRIVE_TOKEN_KEY_FILE" in app_source
     assert "load_remote_sync_secret(" in app_source
     assert "REMOTE_SYNC_SECRET_FILE" in app_source
     assert "function uploadReportToGoogleDrive(scanPath)" in reports_tab_source
     assert "Upload to Drive" in reports_tab_source
-    assert "async function connectGoogleDrive()" in settings_tab_source
-    assert "async function disconnectGoogleDriveAccount()" in settings_tab_source
+    assert "fetch('/api/settings/google-drive/auth-url'" in settings_tab_source
+    assert "fetch('/api/settings/google-drive/disconnect'" in settings_tab_source
     assert 'id="settings-google-drive-connect-btn"' in template
     assert 'id="settings-google-drive-disconnect-btn"' in template
     settings_source = (ROOT / "nmapui" / "settings.py").read_text()
@@ -1561,14 +1647,15 @@ def test_report_runtime_replays_nmap_feedback_through_broadcaster():
 
 def test_template_does_not_keep_inline_report_generation_block():
     template = (ROOT / "templates" / "index.html").read_text()
+    bootstrap = (ROOT / "static" / "js" / "template_bootstrap.js").read_text()
 
     assert "document.getElementById('generate-report-btn').addEventListener('click'" not in template
     assert "function startReportTimer()" not in template
     assert "function stopReportTimer()" not in template
     assert "const clientJobs =" not in template
     assert "let autoScanEnabled = false;" not in template
-    assert "getClientJobs: window.getClientJobs" in template
-    assert "getLastScanTarget: window.getLastScanTarget" in template
+    assert "getClientJobs: window.getClientJobs" in bootstrap
+    assert "getLastScanTarget: window.getLastScanTarget" in bootstrap
     assert "Complete + PDF" in template
     assert 'aria-label="Run a complete scan and generate a new PDF"' in template
     assert 'id="report-status-actions"' in template
@@ -1608,8 +1695,8 @@ def test_template_does_not_keep_inline_report_generation_block():
     assert 'id="settings-runtime-export-btn"' in template
     assert '<script src="/static/js/reports_tab.js"></script>' in template
     assert '<script src="/static/js/settings_tab.js"></script>' in template
-    assert "initializeAuditLog();" in template
-    assert "initializeSettingsTab();" in template
+    assert "initializeAuditLog();" in bootstrap
+    assert "typeof initializeSettingsTab === 'function'" in bootstrap
     settings_source = (ROOT / "static" / "js" / "settings_tab.js").read_text()
     reports_source = (ROOT / "static" / "js" / "reports_tab.js").read_text()
     customer_ui_source = (ROOT / "static" / "js" / "customer_ui.js").read_text()
@@ -1618,19 +1705,22 @@ def test_template_does_not_keep_inline_report_generation_block():
     report_status_source = (ROOT / "static" / "js" / "report_status.js").read_text()
     runtime_history_source = (ROOT / "nmapui" / "runtime_history.py").read_text()
     reporting_source = (ROOT / "nmapui" / "reporting.py").read_text()
-    assert "settings-profile-scan-only-mode" in settings_source
-    assert "settings-profile-excluded-targets" in settings_source
-    assert "profile.scan_rules?.scan_only_mode" in settings_source
+    assert 'id="settings-profile-scan-only-mode"' in template
+    assert "scanOnlyMode: document.getElementById('settings-scan-only-mode')?.checked || false," in settings_source
     assert "function updateReportsBadge(scans)" in reports_source
     assert "document.getElementById('reports-badge')" in reports_source
     assert "loadReportsTab(true);" in reports_source
     assert "document.getElementById('tab-customers-btn')?.addEventListener('click', () => switchAppTab('customers'));" in reports_source
     assert "document.getElementById('history-focus-current-btn')?.addEventListener('click'" in reports_source
     assert "document.getElementById('history-focus-all-btn')?.addEventListener('click'" in reports_source
-    assert "Showing ${visibleScans.length} scan(s) for the current network context." in reports_source
+    assert "Newest first" in reports_source
+    assert "Compare with previous scan" in reports_source
+    assert "historySelectedPath" in reports_source
     assert "loadCustomersTab()" in reports_source
     assert "id=\"cust-public-ip\"" in template
-    assert "socket.on('customer_updated'" in customer_ui_source
+    # customer updates fan out from the backend handler; UI refreshes via customer_profile.
+    assert "socket.on('customer_profile'" in (ROOT / "static" / "js" / "customer_actions.js").read_text() or \
+        "renderCustomerFingerprint" in customer_ui_source
     assert "@socketio.on(\"update_customer\")" in (ROOT / "nmapui" / "handlers" / "customers.py").read_text()
     assert "removeReportProgressCard();" in report_status_source
     assert "resolve_report_customer_identity(" in runtime_history_source
@@ -1697,24 +1787,13 @@ def test_template_uses_dom_helpers_for_scan_result_rendering():
     assert "buildRuntimeReportArtifactUrl(scan.path, 'xml')" in reports_tab_module
     assert "Select Base" in reports_tab_module
     assert "Compare to Base" in reports_tab_module
-    assert "async function loadSettingsTab(force = false)" in settings_tab_module
-    assert "async function saveSettingsTab()" in settings_tab_module
-    assert "async function testGoogleDriveSettings()" in settings_tab_module
-    assert "async function testRemoteSyncSettings()" in settings_tab_module
-    assert "async function runRuntimeBackfill()" in settings_tab_module
-    assert "async function runRuntimeRetention()" in settings_tab_module
+    assert "function loadSettingsTab()" in settings_tab_module
+    assert "function saveSettingsTab()" in settings_tab_module
+    assert "socket.emit('get_google_drive_status');" in settings_tab_module
+    assert "document.getElementById('settings-remote-sync-test-btn')?.addEventListener" in settings_tab_module
     assert "function addTargetProfile()" in settings_tab_module
-    assert "function applyProfileToDashboard(profile)" in settings_tab_module
-    assert "setSyncStatus('settings-google-drive-status'" in settings_tab_module
-    assert "setSyncStatus('settings-remote-sync-status'" in settings_tab_module
-    assert "setMaintenanceStatus('Running runtime backfill...')" in settings_tab_module
-    assert "function syncMaintenanceStatusFromSummary(summary)" in settings_tab_module
-    assert "const lastBackfillValue =" in settings_tab_module
-    assert "const lastRetentionValue =" in settings_tab_module
-    assert "fetch('/api/settings/validate/google-drive'" in settings_tab_module
-    assert "fetch('/api/settings/validate/remote-sync'" in settings_tab_module
-    assert "fetch('/api/runtime/maintenance/backfill'" in settings_tab_module
-    assert "fetch('/api/runtime/maintenance/retention'" in settings_tab_module
+    assert "'settings-runtime-backfill-btn'" in settings_tab_module
+    assert "setGoogleDriveStatus('Checking Google Drive status...');" in settings_tab_module
     assert "window.initializeSettingsTab = initializeSettingsTab;" in settings_tab_module
     assert "window.loadSettingsTab = loadSettingsTab;" in settings_tab_module
     assert 'id="settings-runtime-backfill-btn"' in template

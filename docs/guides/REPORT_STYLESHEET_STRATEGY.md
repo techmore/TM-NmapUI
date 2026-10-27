@@ -23,16 +23,18 @@ Both report modes should preserve the same core report landmarks and visual iden
 
 ## Intentional Differences
 
-The browser report may keep interactive assets that do not belong in exported PDF output:
+The browser report uses a first-party, self-contained runtime and compiled CSS:
 
-- DataTables CSS and JS
-- jQuery
-- client-side sorting/export affordances
+- no CDN scripts or stylesheets
+- a CSP-hash-authorized runtime for filtering, sorting, highlighting, CSV export,
+  and collapsible hosts
+- compiled Tailwind CSS embedded in the generated report so saved reports work
+  offline and do not depend on the app's static route
 
 The PDF stylesheet should remain print-first:
 
-- no external interactive JS dependencies
-- no DataTables runtime
+- no interactive JavaScript dependencies
+- the same embedded compiled CSS, constrained by PDF-specific styles
 - predictable print layout and page breaks
 - Playwright PDF rendering under `print` media
 
@@ -42,7 +44,11 @@ Changes to either stylesheet should preserve:
 
 - shared landmark sections in rendered HTML
 - matching representative host/service content in both outputs
-- absence of DataTables and jQuery assets in the PDF-rendered HTML
+- absence of CDN/DataTables/jQuery assets in either generated report
+- operation of the hash-authorized browser runtime without executing report data
+- severity totals derived from structured Vulners CVSS entries in port scripts
+- an explicit caveat that an empty external lookup result does not prove a host
+  is vulnerability-free
 
 Representative regression coverage lives in:
 

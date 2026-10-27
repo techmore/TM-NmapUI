@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 import json
 import sqlite3
@@ -17,6 +17,7 @@ SQLITE_WRITE_RETRY_DELAY_SECONDS = 0.05
 RUNTIME_DB_SCHEMA_VERSION = 1
 DEFAULT_RUNTIME_LOG_RETENTION = 5000
 DEFAULT_CUSTOMER_SCAN_HISTORY_RETENTION = 2000
+DEFAULT_FINISHED_JOB_RETENTION = 2000
 
 
 def utcnow_iso() -> str:
@@ -121,6 +122,24 @@ SCHEMA_MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: SCHEMA_STATEMENTS,
 }
 
+# Additive indexes remain compatible with version-1 readers, including the
+# preserved rollback release. Create them for existing v1 databases too; a
+# schema-version bump would make older code reject an otherwise readable DB.
+READ_INDEX_STATEMENTS = (
+    """
+    CREATE INDEX IF NOT EXISTS idx_report_artifacts_generated
+    ON report_artifacts(generated_at DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_report_artifacts_customer_generated
+    ON report_artifacts(customer_id, generated_at DESC)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_jobs_updated_id
+    ON jobs(updated_at DESC, job_id DESC)
+    """,
+)
+
 
 class RuntimeStateStore:
     def __init__(self, db_path: Path):
@@ -198,19 +217,19 @@ class RuntimeStateStore:
         ) as temp_file:
             export_path = Path(temp_file.name)
 
-        source_conn = sqlite3.connect(
-            self.db_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000
-        )
-        destination_conn = sqlite3.connect(export_path)
         try:
-            self._configure_connection(source_conn)
-            source_conn.backup(destination_conn)
-            destination_conn.commit()
-        finally:
-            destination_conn.close()
-            source_conn.close()
-
-        return export_path
+            with closing(sqlite3.connect(
+                self.db_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000
+            )) as source_conn:
+                with closing(sqlite3.connect(export_path)) as destination_conn:
+                    self._configure_connection(source_conn)
+                    source_conn.backup(destination_conn)
+                    destination_conn.commit()
+            return export_path
+        except Exception:
+            for suffix in ("", "-wal", "-shm"):
+                Path(f"{export_path}{suffix}").unlink(missing_ok=True)
+            raise
 
     def get_database_file_size(self) -> int:
         try:
@@ -237,6 +256,7 @@ class RuntimeStateStore:
     def initialize(self) -> None:
         def operation(conn):
             self._migrate(conn)
+            self._apply_schema_statements(conn, READ_INDEX_STATEMENTS)
         self._run_write(operation)
 
     def upsert_runtime_snapshot(self, key: str, payload: dict[str, Any]) -> None:
@@ -290,6 +310,25 @@ class RuntimeStateStore:
             )
         self._run_write(operation)
 
+    def record_daedalus_command_receipt(self, *, job_id, owner_sid, status, command, source_event):
+        """Persist the command state and its replay envelope in one transaction."""
+        now = utcnow_iso()
+        stored = {"_daedalus_source_v1": {"client_event_id": source_event["client_event_id"], "occurred_at": source_event["occurred_at"]}, "payload": source_event["payload"]}
+        def operation(conn):
+            conn.execute(
+                """INSERT INTO jobs(job_id, owner_sid, job_type, status, payload_json, created_at, updated_at)
+                VALUES (?, ?, 'command', ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET owner_sid=excluded.owner_sid,
+                status=excluded.status, payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+                (job_id, owner_sid, status, _json_dumps(command), now, now),
+            )
+            conn.execute(
+                """INSERT INTO job_events(job_id, owner_sid, job_type, event_name, payload_json, created_at)
+                VALUES (?, ?, 'command', 'daedalus_command_result', ?, ?)""",
+                (job_id, owner_sid, _json_dumps(stored), now),
+            )
+        self._run_write(operation)
+
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -318,6 +357,7 @@ class RuntimeStateStore:
         statuses: list[str] | tuple[str, ...] | None = None,
         job_type: str | None = None,
         limit: int = 50,
+        before: tuple[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         query = """
             SELECT job_id, owner_sid, job_type, status, payload_json, created_at, updated_at
@@ -331,9 +371,12 @@ class RuntimeStateStore:
         if job_type:
             conditions.append("job_type = ?")
             params.append(job_type)
+        if before is not None:
+            conditions.append("(updated_at < ? OR (updated_at = ? AND job_id < ?))")
+            params.extend((before[0], before[0], before[1]))
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY updated_at DESC LIMIT ?"
+        query += " ORDER BY updated_at DESC, job_id DESC LIMIT ?"
         params.append(limit)
         with self.connect() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
@@ -399,11 +442,18 @@ class RuntimeStateStore:
         customer_id: str | None = None,
         limit: int = 500,
         offset: int = 0,
+        include_asset_snapshot: bool = False,
     ) -> list[dict[str, Any]]:
+        payload_expression = (
+            "payload_json"
+            if include_asset_snapshot
+            else "json_remove(payload_json, '$.asset_snapshot')"
+        )
         query = """
-            SELECT scan_path, customer_id, target, html_path, pdf_path, xml_path, payload_json, generated_at, updated_at
+            SELECT scan_path, customer_id, target, html_path, pdf_path, xml_path,
+                   {payload_expression} AS payload_json, generated_at, updated_at
             FROM report_artifacts
-        """
+        """.format(payload_expression=payload_expression)
         params: list[Any] = []
         if customer_id:
             query += " WHERE customer_id = ?"
@@ -488,16 +538,33 @@ class RuntimeStateStore:
         event_name: str,
         payload: Any = None,
         max_events: int = 200,
+        source_event: dict[str, Any] | None = None,
+        max_bytes: int = 32 * 1024 * 1024,
     ) -> int:
         now = utcnow_iso()
+        stored_payload = {"_daedalus_source_v1": {
+            "client_event_id": source_event["client_event_id"],
+            "occurred_at": source_event["occurred_at"],
+            **({"source_job_id": source_event["source_job_id"], "source_job_type": source_event["source_job_type"]} if source_event.get("source_job_id") and source_event.get("source_job_type") in {"scan", "report"} else {}),
+        }, "payload": payload} if source_event else payload
         def operation(conn):
             cursor = conn.execute(
                 """
                 INSERT INTO job_events(job_id, owner_sid, job_type, event_name, payload_json, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (job_id, owner_sid, job_type, event_name, _json_dumps(payload), now),
+                (job_id, owner_sid, job_type, event_name, _json_dumps(stored_payload), now),
             )
+            if event_name == "scan_results" and isinstance(payload, list):
+                # Long scans prune their early events; keep the discovered-host list for the summary views.
+                conn.execute(
+                    """
+                    INSERT INTO runtime_snapshots(key, payload_json, updated_at)
+                    VALUES ('latest_scan_hosts', ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at
+                    """,
+                    (_json_dumps({"job_id": job_id, "hosts": payload[:512]}), now),
+                )
             conn.execute(
                 """
                 DELETE FROM job_events
@@ -511,6 +578,12 @@ class RuntimeStateStore:
                 """,
                 (job_id, job_id, max_events),
             )
+            retained = conn.execute("SELECT id, length(CAST(payload_json AS BLOB)) AS bytes FROM job_events WHERE job_id = ? ORDER BY id DESC", (job_id,)).fetchall()
+            retained_bytes = 0
+            for row in retained:
+                retained_bytes += row["bytes"]
+                if retained_bytes > max_bytes:
+                    conn.execute("DELETE FROM job_events WHERE id = ?", (row["id"],))
             return int(cursor.lastrowid)
         return self._run_write(operation)
 
@@ -531,7 +604,7 @@ class RuntimeStateStore:
                 """,
                 (job_id, limit),
             ).fetchall()
-        return [
+        result = [
             {
                 "id": row["id"],
                 "job_id": row["job_id"],
@@ -543,6 +616,14 @@ class RuntimeStateStore:
             }
             for row in reversed(rows)
         ]
+        for event in result:
+            stored = event["payload"]
+            if isinstance(stored, dict) and set(stored) == {"_daedalus_source_v1", "payload"}:
+                metadata = stored["_daedalus_source_v1"]
+                if isinstance(metadata, dict) and metadata.get("client_event_id") and metadata.get("occurred_at"):
+                    event["payload"] = stored["payload"]
+                    event["source_event"] = {**metadata, "event_name": event["event_name"], "payload": event["payload"]}
+        return result
 
     def get_recent_logs(
         self,
@@ -714,6 +795,48 @@ class RuntimeStateStore:
             return max(0, before - after)
 
         return int(self._run_write(operation) or 0)
+
+    def prune_finished_jobs(
+        self,
+        *,
+        keep_latest: int = DEFAULT_FINISHED_JOB_RETENTION,
+    ) -> dict[str, int]:
+        """Keep recent finished jobs and remove events tied to older ones."""
+        keep_latest = max(0, int(keep_latest))
+
+        def operation(conn):
+            before_jobs = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+            before_events = conn.execute("SELECT COUNT(*) FROM job_events").fetchone()[0]
+            conn.execute(
+                """
+                DELETE FROM job_events
+                WHERE job_id IN (
+                    SELECT job_id FROM jobs
+                    WHERE status NOT IN ('running', 'cancelling')
+                    ORDER BY updated_at DESC, job_id DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (keep_latest,),
+            )
+            conn.execute(
+                """
+                DELETE FROM jobs
+                WHERE job_id IN (
+                    SELECT job_id FROM jobs
+                    WHERE status NOT IN ('running', 'cancelling')
+                    ORDER BY updated_at DESC, job_id DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (keep_latest,),
+            )
+            return {
+                "deleted_jobs": before_jobs - conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+                "deleted_job_events": before_events - conn.execute("SELECT COUNT(*) FROM job_events").fetchone()[0],
+            }
+
+        return self._run_write(operation)
 
     def compact_database(self) -> dict[str, int]:
         before_bytes = self.get_database_file_size()

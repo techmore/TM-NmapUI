@@ -1,10 +1,83 @@
-from datetime import datetime, timedelta
+import copy
+from datetime import datetime, timedelta, timezone
+import uuid
+import json
 import logging
+import os
+import signal
 import subprocess
 import threading
+import time
 
 
 logger = logging.getLogger(__name__)
+
+
+def _signal_scan_process(process: subprocess.Popen, sig: int) -> None:
+    """Signal a scan's whole process group, including sudo/helper children."""
+    if sig in (signal.SIGTERM, signal.SIGKILL) and getattr(process, "_nmapui_process_group", False) and os.name == "posix":
+        # A paused (SIGSTOPped) group only acts on SIGTERM after it is resumed.
+        # Waking it first makes cancellation, shutdown and timeouts clean for
+        # paused scans; for a running group SIGCONT is a harmless no-op.
+        _send_scan_signal(process, signal.SIGCONT)
+    if getattr(process, "_nmapui_process_group", False) and os.name == "posix":
+        try:
+            os.killpg(process.pid, sig)
+            return
+        except ProcessLookupError:
+            pass
+        except OSError:
+            logger.exception("Failed to signal scan process group %s", process.pid)
+    if process.poll() is None:
+        if sig == signal.SIGKILL:
+            process.kill()
+        else:
+            process.terminate()
+
+
+def _send_scan_signal(process: subprocess.Popen, sig: int) -> bool:
+    """Send ``sig`` to the scan's group (or leader) without any fallback."""
+    pid = getattr(process, "pid", None)
+    if pid is None:
+        return False
+    try:
+        if getattr(process, "_nmapui_process_group", False):
+            os.killpg(process.pid, sig)
+        else:
+            os.kill(process.pid, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        logger.debug("Could not send signal %s to scan process %s", sig, process.pid)
+        return False
+
+
+def _process_is_pausable(process: subprocess.Popen) -> bool:
+    """Whether this process can be suspended with SIGSTOP by this user.
+
+    Privileged scans run as ``sudo -n [helper] nmap``. The scanner itself is
+    root-owned, so an unprivileged server cannot stop it; stopping only sudo
+    would pretend to pause while nmap keeps scanning. Those scans pause at the
+    next workflow checkpoint instead.
+    """
+    if os.name != "posix":
+        return False
+    argv = getattr(process, "args", None)
+    first = argv[0] if isinstance(argv, (list, tuple)) and argv else argv
+    return os.path.basename(str(first or "")) != "sudo"
+
+
+def _scan_process_group_alive(process: subprocess.Popen) -> bool:
+    if getattr(process, "_nmapui_process_group", False) and os.name == "posix":
+        try:
+            os.killpg(process.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+    return process.poll() is None
 
 
 class RateLimiter:
@@ -62,6 +135,7 @@ class ScanBroadcaster:
     """
 
     MAX_BUFFER = 500
+    MAX_BUFFER_BYTES = 8 * 1024 * 1024
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -70,33 +144,87 @@ class ScanBroadcaster:
         self._subscribers: dict[str, dict[str, set[str]]] = {}
         # job_type -> owner_sid -> list of (event, data) tuples
         self._buffer: dict[str, dict[str, list]] = {}
+        self._bridge_sids: set[str] = set()
+        self._bridge_namespaces: dict[str, str] = {}
+        self._bridge_buffer: dict[str, dict[str, list]] = {}
+        self._replay_sizes: dict[str, dict[str, list]] = {}
+        self._source_jobs: dict[str, dict[str, str]] = {}
+
+    def set_bridge_client(self, sid: str, command_namespace: str | None = None) -> None:
+        with self._lock:
+            self._bridge_sids.add(sid)
+            if command_namespace is not None:
+                self._bridge_namespaces[sid] = command_namespace
+
+    def get_bridge_namespace(self, sid: str) -> str | None:
+        with self._lock:
+            return self._bridge_namespaces.get(sid)
+
+    def is_bridge_client(self, sid: str) -> bool:
+        with self._lock:
+            return sid in self._bridge_sids
+
+    def get_bridge_clients(self, command_namespace: str | None = None) -> set[str]:
+        with self._lock:
+            return {sid for sid in self._bridge_sids if command_namespace is None or self._bridge_namespaces.get(sid) == command_namespace}
 
     def register_client(self, sid: str) -> None:
         with self._lock:
             self._connected_sids.add(sid)
 
-    def start_job(self, owner_sid: str, job_type: str = "scan") -> None:
+    def start_job(self, owner_sid: str, job_type: str = "scan", source_job_id: str | None = None) -> None:
         """Call when a scan starts — creates the slot."""
         with self._lock:
+            if job_type in {"scan", "report"}:
+                self._source_jobs.setdefault(job_type, {})[owner_sid] = str(uuid.UUID(source_job_id)) if source_job_id else str(uuid.uuid4())
             subscriber_set = set(self._connected_sids) or {owner_sid}
             subscriber_set.add(owner_sid)
             self._subscribers.setdefault(job_type, {})[owner_sid] = subscriber_set
             self._buffer.setdefault(job_type, {})[owner_sid] = []
+            self._bridge_buffer.setdefault(job_type, {})[owner_sid] = []
+            self._replay_sizes.setdefault(job_type, {})[owner_sid] = []
 
     def end_job(self, owner_sid: str, job_type: str = "scan") -> None:
         """Call when a scan ends — tears down the slot."""
         with self._lock:
+            self._source_jobs.get(job_type, {}).pop(owner_sid, None)
             self._subscribers.get(job_type, {}).pop(owner_sid, None)
             self._buffer.get(job_type, {}).pop(owner_sid, None)
+            self._bridge_buffer.get(job_type, {}).pop(owner_sid, None)
+            self._replay_sizes.get(job_type, {}).pop(owner_sid, None)
 
-    def record(self, owner_sid: str, event: str, data, job_type: str = "scan") -> None:
-        """Store an event in the replay buffer for this job."""
+    def get_source_job_id(self, owner_sid: str, job_type: str = "scan") -> str | None:
         with self._lock:
-            buf = self._buffer.get(job_type, {}).get(owner_sid)
+            return self._source_jobs.get(job_type, {}).get(owner_sid)
+
+    def record(self, owner_sid: str, event: str, data, job_type: str = "scan", source_job_id: str | None = None) -> dict:
+        """Retain an independent snapshot for this event identity and job."""
+        with self._lock:
+            envelope = {"client_event_id": str(uuid.uuid4()),
+                        "occurred_at": datetime.now(timezone.utc).isoformat(),
+                        "event_name": event, "payload": copy.deepcopy(data)}
+            active_source_job_id = self._source_jobs.get(job_type, {}).get(owner_sid)
+            source_job_id = source_job_id or active_source_job_id
+            if source_job_id is not None:
+                envelope.update(source_job_id=source_job_id, source_job_type=job_type)
+            current_run = source_job_id == active_source_job_id
+            buf = self._buffer.get(job_type, {}).get(owner_sid) if current_run else None
             if buf is not None:
-                buf.append((event, data))
-                if len(buf) > self.MAX_BUFFER:
-                    buf[:] = buf[-self.MAX_BUFFER :]
+                buf.append((event, envelope["payload"]))
+            bridge_buffer = self._bridge_buffer.get(job_type, {}).get(owner_sid) if current_run else None
+            if bridge_buffer is not None:
+                bridge_buffer.append(envelope)
+                sizes = self._replay_sizes[job_type][owner_sid]
+                sizes.append(len(json.dumps(envelope, ensure_ascii=False, default=str).encode()))
+                while len(sizes) > self.MAX_BUFFER or sum(sizes) > self.MAX_BUFFER_BYTES:
+                    sizes.pop(0)
+                    bridge_buffer.pop(0)
+                    buf.pop(0)
+            return copy.deepcopy(envelope)
+
+    def get_bridge_replay_buffer(self, owner_sid: str, job_type: str = "scan") -> list:
+        with self._lock:
+            return copy.deepcopy(self._bridge_buffer.get(job_type, {}).get(owner_sid, []))
 
     def get_subscribers(self, owner_sid: str, job_type: str = "scan") -> set[str]:
         with self._lock:
@@ -104,7 +232,7 @@ class ScanBroadcaster:
 
     def get_replay_buffer(self, owner_sid: str, job_type: str = "scan") -> list:
         with self._lock:
-            return list(self._buffer.get(job_type, {}).get(owner_sid, []))
+            return copy.deepcopy(self._buffer.get(job_type, {}).get(owner_sid, []))
 
     def subscribe(self, owner_sid: str, new_sid: str, job_type: str = "scan") -> bool:
         """Add a late-joining tab. Returns False if job no longer active."""
@@ -121,6 +249,8 @@ class ScanBroadcaster:
                 for subs in subscriber_map.values():
                     subs.discard(sid)
             self._connected_sids.discard(sid)
+            self._bridge_sids.discard(sid)
+            self._bridge_namespaces.pop(sid, None)
 
     def find_active_owner(self, job_type: str = "scan") -> str | None:
         """Return any active job owner sid for the given job type."""
@@ -164,14 +294,29 @@ class PerClientRateLimiter:
 class ClientJobRegistry:
     """Track active scan/report jobs per connected client."""
 
-    def __init__(self, runtime_store=None):
+    def __init__(self, runtime_store=None, max_active_jobs=None):
         self._jobs = {}
         self._lock = threading.Lock()
+        # Never hold _lock while waiting for a transport publisher.
+        self.status_publication_lock = threading.RLock()
+        # Wakes workflow threads parked at a pause checkpoint on resume,
+        # cancel and shutdown.
+        self._pause_cond = threading.Condition(self._lock)
         self._processes = {}
+        self._stopped_processes = set()
+        self._shutting_down = False
+        self._maintenance_token = None
         self._runtime_store = runtime_store
+        self._max_active_jobs = (
+            max(1, int(max_active_jobs)) if max_active_jobs is not None else None
+        )
+        self._start_rejections = {}
+        self._completion_listeners = []
 
     def _job_id(self, sid: str, job_type: str) -> str:
-        return f"{sid}:{job_type}"
+        job = self._jobs.get((sid, job_type)) or {}
+        source_job_id = job.get("source_job_id")
+        return f"source-job:{source_job_id}" if source_job_id else f"{sid}:{job_type}"
 
     def _persist_job(self, sid: str, job_type: str) -> None:
         if self._runtime_store is None:
@@ -185,34 +330,105 @@ class ClientJobRegistry:
             job_type=job_type,
             status=job.get("status", "idle"),
             payload={
+                "source_job_id": job.get("source_job_id"),
+                "source_job_type": job.get("source_job_type"),
                 "cancel_requested": bool(job.get("cancel_requested")),
                 "details": dict(job.get("details", {})),
                 "started_at": job.get("started_at"),
                 "finished_at": job.get("finished_at"),
                 "cancel_requested_at": job.get("cancel_requested_at"),
                 "disconnected": bool(job.get("disconnected")),
+                "paused": bool(job.get("paused")),
+                "pause_requested": bool(job.get("pause_requested")),
+                "pause_mode": job.get("pause_mode"),
+                "paused_at": job.get("paused_at"),
+                "paused_seconds": job.get("paused_seconds", 0),
             },
         )
+
+    def acquire_maintenance(self, token: str | None = None) -> str | None:
+        """Atomically fence new jobs only when all tracked work is idle.
+
+        The fence has no expiry: a stalled upgrader must not reopen admissions.
+        Release requires its opaque token; restarting this process also clears it.
+        """
+        with self._lock:
+            if (self._shutting_down
+                    or self._processes
+                    or any(job.get("status") in {"running", "cancelling"} for job in self._jobs.values())):
+                return None
+            if self._maintenance_token is not None:
+                import secrets
+                if isinstance(token, str) and secrets.compare_digest(token, self._maintenance_token):
+                    return self._maintenance_token
+                return None
+            self._maintenance_token = uuid.uuid4().hex
+            return self._maintenance_token
+
+    def release_maintenance(self, token: str) -> bool:
+        with self._lock:
+            if not isinstance(token, str) or self._maintenance_token is None:
+                return False
+            import secrets
+            if not secrets.compare_digest(token, self._maintenance_token):
+                return False
+            self._maintenance_token = None
+            return True
 
     def start(self, sid: str, job_type: str, details=None) -> bool:
         with self._lock:
             key = (sid, job_type)
-            job = self._jobs.get(key)
-            if job and job.get("status") == "running":
+            if self._shutting_down:
+                self._start_rejections[key] = "Scanner is shutting down"
                 return False
+            if self._maintenance_token is not None:
+                self._start_rejections[key] = "Scanner maintenance is active; retry after the upgrade finishes or the scanner is restarted"
+                return False
+            job = self._jobs.get(key)
+            if job and job.get("status") in {"running", "cancelling"}:
+                self._start_rejections[key] = "A job of this type is already running for this client"
+                return False
+            active_count = sum(
+                1
+                for active_job in self._jobs.values()
+                if active_job.get("status") in {"running", "cancelling"}
+            )
+            if self._max_active_jobs is not None and active_count >= self._max_active_jobs:
+                self._start_rejections[key] = (
+                    "Scanner capacity is currently in use; try again when an active job finishes"
+                )
+                return False
+            self._start_rejections.pop(key, None)
             self._jobs[key] = {
+                **({"source_job_id": str(uuid.uuid4()), "source_job_type": job_type} if job_type in {"scan", "report"} else {}),
                 "status": "running",
                 "started_at": datetime.now().isoformat(),
                 "cancel_requested": False,
+                "pause_supported": os.name == "posix",
+                "pause_requested": False,
+                "paused": False,
+                "pause_mode": None,
+                "paused_at": None,
+                "paused_seconds": 0,
                 "details": details or {},
             }
+            self._stopped_processes.discard(key)
             self._persist_job(sid, job_type)
             return True
+
+    def get_start_rejection_reason(self, sid: str, job_type: str) -> str | None:
+        with self._lock:
+            return self._start_rejections.get((sid, job_type))
+
+    def add_completion_listener(self, listener):
+        with self._lock:
+            self._completion_listeners.append(listener)
 
     def complete(self, sid: str, job_type: str, status="completed", details=None):
         with self._lock:
             key = (sid, job_type)
             current = self._jobs.get(key, {})
+            self._leave_pause_locked(key, current)
             current.update({"status": status, "finished_at": datetime.now().isoformat()})
             if details:
                 merged = dict(current.get("details", {}))
@@ -220,6 +436,13 @@ class ClientJobRegistry:
                 current["details"] = merged
             self._jobs[key] = current
             self._persist_job(sid, job_type)
+            completed = {**current, "details": dict(current.get("details", {}))}
+            listeners = list(self._completion_listeners)
+        for listener in listeners:
+            try:
+                listener(sid, job_type, completed)
+            except Exception:
+                logger.exception("A job completion receipt could not be recorded")
 
     def update(self, sid: str, job_type: str, details=None, **fields):
         with self._lock:
@@ -227,7 +450,7 @@ class ClientJobRegistry:
             current = self._jobs.get(key)
             if not current:
                 return
-            current.update(fields)
+            current.update({key: value for key, value in fields.items() if key not in {"source_job_id", "source_job_type"}})
             if details:
                 merged = dict(current.get("details", {}))
                 merged.update(details)
@@ -235,24 +458,30 @@ class ClientJobRegistry:
             self._jobs[key] = current
             self._persist_job(sid, job_type)
 
-    def cancel(self, sid: str, job_type: str) -> bool:
+    def cancel(self, sid: str, job_type: str, expected_source_job_id=None) -> bool:
         with self._lock:
             key = (sid, job_type)
             current = self._jobs.get(key)
             if not current or current.get("status") != "running":
                 return False
+            if expected_source_job_id is not None and current.get("source_job_id") != expected_source_job_id:
+                return False
+            # Cancel always wins over pause. The signal helper wakes a stopped
+            # group (SIGCONT) before SIGTERM so it can exit cleanly.
+            self._leave_pause_locked(key, current)
             current["cancel_requested"] = True
             current["status"] = "cancelling"
             current["cancel_requested_at"] = datetime.now().isoformat()
             self._jobs[key] = current
 
             process = self._processes.get(key)
-            if process and process.poll() is None:
+            if process:
                 try:
-                    process.terminate()
+                    _signal_scan_process(process, signal.SIGTERM)
                 except Exception:
                     logger.exception("Failed to terminate subprocess for %s", key)
             self._persist_job(sid, job_type)
+            self._pause_cond.notify_all()
             return True
 
     def is_cancelled(self, sid: str, job_type: str) -> bool:
@@ -260,13 +489,186 @@ class ClientJobRegistry:
             job = self._jobs.get((sid, job_type))
             return bool(job and job.get("cancel_requested"))
 
+    # -- pause / resume -------------------------------------------------
+    #
+    # A paused job keeps ``status == "running"`` (it still owns its capacity
+    # slot, blocks maintenance and can be cancelled) and carries these fields:
+    #   pause_requested  a pause was asked for and has not been undone
+    #   paused           the pause is in effect
+    #   pause_mode       "process"    the scan's process group is SIGSTOPped
+    #                    "checkpoint" the workflow parks before its next step
+    #                                 (used when no process can be stopped,
+    #                                 e.g. privileged sudo scans)
+    # ``pause_requested and not paused`` is the transient "pausing" state.
+
+    def _leave_pause_locked(self, key, job) -> None:
+        """Clear pause state, waking any stopped process. Caller holds the lock."""
+        if not job or not (job.get("paused") or job.get("pause_requested")):
+            return
+        process = self._processes.get(key)
+        if process is not None and key in self._stopped_processes:
+            _send_scan_signal(process, signal.SIGCONT)
+        self._stopped_processes.discard(key)
+        if job.get("paused") and job.get("paused_at"):
+            try:
+                elapsed = (datetime.now() - datetime.fromisoformat(job["paused_at"])).total_seconds()
+            except ValueError:
+                elapsed = 0
+            job["paused_seconds"] = round(float(job.get("paused_seconds") or 0) + max(0.0, elapsed), 3)
+        job.update(paused=False, pause_requested=False, pause_mode=None, paused_at=None)
+        self._pause_cond.notify_all()
+
+    def _enter_pause_locked(self, job, mode: str) -> None:
+        job.update(paused=True, pause_mode=mode, paused_at=datetime.now().isoformat())
+
+    def pause(self, sid: str, job_type: str, expected_source_job_id=None) -> tuple[bool, str]:
+        """Pause a running job. Returns ``(ok, reason)``; reason is a stable code."""
+        with self._lock:
+            key = (sid, job_type)
+            job = self._jobs.get(key)
+            if not job:
+                return False, "no_job"
+            if expected_source_job_id is not None and job.get("source_job_id") != expected_source_job_id:
+                return False, "stale_job"
+            if job.get("status") != "running" or job.get("cancel_requested"):
+                return False, "not_running"
+            if job.get("paused") or job.get("pause_requested"):
+                return False, "already_paused"
+            if not job.get("pause_supported", os.name == "posix"):
+                return False, "unsupported"
+            job["pause_requested"] = True
+            job["pause_requested_at"] = datetime.now().isoformat()
+            process = self._processes.get(key)
+            if process is not None and _process_is_pausable(process) and _send_scan_signal(process, signal.SIGSTOP):
+                self._stopped_processes.add(key)
+                self._enter_pause_locked(job, "process")
+            else:
+                # Nothing stoppable is running right now (between workflow steps,
+                # or a privileged scan): park at the next checkpoint instead.
+                job["pause_mode"] = "checkpoint"
+            self._persist_job(sid, job_type)
+            self._pause_cond.notify_all()
+            return True, "paused" if job.get("paused") else "pausing"
+
+    def resume(self, sid: str, job_type: str, expected_source_job_id=None) -> tuple[bool, str]:
+        """Resume a paused (or pausing) job. Returns ``(ok, reason)``."""
+        with self._lock:
+            key = (sid, job_type)
+            job = self._jobs.get(key)
+            if not job:
+                return False, "no_job"
+            if expected_source_job_id is not None and job.get("source_job_id") != expected_source_job_id:
+                return False, "stale_job"
+            if job.get("status") != "running" or job.get("cancel_requested"):
+                return False, "not_running"
+            if not (job.get("paused") or job.get("pause_requested")):
+                return False, "not_paused"
+            self._leave_pause_locked(key, job)
+            job["resumed_at"] = datetime.now().isoformat()
+            self._persist_job(sid, job_type)
+            return True, "resumed"
+
+    def is_paused(self, sid: str, job_type: str) -> bool:
+        with self._lock:
+            job = self._jobs.get((sid, job_type))
+            return bool(job and (job.get("paused") or job.get("pause_requested")))
+
+    def is_process_stopped(self, sid: str, job_type: str) -> bool:
+        """True while the job's subprocess is actually suspended."""
+        with self._lock:
+            return (sid, job_type) in self._stopped_processes
+
+    def wait_if_paused(self, sid: str, job_type: str, on_pause=None) -> None:
+        """Block a workflow at a checkpoint while its job is paused.
+
+        Returns when the job is resumed, cancelled, finished or the scanner is
+        shutting down. ``on_pause`` is called (outside the lock) when a pending
+        pause first takes effect here, so listeners can publish ``paused``.
+        """
+        key = (sid, job_type)
+
+        def should_wait(job):
+            return bool(
+                job
+                and job.get("status") == "running"
+                and not job.get("cancel_requested")
+                and not self._shutting_down
+                and (job.get("paused") or job.get("pause_requested"))
+            )
+
+        announce = False
+        with self._pause_cond:
+            job = self._jobs.get(key)
+            if should_wait(job) and not job.get("paused"):
+                self._enter_pause_locked(job, "checkpoint")
+                self._persist_job(sid, job_type)
+                announce = True
+        if announce and on_pause is not None:
+            try:
+                on_pause()
+            except Exception:
+                logger.exception("Could not publish the paused job state")
+        with self._pause_cond:
+            while should_wait(self._jobs.get(key)):
+                self._pause_cond.wait(timeout=1.0)
+
     def attach_process(self, sid: str, job_type: str, process: subprocess.Popen):
         with self._lock:
-            self._processes[(sid, job_type)] = process
+            if self._shutting_down:
+                raise RuntimeError("Scanner is shutting down")
+            key = (sid, job_type)
+            self._processes[key] = process
+            job = self._jobs.get(key)
+            # A pause that arrived just before this process was registered
+            # must not let it run.
+            if job and job.get("pause_requested") and job.get("status") == "running" and _process_is_pausable(process):
+                if _send_scan_signal(process, signal.SIGSTOP):
+                    self._stopped_processes.add(key)
+                    if not job.get("paused"):
+                        self._enter_pause_locked(job, "process")
+                    else:
+                        job["pause_mode"] = "process"
+                    self._persist_job(sid, job_type)
 
     def clear_process(self, sid: str, job_type: str):
         with self._lock:
             self._processes.pop((sid, job_type), None)
+            self._stopped_processes.discard((sid, job_type))
+
+    def terminate_all(self, *, grace_seconds: float = 2.0) -> int:
+        """Terminate every tracked child process. Returns the count signalled.
+
+        Called by the shutdown reaper so a crash or SIGTERM does not leave
+        orphaned nmap/arp-scan processes behind.
+        """
+        with self._lock:
+            self._shutting_down = True
+            processes = list(self._processes.items())
+            self._processes.clear()
+            self._stopped_processes.clear()
+            self._pause_cond.notify_all()
+
+        signalled = []
+        for key, process in processes:
+            try:
+                if _scan_process_group_alive(process):
+                    _signal_scan_process(process, signal.SIGTERM)
+                    signalled.append(process)
+            except Exception:
+                logger.exception("Failed to terminate subprocess for %s", key)
+
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        while signalled and time.monotonic() < deadline:
+            if not any(_scan_process_group_alive(process) for process in signalled):
+                break
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        for process in signalled:
+            try:
+                if _scan_process_group_alive(process):
+                    _signal_scan_process(process, signal.SIGKILL)
+            except Exception:
+                logger.exception("Failed to kill stubborn scan process group %s", process.pid)
+        return len(signalled)
 
     def get(self, sid: str, job_type: str):
         with self._lock:
@@ -287,6 +689,9 @@ class ClientJobRegistry:
                         "details": dict(job.get("details", {})),
                         "cancel_requested": bool(job.get("cancel_requested")),
                         "disconnected": bool(job.get("disconnected")),
+                        "paused": bool(job.get("paused")),
+                        "pause_requested": bool(job.get("pause_requested")),
+                        "pause_mode": job.get("pause_mode"),
                     }
                 )
 
@@ -295,16 +700,20 @@ class ClientJobRegistry:
             ]
             return {
                 "has_active_jobs": bool(active_jobs),
+                "maintenance_active": self._maintenance_token is not None,
                 "active_jobs": active_jobs,
                 "jobs": jobs,
             }
 
     def mark_disconnected(self, sid: str):
         with self._lock:
+            for key in list(self._start_rejections):
+                if key[0] == sid:
+                    self._start_rejections.pop(key, None)
             for key, job in list(self._jobs.items()):
                 if key[0] != sid:
                     continue
-                if job.get("status") == "running":
+                if job.get("status") in {"running", "cancelling"}:
                     job["disconnected"] = True
                     job["disconnected_at"] = datetime.now().isoformat()
                     self._jobs[key] = job
@@ -318,12 +727,23 @@ class ClientJobRegistry:
             if job and job.get("disconnected"):
                 self._jobs.pop(key, None)
             self._processes.pop(key, None)
+            self._stopped_processes.discard(key)
 
 
-def ensure_job_not_cancelled(job_registry, sid: str, job_type: str):
-    """Stop the current workflow if cancellation was requested."""
+def ensure_job_not_cancelled(job_registry, sid: str, job_type: str, on_pause=None):
+    """Stop the current workflow if cancellation was requested.
+
+    This is also the workflow's pause checkpoint: while the job is paused the
+    call blocks, then re-checks cancellation, so cancelling a paused job
+    unblocks and terminates it.
+    """
     if job_registry.is_cancelled(sid, job_type):
         raise RuntimeError(f"{job_type} cancelled")
+    wait_if_paused = getattr(job_registry, "wait_if_paused", None)
+    if callable(wait_if_paused):
+        wait_if_paused(sid, job_type, on_pause=on_pause)
+        if job_registry.is_cancelled(sid, job_type):
+            raise RuntimeError(f"{job_type} cancelled")
 
 
 def run_cancellable_command(
@@ -334,38 +754,69 @@ def run_cancellable_command(
     timeout=None,
 ):
     """Run a subprocess that can be cancelled via the job registry."""
-    start = datetime.now()
+    # Time spent paused does not count against the command's timeout.
+    started = time.monotonic()
+    paused_total = 0.0
+    last_tick = started
+    process_stopped = getattr(job_registry, "is_process_stopped", None) if sid and job_type else None
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=os.name == "posix",
     )
-    if sid and job_type:
-        job_registry.attach_process(sid, job_type, process)
-
+    process._nmapui_process_group = os.name == "posix"
     try:
+        if sid and job_type:
+            job_registry.attach_process(sid, job_type, process)
         while True:
             try:
                 stdout, stderr = process.communicate(timeout=0.2)
+                if sid and job_type and job_registry.is_cancelled(sid, job_type):
+                    raise RuntimeError(f"{job_type} cancelled")
                 break
             except subprocess.TimeoutExpired:
-                if timeout is not None and (datetime.now() - start).total_seconds() > timeout:
-                    process.kill()
-                    stdout, stderr = process.communicate()
-                    raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
-                if sid and job_type and job_registry.is_cancelled(sid, job_type):
-                    process.terminate()
+                now = time.monotonic()
+                if callable(process_stopped) and process_stopped(sid, job_type):
+                    paused_total += now - last_tick
+                last_tick = now
+                if timeout is not None and (now - started - paused_total) > timeout:
+                    _signal_scan_process(process, signal.SIGTERM)
                     try:
                         stdout, stderr = process.communicate(timeout=2)
                     except subprocess.TimeoutExpired:
-                        process.kill()
-                        stdout, stderr = process.communicate()
+                        _signal_scan_process(process, signal.SIGKILL)
+                        try:
+                            stdout, stderr = process.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            stdout = stderr = None
+                    raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
+                if sid and job_type and job_registry.is_cancelled(sid, job_type):
+                    _signal_scan_process(process, signal.SIGTERM)
+                    try:
+                        stdout, stderr = process.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        _signal_scan_process(process, signal.SIGKILL)
+                        try:
+                            stdout, stderr = process.communicate(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            stdout = stderr = None
                     raise RuntimeError(f"{job_type} cancelled")
 
         return subprocess.CompletedProcess(
             args=cmd, returncode=process.returncode, stdout=stdout, stderr=stderr
         )
     finally:
+        try:
+            if _scan_process_group_alive(process):
+                _signal_scan_process(process, signal.SIGTERM)
+                deadline = time.monotonic() + 2
+                while _scan_process_group_alive(process) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                if _scan_process_group_alive(process):
+                    _signal_scan_process(process, signal.SIGKILL)
+        except Exception:
+            logger.exception("Failed to clean up scan subprocess group")
         if sid and job_type:
             job_registry.clear_process(sid, job_type)

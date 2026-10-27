@@ -1,22 +1,40 @@
 import base64
 import hashlib
 import json
-import os
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 from urllib.parse import urlencode
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from .google_drive_upload import upload_file
+
+from .private_storage import (
+    atomic_replace_private_bytes,
+    load_or_create_private_bytes,
+    load_private_bytes,
+)
+
 
 GOOGLE_DRIVE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_DRIVE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 GOOGLE_DRIVE_REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke"
-GOOGLE_DRIVE_UPLOAD_ENDPOINT = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink"
 GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 GOOGLE_DRIVE_FILES_ENDPOINT = "https://www.googleapis.com/drive/v3/files"
 GOOGLE_DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
+_TOKEN_LOCK = threading.RLock()
+
+
+def _serialized_tokens(function):
+    """Serialize token read/modify/write operations in the single-worker server."""
+    @wraps(function)
+    def locked(*args, **kwargs):
+        with _TOKEN_LOCK:
+            return function(*args, **kwargs)
+    return locked
 
 
 def _format_google_drive_error(payload: dict) -> str:
@@ -46,45 +64,53 @@ def _response_json(response) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _token_lifetime(payload):
+    if not isinstance(payload.get("access_token"), str) or not payload["access_token"]:
+        raise ValueError("Missing access token")
+    if str(payload.get("token_type", "Bearer")).lower() != "bearer":
+        raise ValueError("Unsupported token type")
+    expires_in = int(payload.get("expires_in", 3600))
+    if not 0 < expires_in <= 86400:
+        raise ValueError("Invalid token lifetime")
+    if "scope" in payload and GOOGLE_DRIVE_SCOPE not in str(payload["scope"]).split():
+        raise ValueError("Drive file access was not granted")
+    return expires_in
+
+
+def _authorized_request(*, method, url, credentials_path, token_path, key_path, requests_module, **kwargs):
+    """Retry one rejected Bearer token without duplicating non-401 writes."""
+    headers = kwargs.pop("headers", {})
+    for force_refresh in (False, True):
+        token = ensure_google_drive_access_token(
+            credentials_path=credentials_path, token_path=token_path, key_path=key_path,
+            requests_module=requests_module, force_refresh=force_refresh,
+        )
+        response = getattr(requests_module, method)(
+            url, headers={**headers, "Authorization": f"Bearer {token}"}, **kwargs,
+        )
+        if response.status_code != 401:
+            return response
+    return response
+
+
 ENCRYPTED_TOKEN_SCHEMA_VERSION = 1
 
 
 def _load_json_file(path: Path, default):
-    if not path.exists():
-        return default
     try:
-        return json.loads(path.read_text())
-    except Exception:
+        return json.loads(load_private_bytes(path).decode("utf-8"))
+    except (OSError, ValueError):
         return default
 
 
 def _save_json_file(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2))
-    tmp_path.replace(path)
-
-
-def _set_owner_only_permissions(path: Path) -> None:
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    atomic_replace_private_bytes(path, json.dumps(payload, indent=2).encode("utf-8"))
 
 
 def _load_or_create_encryption_key(key_path: Path) -> bytes:
-    key_path.parent.mkdir(parents=True, exist_ok=True)
-    if key_path.exists():
-        key = key_path.read_bytes().strip()
-        _set_owner_only_permissions(key_path)
-        return key
-
-    key = Fernet.generate_key()
-    tmp_path = key_path.with_suffix(f"{key_path.suffix}.tmp")
-    tmp_path.write_bytes(key)
-    tmp_path.replace(key_path)
-    _set_owner_only_permissions(key_path)
-    return key
+    return load_or_create_private_bytes(
+        key_path, Fernet.generate_key, normalize=bytes.strip
+    )
 
 
 def _load_encrypted_token_payload(token_path: Path, key_path: Path):
@@ -98,7 +124,7 @@ def _load_encrypted_token_payload(token_path: Path, key_path: Path):
     if not ciphertext:
         return {}
 
-    key = _load_or_create_encryption_key(key_path)
+    key = load_private_bytes(key_path, normalize=bytes.strip)
     decrypted = Fernet(key).decrypt(str(ciphertext).encode("utf-8"))
     decoded = json.loads(decrypted.decode("utf-8"))
     return decoded if isinstance(decoded, dict) else {}
@@ -106,9 +132,11 @@ def _load_encrypted_token_payload(token_path: Path, key_path: Path):
 
 def load_google_drive_credentials(credentials_path: Path) -> dict:
     payload = _load_json_file(credentials_path, {})
+    if not isinstance(payload, dict):
+        return {}
     if "installed" in payload:
         payload = payload["installed"]
-    if "web" in payload:
+    elif "web" in payload:
         payload = payload["web"]
     return payload if isinstance(payload, dict) else {}
 
@@ -116,16 +144,22 @@ def load_google_drive_credentials(credentials_path: Path) -> dict:
 def save_google_drive_credentials(credentials_path: Path, payload: dict) -> dict:
     if not isinstance(payload, dict):
         return {"success": False, "error": "Invalid credentials payload"}
+    credentials = payload.get("installed", payload.get("web", payload))
+    if not isinstance(credentials, dict) or any(
+        not isinstance(credentials.get(key), str) or not credentials[key].strip()
+        for key in ("client_id", "client_secret")
+    ):
+        return {"success": False, "error": "Import a valid desktop or web OAuth client credentials JSON."}
     _save_json_file(credentials_path, payload)
-    _set_owner_only_permissions(credentials_path)
     return {"success": True, "status": "Google Drive credentials saved"}
 
 
+@_serialized_tokens
 def load_google_drive_token_state(token_path: Path, key_path: Path | None = None) -> dict:
     key_path = key_path or token_path.with_suffix(".key")
     try:
         encrypted_payload = _load_encrypted_token_payload(token_path, key_path)
-    except InvalidToken:
+    except (InvalidToken, ValueError, OSError):
         return {}
     if encrypted_payload is not None:
         return encrypted_payload
@@ -138,6 +172,7 @@ def load_google_drive_token_state(token_path: Path, key_path: Path | None = None
     return payload
 
 
+@_serialized_tokens
 def save_google_drive_token_state(token_path: Path, payload: dict, key_path: Path | None = None) -> dict:
     key_path = key_path or token_path.with_suffix(".key")
     key = _load_or_create_encryption_key(key_path)
@@ -149,10 +184,10 @@ def save_google_drive_token_state(token_path: Path, payload: dict, key_path: Pat
             "ciphertext": encrypted_payload,
         },
     )
-    _set_owner_only_permissions(token_path)
     return payload
 
 
+@_serialized_tokens
 def clear_google_drive_token_state(token_path: Path, key_path: Path | None = None) -> None:
     if token_path.exists():
         token_path.unlink()
@@ -165,7 +200,7 @@ def build_google_drive_auth_status(*, credentials_path: Path, token_path: Path, 
     credentials = load_google_drive_credentials(credentials_path)
     token_state = load_google_drive_token_state(token_path, key_path=key_path)
     has_refresh_token = bool(token_state.get("refresh_token"))
-    has_access_token = bool(token_state.get("access_token"))
+    has_access_token = bool(token_state.get("access_token")) and not _token_is_expired(token_state)
     expires_at = token_state.get("expires_at")
     configured = bool(credentials.get("client_id") and credentials.get("client_secret"))
     if has_refresh_token or has_access_token:
@@ -191,6 +226,7 @@ def _build_code_challenge(code_verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
 
 
+@_serialized_tokens
 def build_google_drive_auth_url(
     *,
     credentials_path: Path,
@@ -234,6 +270,7 @@ def build_google_drive_auth_url(
     return {"success": True, "auth_url": f"{GOOGLE_DRIVE_AUTH_ENDPOINT}?{query}"}
 
 
+@_serialized_tokens
 def exchange_google_drive_auth_code(
     *,
     credentials_path: Path,
@@ -246,17 +283,22 @@ def exchange_google_drive_auth_code(
     credentials = load_google_drive_credentials(credentials_path)
     token_state = load_google_drive_token_state(token_path, key_path=key_path)
     pending_auth = token_state.get("pending_auth") or {}
-    if not pending_auth or pending_auth.get("state") != state:
+    if (not isinstance(pending_auth, dict) or not isinstance(state, str) or not state
+            or not secrets.compare_digest(str(pending_auth.get("state", "")).encode(), state.encode())):
         return {"success": False, "error": "Invalid or expired Google Drive auth state."}
 
-    created_at_str = pending_auth.get("created_at", "")
-    if created_at_str:
-        try:
-            created_at = datetime.fromisoformat(created_at_str)
-            if datetime.now(timezone.utc) - created_at > timedelta(minutes=10):
-                return {"success": False, "error": "Google Drive auth state has expired. Please restart the auth flow."}
-        except ValueError:
-            pass
+    try:
+        created_at = datetime.fromisoformat(pending_auth.get("created_at", ""))
+        age = datetime.now(timezone.utc) - created_at
+        valid = (timedelta(seconds=-60) <= age <= timedelta(minutes=10)
+                 and bool(pending_auth.get("code_verifier")) and bool(code))
+    except (TypeError, ValueError):
+        valid = False
+    # Consume before contacting Google: retries/replays need a fresh auth flow.
+    token_state.pop("pending_auth", None)
+    save_google_drive_token_state(token_path, token_state, key_path=key_path)
+    if not valid:
+        return {"success": False, "error": "Google Drive auth state has expired. Please restart the auth flow."}
 
     try:
         response = requests_module.post(
@@ -271,8 +313,8 @@ def exchange_google_drive_auth_code(
             },
             timeout=10,
         )
-    except Exception as exc:
-        return {"success": False, "error": f"Failed to reach Google Drive token endpoint: {exc}"}
+    except Exception:
+        return {"success": False, "error": "Failed to reach Google Drive token endpoint. Please restart the auth flow."}
     payload = _response_json(response)
     if response.status_code >= 400 or "access_token" not in payload:
         return {
@@ -282,11 +324,16 @@ def exchange_google_drive_auth_code(
             or f"Failed to exchange Google Drive auth code (HTTP {response.status_code}).",
         }
 
-    expires_in = int(payload.get("expires_in") or 3600)
+    try:
+        expires_in = _token_lifetime(payload)
+    except (TypeError, ValueError):
+        return {"success": False, "error": "Google Drive returned an invalid token or did not grant file access. Reconnect in Settings."}
     token_state.update(
         {
             "access_token": payload.get("access_token"),
-            "refresh_token": payload.get("refresh_token") or token_state.get("refresh_token"),
+            # A new consent may select a different account. Never reuse the
+            # previous account's refresh token with this account's access token.
+            "refresh_token": payload.get("refresh_token"),
             "scope": payload.get("scope", GOOGLE_DRIVE_SCOPE),
             "token_type": payload.get("token_type", "Bearer"),
             "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).isoformat(),
@@ -300,24 +347,28 @@ def exchange_google_drive_auth_code(
 def _token_is_expired(token_state: dict) -> bool:
     expires_at = token_state.get("expires_at")
     if not expires_at:
-        return False
+        return True
     try:
         expiry = datetime.fromisoformat(expires_at)
-    except ValueError:
+        if expiry.tzinfo is None:
+            return True
+    except (ValueError, TypeError):
         return True
     return expiry <= (datetime.now(timezone.utc) + timedelta(minutes=1))
 
 
+@_serialized_tokens
 def ensure_google_drive_access_token(
     *,
     credentials_path: Path,
     token_path: Path,
     key_path: Path | None = None,
     requests_module,
+    force_refresh: bool = False,
 ) -> str:
     token_state = load_google_drive_token_state(token_path, key_path=key_path)
     access_token = token_state.get("access_token")
-    if access_token and not _token_is_expired(token_state):
+    if access_token and not force_refresh and not _token_is_expired(token_state):
         return access_token
 
     refresh_token = token_state.get("refresh_token")
@@ -336,17 +387,25 @@ def ensure_google_drive_access_token(
             },
             timeout=10,
         )
-    except Exception as exc:
-        raise RuntimeError(f"Failed to refresh Google Drive access token: {exc}") from exc
+    except Exception:
+        raise RuntimeError("Failed to refresh Google Drive access token. Please retry.") from None
     payload = _response_json(response)
     if response.status_code >= 400 or "access_token" not in payload:
+        if payload.get("error") == "invalid_grant":
+            for key in ("access_token", "refresh_token", "expires_at", "scope", "token_type"):
+                token_state.pop(key, None)
+            save_google_drive_token_state(token_path, token_state, key_path=key_path)
+            raise RuntimeError("Google Drive authorization expired or was revoked. Reconnect in Settings.")
         raise RuntimeError(
             payload.get("error_description")
             or payload.get("error")
             or f"Failed to refresh Google Drive access token (HTTP {response.status_code})."
         )
 
-    expires_in = int(payload.get("expires_in") or 3600)
+    try:
+        expires_in = _token_lifetime(payload)
+    except (TypeError, ValueError):
+        raise RuntimeError("Google Drive returned an invalid access token. Reconnect in Settings.") from None
     token_state.update(
         {
             "access_token": payload.get("access_token"),
@@ -358,6 +417,7 @@ def ensure_google_drive_access_token(
     return token_state["access_token"]
 
 
+@_serialized_tokens
 def disconnect_google_drive(
     *,
     token_path: Path,
@@ -366,17 +426,22 @@ def disconnect_google_drive(
 ) -> dict:
     token_state = load_google_drive_token_state(token_path, key_path=key_path)
     token = token_state.get("refresh_token") or token_state.get("access_token")
+    revoked = not bool(token)
     if token:
         try:
-            requests_module.post(
+            response = requests_module.post(
                 GOOGLE_DRIVE_REVOKE_ENDPOINT,
-                params={"token": token},
+                data={"token": token},
                 timeout=10,
+            )
+            revoked = response.status_code == 200 or (
+                response.status_code == 400 and _response_json(response).get("error") == "invalid_token"
             )
         except Exception:
             pass
     clear_google_drive_token_state(token_path, key_path=key_path)
-    return {"success": True, "status": "Google Drive disconnected"}
+    return {"success": True, "status": "Google Drive disconnected", "revoked": revoked,
+            **({"warning": "Local tokens removed. Google revocation could not be confirmed; remove access in your Google Account."} if not revoked else {})}
 
 
 def upload_files_to_google_drive(
@@ -389,43 +454,22 @@ def upload_files_to_google_drive(
     file_name_map: dict[str, str] | None = None,
     requests_module,
 ) -> dict:
-    access_token = ensure_google_drive_access_token(
-        credentials_path=credentials_path,
-        token_path=token_path,
-        key_path=key_path,
-        requests_module=requests_module,
-    )
+    def get_token(force_refresh):
+        return ensure_google_drive_access_token(
+            credentials_path=credentials_path, token_path=token_path,
+            key_path=key_path, requests_module=requests_module, force_refresh=force_refresh,
+        )
     uploaded = []
     for file_path in file_paths:
         override_name = (file_name_map or {}).get(str(file_path))
-        metadata = {"name": override_name or file_path.name}
-        if folder_id:
-            metadata["parents"] = [folder_id]
-        with file_path.open("rb") as file_handle:
-            try:
-                response = requests_module.post(
-                    GOOGLE_DRIVE_UPLOAD_ENDPOINT,
-                    headers={
-                        "Authorization": f"Bearer {access_token}",
-                    },
-                    files={
-                        "metadata": (
-                            "metadata.json",
-                            json.dumps(metadata).encode("utf-8"),
-                            "application/json; charset=UTF-8",
-                        ),
-                        "file": (file_path.name, file_handle, "application/octet-stream"),
-                    },
-                    timeout=30,
-                )
-            except Exception as exc:
-                raise RuntimeError(f"Drive upload failed for {file_path.name}: {exc}") from exc
-        payload = _response_json(response)
-        if response.status_code >= 400:
-            raise RuntimeError(
-                payload.get("error", {}).get("message")
-                or f"Drive upload failed for {file_path.name} (HTTP {response.status_code})."
+        try:
+            payload = upload_file(
+                file_path=file_path, name=override_name or file_path.name, folder_id=folder_id,
+                requests_module=requests_module, get_access_token=get_token,
             )
+        except (OSError, RuntimeError) as exc:
+            return {"success": False, "uploaded": uploaded, "error": str(exc),
+                    "status": f"Uploaded {len(uploaded)} of {len(file_paths)} file(s); upload incomplete"}
         uploaded.append(payload)
 
     return {
@@ -443,26 +487,21 @@ def ensure_google_drive_reports_folder(
     requests_module,
     folder_name: str = "nmapui-reports",
 ) -> dict:
-    access_token = ensure_google_drive_access_token(
-        credentials_path=credentials_path,
-        token_path=token_path,
-        key_path=key_path,
-        requests_module=requests_module,
-    )
-    headers = {"Authorization": f"Bearer {access_token}"}
+    escaped_name = folder_name.replace("\\", "\\\\").replace("'", "\\'")
     query = (
         "mimeType='application/vnd.google-apps.folder' "
-        f"and name='{folder_name}' and trashed=false"
+        f"and name='{escaped_name}' and trashed=false"
     )
     try:
-        response = requests_module.get(
-            GOOGLE_DRIVE_FILES_ENDPOINT,
-            headers=headers,
+        response = _authorized_request(
+            method="get", url=GOOGLE_DRIVE_FILES_ENDPOINT,
+            credentials_path=credentials_path, token_path=token_path, key_path=key_path,
+            requests_module=requests_module,
             params={"q": query, "fields": "files(id,name)"},
             timeout=10,
         )
-    except Exception as exc:
-        return {"success": False, "error": f"Failed to query Drive folder: {exc}"}
+    except Exception:
+        return {"success": False, "error": "Failed to query Drive folder. Check the connection or reconnect in Settings."}
     payload = _response_json(response)
     if response.status_code >= 400:
         error_detail = _format_google_drive_error(payload)
@@ -474,17 +513,20 @@ def ensure_google_drive_reports_folder(
     files = payload.get("files") or []
     if files:
         folder_id = files[0].get("id")
-        return {"success": True, "folder_id": folder_id, "status": "Drive folder ready"}
+        if folder_id:
+            return {"success": True, "folder_id": folder_id, "status": "Drive folder ready"}
+        return {"success": False, "error": "Google Drive did not confirm the reports folder ID."}
 
     try:
-        create_response = requests_module.post(
-            GOOGLE_DRIVE_FILES_ENDPOINT,
-            headers={**headers, "Content-Type": "application/json"},
+        create_response = _authorized_request(
+            method="post", url=GOOGLE_DRIVE_FILES_ENDPOINT,
+            credentials_path=credentials_path, token_path=token_path, key_path=key_path,
+            requests_module=requests_module, headers={"Content-Type": "application/json"},
             json={"name": folder_name, "mimeType": GOOGLE_DRIVE_FOLDER_MIME},
             timeout=10,
         )
-    except Exception as exc:
-        return {"success": False, "error": f"Failed to create Drive folder: {exc}"}
+    except Exception:
+        return {"success": False, "error": "Failed to create Drive folder. Check the connection or reconnect in Settings."}
     create_payload = _response_json(create_response)
     if create_response.status_code >= 400:
         error_detail = _format_google_drive_error(create_payload)
@@ -492,6 +534,8 @@ def ensure_google_drive_reports_folder(
             "success": False,
             "error": f"Failed to create Drive folder (HTTP {create_response.status_code}): {error_detail}",
         }
+    if not create_payload.get("id"):
+        return {"success": False, "error": "Google Drive did not confirm the created folder ID."}
     return {
         "success": True,
         "folder_id": create_payload.get("id"),
@@ -508,25 +552,20 @@ def create_google_drive_folder(
     key_path: Path | None = None,
     requests_module,
 ) -> dict:
-    access_token = ensure_google_drive_access_token(
-        credentials_path=credentials_path,
-        token_path=token_path,
-        key_path=key_path,
-        requests_module=requests_module,
-    )
-    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
     payload = {"name": name, "mimeType": GOOGLE_DRIVE_FOLDER_MIME}
     if parent_id:
         payload["parents"] = [parent_id]
     try:
-        response = requests_module.post(
-            GOOGLE_DRIVE_FILES_ENDPOINT,
-            headers=headers,
+        response = _authorized_request(
+            method="post", url=GOOGLE_DRIVE_FILES_ENDPOINT,
+            credentials_path=credentials_path, token_path=token_path, key_path=key_path,
+            requests_module=requests_module, headers={"Content-Type": "application/json"},
             json=payload,
+            params={"supportsAllDrives": "true", "fields": "id,name"},
             timeout=10,
         )
-    except Exception as exc:
-        return {"success": False, "error": f"Failed to create Drive folder: {exc}"}
+    except Exception:
+        return {"success": False, "error": "Failed to create Drive folder. Check the connection or reconnect in Settings."}
     create_payload = _response_json(response)
     if response.status_code >= 400:
         error_detail = _format_google_drive_error(create_payload)
@@ -534,6 +573,8 @@ def create_google_drive_folder(
             "success": False,
             "error": f"Failed to create Drive folder (HTTP {response.status_code}): {error_detail}",
         }
+    if not create_payload.get("id"):
+        return {"success": False, "error": "Google Drive did not confirm the created folder ID."}
     return {
         "success": True,
         "folder_id": create_payload.get("id"),

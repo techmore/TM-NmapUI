@@ -1,0 +1,364 @@
+#!/usr/bin/python3
+"""Root-owned validating wrapper for privileged NmapUI scans.
+
+The appliance needs root for SYN scans (`-sS`), OS detection (`-O`) and
+`arp-scan`, but the web backend must not run as root. This wrapper is what
+sudoers grants `NOPASSWD` for — never `nmap` directly — so a compromised backend
+cannot ask root to execute arbitrary programs.
+
+Everything the backend sends is re-validated here:
+
+* the program must be `nmap` or `arp-scan`, resolved to a root-owned binary on a
+  fixed search path (never the caller's `PATH`);
+* exactly one scan technique from the allowlist;
+* flags must come from the allowlist that covers the app's real invocations;
+* `--script` and `--stylesheet` must resolve inside the root-owned asset
+  directory, and scan output must resolve inside the data directory, so a
+  writable checkout cannot smuggle executable Lua or write files as root;
+* the target must look like an address/CIDR/hostname, never an option.
+
+The helper is installed root:wheel 0755 and is deliberately standalone: it
+imports nothing from the (possibly user-writable) project checkout.
+"""
+
+import os
+import errno
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+
+# The service's active release is root-owned. Older staged releases used the
+# shared directory, so retain that fallback for a rollback across upgrades.
+# Never take this trust root from the caller's environment: sudo may preserve
+# selected variables and the helper is the privilege boundary.
+RELEASE_ASSET_DIR = "/usr/local/lib/nmapui/current/privileged-assets"
+LEGACY_ASSET_DIR = "/usr/local/share/nmapui"
+ASSET_DIR = RELEASE_ASSET_DIR if os.path.isdir(RELEASE_ASSET_DIR) else LEGACY_ASSET_DIR
+DATA_DIR = "/Library/Application Support/NmapUI/data"
+
+# Only these locations are trusted to hold the scanner binaries.
+TRUSTED_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin")
+
+ALLOWED_PROGRAMS = ("nmap", "arp-scan")
+
+NMAP_TECHNIQUES = ("-sS", "-sT", "-sn")
+NMAP_BOOL_FLAGS = ("-A", "-Pn", "-sC", "-sV", "-O", "--open", "-n", "-F")
+NMAP_TIMING_RE = re.compile(r"^-T[0-5]$")
+NMAP_VALUE_FLAGS = ("--top-ports", "--max-parallelism", "--max-retries", "--min-rate", "--max-rate")
+NMAP_EXCLUDE_FLAG = "--exclude"
+NMAP_SCRIPT_FLAG = "--script"
+NMAP_STYLESHEET_FLAG = "--stylesheet"
+NMAP_OUTPUT_FLAGS = ("-oA",)
+FORBIDDEN_FLAGS = ("--interactive", "-i", "--script-args-file", "--datadir", "--servicedb", "--versiondb")
+
+TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
+IFACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+NUMBER_RE = re.compile(r"^[0-9]{1,6}$")
+
+
+class Rejected(Exception):
+    """Raised when a request is not on the allowlist."""
+
+
+def _fail(message):
+    sys.stderr.write("nmapui-privileged-scanner: refusing request: %s\n" % message)
+    return 126
+
+
+def _resolve_program(name):
+    untrusted = []
+    for directory in TRUSTED_BIN_DIRS:
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            try:
+                _verify_root_owned_command(candidate)
+            except Rejected as exc:
+                untrusted.append(str(exc))
+                continue
+            return os.path.realpath(candidate)
+    if untrusted:
+        raise Rejected("only untrusted scanner binaries found: %s" % "; ".join(untrusted))
+    raise Rejected("trusted binary not found for %r" % name)
+
+
+def _verify_root_owned_command(command):
+    command = os.path.abspath(command)
+    for root in (command, os.path.realpath(command)):
+        candidate = root
+        while True:
+            details = os.lstat(candidate)
+            if details.st_uid != 0 or (
+                not stat.S_ISLNK(details.st_mode) and stat.S_IMODE(details.st_mode) & 0o022
+            ):
+                raise Rejected("scanner command path is not root-owned and read-only: %s" % candidate)
+            parent = os.path.dirname(candidate)
+            if parent == candidate:
+                break
+            candidate = parent
+
+
+def _verified_nmap_data_dir(program):
+    directory = os.path.join(os.path.dirname(os.path.dirname(program)), "share", "nmap")
+    if os.path.islink(directory) or not os.path.isdir(directory):
+        raise Rejected("Nmap data directory is missing or symlinked: %s" % directory)
+    directory_real = os.path.realpath(directory)
+    _verify_root_owned_command(directory)
+    for required in ("scripts", "nselib", "nmap-services", "nmap-os-db"):
+        if not os.path.exists(os.path.join(directory, required)):
+            raise Rejected("Nmap data directory is incomplete: %s" % directory)
+    for root, directories, files in os.walk(directory):
+        for name in directories + files:
+            path = os.path.join(root, name)
+            if os.path.islink(path):
+                target = os.path.realpath(path)
+                if target != directory_real and not target.startswith(directory_real + os.sep):
+                    raise Rejected("Nmap data symlink escapes the protected directory: %s" % path)
+                _verify_root_owned_command(target)
+            _verify_root_owned_command(path)
+    return directory
+
+
+def _validate_target(value):
+    if not value or value.startswith("-"):
+        raise Rejected("invalid target %r" % value)
+    if ".." in value or not TARGET_RE.match(value):
+        raise Rejected("invalid target %r" % value)
+    return value
+
+
+def _validate_exclude_list(value):
+    if not value:
+        raise Rejected("empty --exclude value")
+    for item in value.split(","):
+        _validate_target(item)
+    return value
+
+
+def _validate_contained_path(value, *, root, what):
+    if not value:
+        raise Rejected("empty path for %s" % what)
+    resolved = os.path.realpath(value)
+    root_real = os.path.realpath(root)
+    if resolved != root_real and not resolved.startswith(root_real + os.sep):
+        raise Rejected("%s must live under %s (got %s)" % (what, root_real, resolved))
+    return resolved
+
+
+def _validate_output_base(value):
+    base = _validate_contained_path(value, root=DATA_DIR, what="-oA")
+    root_real = os.path.realpath(DATA_DIR)
+    if base == root_real:
+        raise Rejected("scan output base must be inside the data directory")
+    # Nmap appends these suffixes after validating its -oA base. Resolve them
+    # too, so existing symlinks cannot redirect an output outside the data dir.
+    for suffix in (".nmap", ".xml", ".gnmap"):
+        output_path = os.path.realpath(value + suffix)
+        if not output_path.startswith(root_real + os.sep):
+            raise Rejected("scan output would escape the data directory: %s" % output_path)
+    return base
+
+
+def build_argv(request):
+    """Validate a request list and return the argv to exec.
+
+    ``request`` is the argv the backend would have handed to nmap/arp-scan,
+    with no privilege prefix (for example ``nmap -sS -Pn ... 10.0.0.0/24``).
+    """
+    if not request:
+        raise Rejected("empty request")
+
+    program = os.path.basename(request[0])
+    if program not in ALLOWED_PROGRAMS:
+        raise Rejected("program %r is not allowed" % program)
+    resolved_program = _resolve_program(program)
+
+    args = list(request[1:])
+    if not args:
+        raise Rejected("no arguments supplied")
+
+    for flag in args:
+        if flag in FORBIDDEN_FLAGS:
+            raise Rejected("flag %r is not allowed" % flag)
+
+    if program == "nmap":
+        # At most one technique: conflicting technique flags were the shape of an
+        # earlier bug where a retry left both -sS and -sT on the command line.
+        # Zero is allowed because nmap's own default is privileged-aware.
+        techniques = [a for a in args if a in NMAP_TECHNIQUES]
+        if len(techniques) > 1:
+            raise Rejected(
+                "at most one scan technique from %s is allowed" % (NMAP_TECHNIQUES,)
+            )
+
+    output = [resolved_program]
+    index = 0
+    positional = []
+    output_count = 0
+    while index < len(args):
+        arg = args[index]
+
+        if arg in NMAP_TECHNIQUES or arg in NMAP_BOOL_FLAGS or NMAP_TIMING_RE.match(arg):
+            output.append(arg)
+            index += 1
+            continue
+
+        if arg == NMAP_EXCLUDE_FLAG:
+            if index + 1 >= len(args):
+                raise Rejected("--exclude needs a value")
+            output.extend([arg, _validate_exclude_list(args[index + 1])])
+            index += 2
+            continue
+
+        if arg in (NMAP_SCRIPT_FLAG, NMAP_STYLESHEET_FLAG):
+            if index + 1 >= len(args):
+                raise Rejected("%s needs a value" % arg)
+            output.extend([arg, _validate_contained_path(args[index + 1], root=ASSET_DIR, what=arg)])
+            index += 2
+            continue
+
+        if arg in NMAP_OUTPUT_FLAGS:
+            if index + 1 >= len(args):
+                raise Rejected("%s needs a value" % arg)
+            output_count += 1
+            if program != "nmap" or output_count > 1:
+                raise Rejected("only one Nmap -oA output base is allowed")
+            output.extend([arg, _validate_output_base(args[index + 1])])
+            index += 2
+            continue
+
+        if arg in NMAP_VALUE_FLAGS:
+            if index + 1 >= len(args):
+                raise Rejected("%s needs a value" % arg)
+            value = args[index + 1]
+            if not NUMBER_RE.match(value):
+                raise Rejected("%s needs a numeric value (got %r)" % (arg, value))
+            output.extend([arg, value])
+            index += 2
+            continue
+
+        if arg == "--interface":
+            if index + 1 >= len(args):
+                raise Rejected("--interface needs a value")
+            interface = args[index + 1]
+            if not IFACE_RE.match(interface):
+                raise Rejected("invalid interface %r" % interface)
+            output.extend([arg, interface])
+            index += 2
+            continue
+
+        if arg.startswith("-"):
+            raise Rejected("flag %r is not on the allowlist" % arg)
+
+        positional.append(_validate_target(arg))
+        index += 1
+
+    if len(positional) != 1:
+        raise Rejected("exactly one target is required (got %d)" % len(positional))
+
+    output.extend(positional)
+    return output
+
+
+def _service_identity():
+    details = os.lstat(DATA_DIR)
+    if not stat.S_ISDIR(details.st_mode) or details.st_uid == 0:
+        raise Rejected("privileged scan output requires a non-root service-owned data directory")
+    return details.st_uid, details.st_gid
+
+
+def _verified_spool_parent():
+    parent = "/private/var/tmp"
+    details = os.lstat(parent)
+    mode = stat.S_IMODE(details.st_mode)
+    if not stat.S_ISDIR(details.st_mode) or details.st_uid != 0 or (mode & 0o022 and not mode & stat.S_ISVTX):
+        raise Rejected("privileged scan spool parent is not protected")
+    return parent
+
+
+def _drop_to_service_user(uid, gid):
+    os.setgroups([])
+    os.setgid(gid)
+    os.setuid(uid)
+
+
+def _move_output_as_service_user(source, destination):
+    try:
+        os.replace(source, destination)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        # Different volumes: write a private temporary file in the destination
+        # directory and atomically replace the final path while unprivileged.
+        fd, temporary = tempfile.mkstemp(prefix=".nmapui-output-", dir=os.path.dirname(destination))
+        try:
+            with os.fdopen(fd, "wb") as output, open(source, "rb") as scan_output:
+                shutil.copyfileobj(scan_output, output)
+            os.replace(temporary, destination)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+
+def _run_nmap_with_safe_outputs(final_argv):
+    uid, gid = _service_identity()
+    parent = _verified_spool_parent()
+    output_index = final_argv.index("-oA") + 1
+    requested_base = final_argv[output_index]
+
+    def _interrupt_scan(signum, frame):
+        raise InterruptedError("privileged scan was interrupted")
+
+    old_handler = signal.signal(signal.SIGTERM, _interrupt_scan)
+    try:
+        with tempfile.TemporaryDirectory(prefix="nmapui-scan-", dir=parent) as spool:
+            spool_base = os.path.join(spool, "scan")
+            command = list(final_argv)
+            command[output_index] = spool_base
+            result = subprocess.run(command, check=False)
+
+            generated = []
+            for suffix in (".nmap", ".xml", ".gnmap"):
+                source = spool_base + suffix
+                if os.path.lexists(source):
+                    if not stat.S_ISREG(os.lstat(source).st_mode):
+                        raise Rejected("Nmap produced a non-regular output file")
+                    os.chown(source, uid, gid)
+                    generated.append((source, requested_base + suffix))
+            os.chown(spool, uid, gid)
+            _drop_to_service_user(uid, gid)
+            for source, destination in generated:
+                _move_output_as_service_user(source, destination)
+            if result.returncode == 0 and not generated:
+                raise Rejected("Nmap returned success without scan output")
+            return result.returncode
+    finally:
+        signal.signal(signal.SIGTERM, old_handler)
+
+
+def main(argv):
+    if os.geteuid() != 0:
+        sys.stderr.write("nmapui-privileged-scanner: must run as root\n")
+        return 126
+
+    try:
+        final_argv = build_argv(argv)
+        if os.path.basename(final_argv[0]) == "nmap":
+            os.environ["NMAPDIR"] = _verified_nmap_data_dir(final_argv[0])
+    except Rejected as exc:
+        return _fail(str(exc))
+
+    try:
+        if "-oA" in final_argv:
+            return _run_nmap_with_safe_outputs(final_argv)
+        os.execv(final_argv[0], final_argv)
+    except (OSError, Rejected) as exc:
+        sys.stderr.write("nmapui-privileged-scanner: execution failed: %s\n" % exc)
+        return 126
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

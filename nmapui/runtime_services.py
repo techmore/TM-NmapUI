@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 
 from nmapui.client_state import DEFAULT_CUSTOMER, DEFAULT_NETWORK_KEY
 
@@ -64,7 +65,18 @@ def create_runtime_services(
 
 
 def _build_job_registry(job_registry_cls, runtime_store):
+    raw_limit = str(os.environ.get("NMAPUI_MAX_CONCURRENT_JOBS", "2") or "2").strip()
     try:
-        return job_registry_cls(runtime_store=runtime_store)
+        max_active_jobs = max(1, int(raw_limit))
+    except ValueError:
+        max_active_jobs = 2
+    try:
+        return job_registry_cls(
+            runtime_store=runtime_store,
+            max_active_jobs=max_active_jobs,
+        )
     except TypeError:
-        return job_registry_cls()
+        try:
+            return job_registry_cls(runtime_store=runtime_store)
+        except TypeError:
+            return job_registry_cls()

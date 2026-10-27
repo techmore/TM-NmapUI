@@ -1,7 +1,26 @@
 import json
 
-from persistence import iter_scan_metadata_documents
+import pytest
+
+from persistence import iter_scan_metadata_documents, save_json_document
+from nmapui import private_storage
 from nmapui.state import get_report_counts
+
+
+def test_atomic_state_write_preserves_previous_document_on_sync_failure(tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    save_json_document(path, {"enabled": False})
+
+    def fail_sync(_file_descriptor):
+        raise OSError("sync failed")
+
+    monkeypatch.setattr(private_storage.os, "fsync", fail_sync)
+    with pytest.raises(OSError, match="sync failed"):
+        save_json_document(path, {"enabled": True})
+
+    assert json.loads(path.read_text()) == {"enabled": False}
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert not list(tmp_path.glob(".settings.json.*.tmp"))
 
 
 def test_iter_scan_metadata_documents_skips_invalid_entries_and_normalizes(tmp_path):
@@ -143,6 +162,7 @@ def test_iter_scan_metadata_documents_prefers_existing_index(tmp_path):
                 "failure_error": "",
                 "completed_successfully": None,
                 "diff_summary": None,
+                "diff_summary_computed": False,
             },
         )
     ]

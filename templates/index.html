@@ -1,43 +1,17 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Network Scanner GUI</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.0/socket.io.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/vendor/fonts.css" />
+    <link rel="stylesheet" href="/static/css/tailwind.css" />
+    <script src="/static/vendor/socket.io.min.js"></script>
     <script src="/static/js/utils.js"></script>
-<script src="https://unpkg.com/lucide@latest"></script>
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        olive: {
-                            50: 'oklch(96% 0.015 110)',
-                            100: 'oklch(91% 0.020 110)',
-                            200: 'oklch(85% 0.028 110)',
-                            300: 'oklch(75% 0.040 110)',
-                            400: 'oklch(62% 0.055 110)',
-                            500: 'oklch(50% 0.065 110)',
-                            600: 'oklch(42% 0.055 110)',
-                            700: 'oklch(35% 0.045 110)',
-                            800: 'oklch(28% 0.035 110)',
-                            900: 'oklch(22% 0.025 110)',
-                            950: 'oklch(16% 0.015 110)',
-                        }
-                    },
-                    fontFamily: {
-                        display: ['Instrument Serif', 'serif'],
-                        sans: ['Inter', 'system-ui', 'sans-serif'],
-                    }
-                }
-            }
-        }
-    </script>
+    <script src="/static/js/session_gate.js"></script>
+    <script src="/static/vendor/lucide.min.js"></script>
 <style>
+    #suspend-scan-btn:disabled, #resume-scan-btn:disabled { opacity: .4; cursor: not-allowed; }
     body {
         font-family: 'Inter', system-ui, sans-serif;
         background-color: oklch(91% 0.012 106.5);
@@ -299,10 +273,61 @@
         padding: 1rem;
     }
 
+    /* Keep Tailwind's hidden state effective despite this component display rule. */
+    .modal-overlay.hidden {
+        display: none;
+    }
+
     .modal-panel {
         width: 100%;
         border-radius: 0.5rem;
         background: white;
+    }
+
+    /* Keyboard skip link: visually hidden until focused. */
+    .skip-link {
+        position: absolute;
+        left: 1rem;
+        top: -4rem;
+        z-index: 100;
+        border-radius: 0.5rem;
+        background: oklch(22% 0.025 110);
+        color: white;
+        padding: 0.5rem 1rem;
+        font-weight: 600;
+        transition: top 0.15s ease;
+    }
+
+    .skip-link:focus {
+        top: 1rem;
+    }
+
+    /* Controls that exist in the layout but have no backend yet (issue #10). */
+    .control-unavailable {
+        opacity: 0.45;
+        cursor: not-allowed;
+    }
+
+    /* Empty state shown in place of the results table until hosts arrive. */
+    .results-empty-state {
+        margin-inline: auto;
+        max-width: 36rem;
+        padding: 2rem 1.5rem;
+        text-align: center;
+        color: oklch(42% 0.055 110);
+    }
+
+    .results-empty-state h3 {
+        font-size: 1.5rem;
+        color: oklch(22% 0.025 110);
+    }
+
+    .results-empty-state ol {
+        display: inline-block;
+        margin-top: 1rem;
+        text-align: left;
+        font-size: 0.875rem;
+        line-height: 1.6;
     }
 
     .modal-panel-scroll {
@@ -408,21 +433,49 @@
     .focus-ring-olive:focus {
         --tw-ring-color: oklch(62% 0.055 110);
     }
+
+/* Keep the selected target readable independently of action button widths. */
+@media (min-width: 768px) {
+    #scan-command-center > div:first-child { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 1fr); }
+    #scan-command-center > div:first-child > div { width: 100%; min-width: 0; }
+    #scan-command-center > div:first-child > div:last-child { grid-column: 1 / -1; }
+    #scan-command-center > div:first-child > div:last-child > div:first-child { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    #scan-command-center button { white-space: normal; }
+}
+
+@media (max-width: 767px) {
+    #scanner-header { flex-direction: column; align-items: flex-start; gap: 16px; }
+    #scanner-header > div:first-child { flex-direction: column; align-items: flex-start; gap: 16px; width: 100%; }
+    #scanner-header h1 { font-size: 2rem; }
+    #scanner-header h1 + div { flex-wrap: wrap; }
+    #current-date-time { font-size: 1rem; text-align: left; }
+    #network-key-banner > div > div:first-child { flex-direction: column; align-items: flex-start; gap: 12px; }
+    #network-key-banner > div > div:first-child > div:last-child { gap: 16px; width: 100%; justify-content: space-between; }
+}
 </style>
+    <link rel="stylesheet" href="/static/css/elementary-palette.css" />
+    <link rel="stylesheet" href="/static/css/elementary.css" />
 </head>
 <body class="py-8">
+    <a href="#scan-target" class="skip-link">Skip to scan controls</a>
     <!-- Main Content Container (1200px) -->
     <div class="page-shell">
     <!-- Header with Title -->
-    <div class="flex items-center justify-between mb-8">
+    <header id="scanner-header" class="flex items-center justify-between mb-8">
         <div class="flex items-center gap-6">
-            <img src="static/techmore.png" class="h-12 w-auto">
+            <img src="static/techmore.png" class="h-12 w-auto" alt="Techmore">
             <div>
                 <h1 class="text-4xl font-display italic text-olive-950">Network Scanner</h1>
                 <div class="flex items-center gap-2">
                     <div id="app-version" class="text-sm text-olive-600 font-medium">v--.--.--.__</div>
+                    <button
+                        id="check-app-updates"
+                        type="button"
+                        class="rounded-full border border-olive-300 bg-white px-2.5 py-1 text-xs font-medium text-olive-800 transition-colors hover:bg-olive-50 disabled:cursor-wait disabled:opacity-60"
+                    >Check for updates</button>
+                    <span id="update-check-status" class="text-xs text-olive-600" aria-live="polite"></span>
                     <a
-                        href="https://github.com/techmore/NmapUI"
+                        href="https://github.com/techmore/TM-NmapUI"
                         target="_blank"
                         rel="noopener noreferrer"
                         class="inline-flex items-center justify-center rounded-full bg-olive-100 p-1.5 text-olive-700 transition-colors hover:bg-olive-200 hover:text-olive-900"
@@ -432,42 +485,42 @@
                             <path d="M8 0C3.58 0 0 3.67 0 8.2c0 3.63 2.29 6.71 5.47 7.8.4.08.55-.18.55-.4 0-.2-.01-.86-.01-1.56-2.01.38-2.53-.5-2.69-.96-.09-.24-.48-.96-.82-1.15-.28-.16-.68-.56-.01-.57.63-.01 1.08.59 1.23.83.72 1.24 1.87.89 2.33.68.07-.54.28-.89.51-1.09-1.78-.21-3.64-.92-3.64-4.09 0-.9.31-1.64.82-2.22-.08-.21-.36-1.05.08-2.18 0 0 .67-.22 2.2.85.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.07 2.2-.85 2.2-.85.44 1.13.16 1.97.08 2.18.51.58.82 1.31.82 2.22 0 3.18-1.87 3.88-3.65 4.09.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .22.15.48.55.4A8.24 8.24 0 0 0 16 8.2C16 3.67 12.42 0 8 0Z" />
                         </svg>
                     </a>
-                    <button id="app-update-badge" onclick="showUpdateModal()" class="hidden px-2 py-0.5 bg-amber-500 text-white text-[10px] font-bold rounded-full hover:bg-amber-600 transition-colors">
+                    <button id="app-update-badge" data-action="showUpdateModal" class="hidden px-2 py-0.5 bg-amber-500 text-white text-[10px] font-bold rounded-full hover:bg-amber-600 transition-colors">
                         Update Available
                     </button>
                 </div>
             </div>
         </div>
-        <div id="current-date-time" class="text-xl font-display text-olive-950 text-center"></div>
+        <div id="current-date-time" class="text-xl font-display text-olive-950 text-center" aria-live="off"></div>
         <div class="flex items-center gap-8">
         </div>
-    </div>
+    </header>
 
-    <div class="mb-6 rounded-2xl border border-olive-200 bg-white/85 p-2 shadow-sm backdrop-blur">
-        <div class="flex flex-wrap items-center gap-2">
-        <button id="tab-dashboard-btn" class="action-button action-button-primary" aria-label="Show dashboard tab">
+    <nav class="mb-6 rounded-2xl border border-olive-200 bg-white/85 p-2 shadow-sm backdrop-blur" aria-label="Application sections">
+        <div class="flex flex-wrap items-center gap-2" role="tablist" aria-label="Application sections">
+        <button id="tab-dashboard-btn" type="button" role="tab" aria-selected="true" aria-controls="dashboard-tab-panel" class="action-button action-button-primary">
             Dashboard
         </button>
-        <button id="tab-history-btn" class="action-button text-olive-700 hover:bg-olive-100" aria-label="Show history tab">
+        <button id="tab-history-btn" type="button" role="tab" aria-selected="false" aria-controls="history-tab-panel" tabindex="-1" class="action-button text-olive-700 hover:bg-olive-100">
             History
         </button>
-        <button id="tab-reports-btn" class="action-button text-olive-700 hover:bg-olive-100 relative" aria-label="Show reports tab">
+        <button id="tab-reports-btn" type="button" role="tab" aria-selected="false" aria-controls="reports-tab-panel" tabindex="-1" class="action-button text-olive-700 hover:bg-olive-100 relative">
             Reports
             <span id="reports-badge" class="hidden absolute -top-2 -right-3 flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-olive-700 text-white text-[9px] font-black shadow-lg border-2 border-white">0</span>
         </button>
-        <button id="tab-customers-btn" class="action-button text-olive-700 hover:bg-olive-100" aria-label="Show customers tab">
+        <button id="tab-customers-btn" type="button" role="tab" aria-selected="false" aria-controls="customers-tab-panel" tabindex="-1" class="action-button text-olive-700 hover:bg-olive-100">
             Customers
         </button>
-        <button id="tab-logs-btn" class="action-button text-olive-700 hover:bg-olive-100" aria-label="Show logs tab">
+        <button id="tab-logs-btn" type="button" role="tab" aria-selected="false" aria-controls="logs-tab-panel" tabindex="-1" class="action-button text-olive-700 hover:bg-olive-100">
             Logs
         </button>
-        <button id="tab-settings-btn" class="action-button text-olive-700 hover:bg-olive-100" aria-label="Show settings tab">
+        <button id="tab-settings-btn" type="button" role="tab" aria-selected="false" aria-controls="settings-tab-panel" tabindex="-1" class="action-button text-olive-700 hover:bg-olive-100">
             Settings
         </button>
         </div>
-    </div>
+    </nav>
 
-    <div id="dashboard-tab-panel">
+    <div id="dashboard-tab-panel" role="tabpanel" aria-labelledby="tab-dashboard-btn">
 
     <!-- Auto-Update Banner -->
     <div id="auto-update-banner" class="hidden fixed top-16 left-4 right-4 z-50 bg-gradient-to-r from-olive-600 to-olive-700 text-white p-4 rounded-lg shadow-lg border border-olive-500 max-w-2xl mx-auto">
@@ -581,51 +634,74 @@
         </div>
     </div>
 
-    <section id="history-tab-panel" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
+    <style>
+        #history-tab-list { grid-template-columns: minmax(210px, 1fr) minmax(0, 2fr); align-items: start; }
+        @media (max-width: 700px) { #history-tab-list { grid-template-columns: 1fr; } #history-tab-list nav { max-height: 220px !important; } }
+    </style>
+    <section id="history-tab-panel" role="tabpanel" aria-labelledby="tab-history-btn" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
         <div class="flex flex-wrap items-center justify-between gap-4 border-b border-olive-100 pb-4">
             <div>
                 <h2 class="text-3xl font-display italic text-olive-950">History</h2>
-                <p class="mt-1 text-sm text-olive-600">Review prior scans, compare selected scan pairs, and reopen historical artifacts.</p>
+                <p class="mt-1 text-sm text-olive-600">Choose a scan to review its saved results and changes.</p>
             </div>
             <div class="flex flex-wrap gap-2">
                 <button id="history-focus-current-btn" class="action-button action-button-primary action-button-compact" aria-label="Focus history on the current network context">
-                    Current Context
+                    This network
                 </button>
                 <button id="history-focus-all-btn" class="action-button action-button-secondary action-button-compact" aria-label="Show all history">
-                    All History
+                    All networks
                 </button>
                 <button id="refresh-history-tab-btn" class="action-button action-button-primary action-button-compact" aria-label="Refresh scan history">
-                    Refresh History
+                    Refresh
                 </button>
             </div>
         </div>
-        <div id="history-tab-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800"></div>
+        <div id="history-tab-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800" role="status" aria-live="polite"></div>
         <div id="history-context-panel" class="mt-4 hidden rounded-2xl border border-olive-200 bg-white p-5 shadow-sm"></div>
-        <div id="history-compare-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800"></div>
+        <div id="history-compare-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800" role="status" aria-live="polite"></div>
         <div id="history-compare-panel" class="mt-4 hidden rounded-2xl border border-olive-200 bg-olive-50 p-5">
             <h3 class="text-xl font-display italic text-olive-950">Scan Comparison</h3>
             <p id="history-compare-summary" class="mt-2 text-sm text-olive-700"></p>
             <div id="history-compare-details" class="mt-4 grid gap-4 lg:grid-cols-2"></div>
         </div>
-        <div id="history-tab-list" class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3"></div>
+        <div id="history-tab-list" class="mt-4 grid gap-3"></div>
     </section>
 
-    <section id="reports-tab-panel" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
+    <section id="reports-tab-panel" role="tabpanel" aria-labelledby="tab-reports-btn" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
         <div class="flex flex-wrap items-center justify-between gap-4 border-b border-olive-100 pb-4">
             <div>
                 <h2 class="text-3xl font-display italic text-olive-950">Reports</h2>
-                <p class="mt-1 text-sm text-olive-600">Open completed scan reports without relying on transient status messages.</p>
+                <p class="mt-1 text-sm text-olive-600">Open saved reports or download a printable device inventory with IPs, hostnames, MAC addresses, icons, and blank description fields.</p>
             </div>
-            <button id="refresh-reports-btn" class="action-button action-button-primary action-button-compact" aria-label="Refresh available reports">
-                Refresh Reports
-            </button>
+            <div class="flex flex-wrap items-end gap-2">
+                <label class="text-[10px] font-bold uppercase tracking-wide text-olive-700" for="inventory-orientation">Inventory page
+                    <select id="inventory-orientation" class="mt-1 block rounded-lg border border-olive-300 bg-white px-2 py-1.5 text-xs font-medium normal-case tracking-normal text-olive-900">
+                        <option value="landscape">Landscape</option>
+                        <option value="portrait">Portrait</option>
+                    </select>
+                </label>
+                <label class="text-[10px] font-bold uppercase tracking-wide text-olive-700" for="inventory-color-mode">Print mode
+                    <select id="inventory-color-mode" class="mt-1 block rounded-lg border border-olive-300 bg-white px-2 py-1.5 text-xs font-medium normal-case tracking-normal text-olive-900">
+                        <option value="color">Color</option>
+                        <option value="bw">Black &amp; white</option>
+                    </select>
+                </label>
+                <button id="refresh-reports-btn" class="action-button action-button-primary action-button-compact" aria-label="Refresh available reports">
+                    Refresh Reports
+                </button>
+            </div>
         </div>
-        <div id="reports-tab-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800"></div>
+        {% if management_history_url %}
+        <p class="mt-4 text-sm text-olive-700">Uploaded scans and hosted PDFs are kept in Daedalus.
+            <a href="{{ management_history_url }}" target="_blank" rel="noopener noreferrer" class="underline font-medium">Open Daedalus scan history</a>
+        </p>
+        {% endif %}
+        <div id="reports-tab-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800" role="status" aria-live="polite"></div>
         <div id="reports-customer-filters" class="mt-4 flex flex-wrap gap-2"></div>
         <div id="reports-tab-list" class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3"></div>
     </section>
 
-    <section id="customers-tab-panel" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
+    <section id="customers-tab-panel" role="tabpanel" aria-labelledby="tab-customers-btn" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
         <div class="flex flex-wrap items-center justify-between gap-4 border-b border-olive-100 pb-4">
             <div>
                 <h2 class="text-3xl font-display italic text-olive-950">Customers</h2>
@@ -640,11 +716,11 @@
                 </button>
             </div>
         </div>
-        <div id="customers-tab-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800"></div>
+        <div id="customers-tab-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800" role="status" aria-live="polite"></div>
         <div id="customers-tab-list" class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3"></div>
     </section>
 
-    <section id="logs-tab-panel" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
+    <section id="logs-tab-panel" role="tabpanel" aria-labelledby="tab-logs-btn" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
         <div class="flex flex-wrap items-center justify-between gap-4 border-b border-olive-100 pb-4">
             <div>
                 <h2 class="text-3xl font-display italic text-olive-950">Logs</h2>
@@ -657,7 +733,7 @@
                 <button id="logs-clear-btn" class="action-button action-button-secondary action-button-compact" aria-label="Clear captured log entries">
                     Clear Logs
                 </button>
-                <button onclick="toggleLogPanel()" class="action-button action-button-primary action-button-compact" aria-label="Open live audit log drawer">
+                <button data-action="toggleLogPanel" class="action-button action-button-primary action-button-compact" aria-label="Open live audit log drawer">
                     Open Live Drawer
                 </button>
             </div>
@@ -667,7 +743,7 @@
                 <div class="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 pb-3">
                     <div>
                         <p class="text-xs font-bold uppercase tracking-widest text-olive-400">Runtime Log Stream</p>
-                        <p id="logs-tab-count" class="mt-1 text-xs text-zinc-400">0 visible entries</p>
+                        <p id="logs-tab-count" class="mt-1 text-xs text-zinc-400" aria-live="polite">0 visible entries</p>
                     </div>
                     <input
                         type="search"
@@ -706,7 +782,7 @@
         </div>
     </section>
 
-    <section id="settings-tab-panel" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
+    <section id="settings-tab-panel" role="tabpanel" aria-labelledby="tab-settings-btn" class="hidden rounded-3xl border border-olive-200 bg-white/80 p-6 shadow-sm backdrop-blur">
         <div class="flex flex-wrap items-center justify-between gap-4 border-b border-olive-100 pb-4">
             <div>
                 <h2 class="text-3xl font-display italic text-olive-950">Settings</h2>
@@ -716,7 +792,7 @@
                 Save Settings
             </button>
         </div>
-        <div id="settings-tab-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800"></div>
+        <div id="settings-tab-status" class="mt-4 hidden rounded-xl bg-olive-50 px-4 py-3 text-sm text-olive-800" role="status" aria-live="polite"></div>
         <div class="mt-6 grid gap-6 xl:grid-cols-[1.2fr,0.8fr]">
             <div class="space-y-6">
                 <section class="rounded-2xl border border-olive-200 bg-olive-50 p-5">
@@ -744,10 +820,15 @@
                                 <option value="">Use current customer selection</option>
                             </select>
                         </div>
+                        <label class="flex items-center gap-2 text-sm text-olive-800"><input id="settings-profile-topology-recommendations" type="checkbox"> Include topology recommendations for this customer/subnet</label>
                         <div>
                             <label for="settings-profile-notes" class="block text-sm font-medium text-olive-800">Notes</label>
                             <input id="settings-profile-notes" type="text" class="form-control form-control-md mt-1" placeholder="Optional notes">
                         </div>
+                        <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
+                            <select id="settings-profile-skip-host-discovery" class="form-control form-control-md"><option value="inherit">Use global discovery setting</option><option value="false">Require host discovery</option><option value="true">Scan known targets without host discovery</option></select>
+                            <span><span class="block text-sm font-semibold text-olive-900">Scan known targets without host discovery</span><span class="block text-sm text-olive-700">May scan unresponsive hosts. Enable only for known targets that block discovery probes.</span></span>
+                        </label>
                         <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
                             <input id="settings-profile-scan-only-mode" type="checkbox" class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
                             <span>
@@ -781,6 +862,14 @@
                     <p class="mt-2 text-sm text-olive-700">Persist operator safety defaults without scattering them across runtime controls.</p>
                     <div class="mt-4 space-y-4">
                         <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
+                            <input id="settings-firewall-discovery-only" type="checkbox" checked class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
+                            <span><span class="block text-sm font-semibold text-olive-900">Discovery only for firewall / gateway</span><span class="block text-sm text-olive-700">Keep detected gateways in discovery. Skip their port, service and vulnerability scans. Uses the default route and route-discovery evidence; add other firewall addresses to Excluded Targets. Applies to new scans after saving.</span></span>
+                        </label>
+                        <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
+                            <input id="settings-skip-host-discovery" type="checkbox" class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
+                            <span><span class="block text-sm font-semibold text-olive-900">Scan known targets without host discovery</span><span class="block text-sm text-olive-700">May scan unresponsive hosts. Enable only for known targets that block discovery probes.</span></span>
+                        </label>
+                        <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
                             <input id="settings-scan-only-mode" type="checkbox" class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
                             <span>
                                 <span class="block text-sm font-semibold text-olive-900">Scan-only mode</span>
@@ -804,6 +893,10 @@
                     <h3 class="text-xl font-display italic text-olive-900">Report Exports</h3>
                     <p class="mt-2 text-sm text-olive-700">Keep a copy of each report outside the app bundle for easy access.</p>
                     <div class="mt-4 space-y-4">
+                        <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
+                            <input id="settings-topology-recommendations" type="checkbox" class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
+                            <span><span class="block text-sm font-semibold text-olive-900">Include topology &amp; address recommendations</span><span class="block text-sm text-olive-700">Add the advisory before/after address plan to newly generated reports. Off by default; saved PDFs stay unchanged.</span></span>
+                        </label>
                         <label class="flex items-start gap-3 rounded-xl border border-olive-200 bg-white px-4 py-3">
                             <input id="settings-save-reports-desktop" type="checkbox" class="mt-1 size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
                             <span>
@@ -851,6 +944,11 @@
                             <label for="settings-auto-monitor-time" class="block text-sm font-medium text-olive-800">Run Time</label>
                             <input id="settings-auto-monitor-time" type="time" class="form-control form-control-md mt-1">
                         </div>
+                        <div>
+                            <label for="settings-auto-monitor-timezone" class="block text-sm font-medium text-olive-800">Time Zone</label>
+                            <input id="settings-auto-monitor-timezone" type="text" class="form-control form-control-md mt-1" placeholder="America/New_York" autocomplete="off">
+                            <p class="mt-1 text-xs text-olive-600">Use an IANA time zone for daylight saving handling. Leave blank to use the scanner host's local clock.</p>
+                        </div>
                         <div class="rounded-xl border border-olive-200 bg-white px-4 py-3 text-sm text-olive-700 md:col-span-2">
                             New customer rules default to <span class="font-semibold text-olive-900">Complete + PDF</span>. Existing customer-specific rules can still override the inherited schedule from the Customers tab.
                         </div>
@@ -888,6 +986,7 @@
                             </div>
                             <input id="settings-google-drive-credentials-file" type="file" accept=".json,application/json" class="hidden">
                             <p class="mt-2 text-xs text-olive-600">Builds can bundle Google Drive OAuth credentials. If this install is missing them, import your `credentials.json` here and then click Connect.</p>
+                            <p class="mt-2 text-xs text-olive-600">Connecting creates an app report folder, enables future report uploads, and uploads the latest completed report. Access is limited to files created or selected for this app. Disconnect removes local tokens and requests Google access revocation.</p>
                             <p id="settings-google-drive-status" class="mt-2 text-xs text-olive-600">Not configured</p>
                         </div>
                         <div class="rounded-xl border border-olive-200 bg-white p-4">
@@ -898,7 +997,9 @@
                             <label for="settings-remote-sync-endpoint" class="mt-3 block text-sm font-medium text-olive-800">Remote Endpoint</label>
                             <input id="settings-remote-sync-endpoint" type="url" class="form-control form-control-md mt-1" placeholder="https://cybersecuritypilot.org/api">
                             <label for="settings-remote-sync-api-key" class="mt-3 block text-sm font-medium text-olive-800">API Key</label>
-                            <input id="settings-remote-sync-api-key" type="password" class="form-control form-control-md mt-1" placeholder="Stored locally until remote integration is implemented">
+                            <input id="settings-remote-sync-api-key" type="password" class="form-control form-control-md mt-1" placeholder="Enter to set or replace; leave blank to keep the saved key" autocomplete="new-password">
+                            <p id="settings-remote-sync-key-status" class="mt-2 text-xs text-olive-600">No key is stored on this scanner.</p>
+                            <p class="mt-2 text-xs text-amber-700">Remote-sync transfer is not connected in this build. A submitted key is stored encrypted on this scanner, never in browser storage, and is not currently used to send data.</p>
                             <button id="settings-remote-sync-test-btn" type="button" class="action-button action-button-secondary action-button-compact mt-3">Test Remote Sync</button>
                             <p id="settings-remote-sync-status" class="mt-2 text-xs text-olive-600">Not configured</p>
                         </div>
@@ -951,34 +1052,34 @@
         </div>
     </section>
 
-    <div id="add-customer-form" class="hidden modal-overlay z-50">
+    <div id="add-customer-form" class="hidden modal-overlay z-50" role="dialog" aria-modal="true" aria-labelledby="add-customer-form-title">
         <div class="modal-panel max-w-2xl p-6">
             <div class="flex items-center justify-between mb-4">
-                <h3 class="text-lg font-medium text-olive-900">Add Customer</h3>
-                <button onclick="hideCustomerForm()" class="icon-button size-8" aria-label="Close add customer dialog">
+                <h3 id="add-customer-form-title" class="text-lg font-medium text-olive-900">Add Customer</h3>
+                <button data-action="hideCustomerForm" class="icon-button size-8" aria-label="Close add customer dialog">
                     ✕
                 </button>
             </div>
             
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                    <label class="block text-olive-700 text-sm font-medium mb-1">Customer Name *</label>
+                    <label for="cust-name" class="block text-olive-700 text-sm font-medium mb-1">Customer Name *</label>
                     <input type="text" id="cust-name" class="form-control form-control-md" placeholder="e.g., TechCorp HQ">
                 </div>
                 <div>
-                    <label class="block text-olive-700 text-sm font-medium mb-1">Customer ID *</label>
+                    <label for="cust-id" class="block text-olive-700 text-sm font-medium mb-1">Customer ID *</label>
                     <input type="text" id="cust-id" class="form-control form-control-md" placeholder="e.g., techcorp_hq">
                 </div>
                 <div>
-                    <label class="block text-olive-700 text-sm font-medium mb-1">Description</label>
+                    <label for="cust-description" class="block text-olive-700 text-sm font-medium mb-1">Description</label>
                     <input type="text" id="cust-description" class="form-control form-control-md" placeholder="Brief description">
                 </div>
                 <div>
-                    <label class="block text-olive-700 text-sm font-medium mb-1">Location</label>
+                    <label for="cust-location" class="block text-olive-700 text-sm font-medium mb-1">Location</label>
                     <input type="text" id="cust-location" class="form-control form-control-md" placeholder="City, State/Country">
                 </div>
                 <div>
-                    <label class="block text-olive-700 text-sm font-medium mb-1">Connection Type</label>
+                    <label for="cust-connection-type" class="block text-olive-700 text-sm font-medium mb-1">Connection Type</label>
                     <select id="cust-connection-type" class="form-control form-control-md">
                         <option value="direct">Direct</option>
                         <option value="vpn">VPN</option>
@@ -987,32 +1088,32 @@
                     </select>
                 </div>
                 <div>
-                    <label class="block text-olive-700 text-sm font-medium mb-1">Public IP / Range</label>
+                    <label for="cust-public-ip" class="block text-olive-700 text-sm font-medium mb-1">Public IP / Range</label>
                     <input type="text" id="cust-public-ip" class="form-control form-control-md" placeholder="e.g., 203.0.113.10 or 203.0.113.0/24">
                 </div>
                 <div>
-                    <label class="block text-olive-700 text-sm font-medium mb-1">Gateway Pattern</label>
+                    <label for="cust-gateway" class="block text-olive-700 text-sm font-medium mb-1">Gateway Pattern</label>
                     <input type="text" id="cust-gateway" class="form-control form-control-md" placeholder="e.g., 192.168.1.1">
                 </div>
                 <div>
-                    <label class="block text-olive-700 text-sm font-medium mb-1">Exit IP Pattern</label>
+                    <label for="cust-exit-pattern" class="block text-olive-700 text-sm font-medium mb-1">Exit IP Pattern</label>
                     <input type="text" id="cust-exit-pattern" class="form-control form-control-md" placeholder="e.g., 203.0.113.*">
                 </div>
                 <div>
-                    <label class="block text-olive-700 text-sm font-medium mb-1">Hop Count Range</label>
+                    <label for="cust-hop-count" class="block text-olive-700 text-sm font-medium mb-1">Hop Count Range</label>
                     <input type="text" id="cust-hop-count" class="form-control form-control-md" placeholder="e.g., 2-5">
                 </div>
                 <div>
-                    <label class="block text-olive-700 text-sm font-medium mb-1">Private IP Ranges</label>
+                    <label for="cust-private-ranges" class="block text-olive-700 text-sm font-medium mb-1">Private IP Ranges</label>
                     <input type="text" id="cust-private-ranges" class="form-control form-control-md" placeholder="192.168.0.0/16,10.0.0.0/8">
                 </div>
             </div>
             
             <div class="flex justify-end gap-2 mt-4">
-                <button onclick="hideCustomerForm()" class="action-button action-button-secondary">
+                <button data-action="hideCustomerForm" class="action-button action-button-secondary">
                     Cancel
                 </button>
-                <button onclick="addCustomer()" class="action-button action-button-primary">
+                <button data-action="addCustomer" class="action-button action-button-primary">
                     Add Customer
                 </button>
             </div>
@@ -1026,11 +1127,11 @@
         </div>
     </div>
 
-    <div id="history-modal" class="hidden modal-overlay z-50">
+    <div id="history-modal" class="hidden modal-overlay z-50" role="dialog" aria-modal="true" aria-labelledby="history-modal-title">
         <div class="modal-panel modal-panel-scroll max-w-6xl">
             <div class="p-6 border-b border-olive-300 flex justify-between items-center">
-                <h2 class="text-2xl font-display italic text-olive-900">Scan History</h2>
-                <button onclick="hideHistoryModal()" class="icon-button size-10" aria-label="Close scan history dialog">
+                <h2 id="history-modal-title" class="text-2xl font-display italic text-olive-900">Scan History</h2>
+                <button data-action="hideHistoryModal" class="icon-button size-10" aria-label="Close scan history dialog">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -1039,15 +1140,15 @@
 
             <div class="p-6 flex-1 overflow-y-auto">
                 <div class="mb-4 flex flex-wrap items-center gap-4">
-                    <select id="history-customer-filter" onchange="loadScanHistory()" class="form-control form-control-sm">
+                    <select id="history-customer-filter" data-action="loadScanHistory" data-action-event="change" class="form-control form-control-sm" aria-label="Filter history by customer">
                         <option value="">All Customers</option>
                     </select>
-                    <input type="date" id="history-date-filter" onchange="loadScanHistory()" class="form-control form-control-sm">
+                    <input type="date" id="history-date-filter" data-action="loadScanHistory" data-action-event="change" class="form-control form-control-sm" aria-label="Filter history by date">
                     <label class="inline-flex items-center gap-2 text-sm text-olive-800">
-                        <input type="checkbox" id="history-changed-filter" onchange="loadScanHistory()" class="size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
+                        <input type="checkbox" id="history-changed-filter" data-action="loadScanHistory" data-action-event="change" class="size-4 rounded border-olive-300 text-olive-700 focus:ring-olive-500">
                         Changed scans only
                     </label>
-                    <button onclick="loadScanHistory()" class="action-button action-button-primary action-button-compact">
+                    <button data-action="loadScanHistory" class="action-button action-button-primary action-button-compact">
                         Refresh
                     </button>
                 </div>
@@ -1059,11 +1160,11 @@
     </div>
 
     <!-- Asset Details Modal -->
-    <div id="asset-modal" class="hidden modal-overlay z-50">
+    <div id="asset-modal" class="hidden modal-overlay z-50" role="dialog" aria-modal="true" aria-labelledby="asset-modal-title">
         <div class="modal-panel modal-panel-scroll max-w-4xl">
             <div class="p-6 border-b border-olive-300 flex justify-between items-center">
                 <h2 id="asset-modal-title" class="text-2xl font-display italic text-olive-900">Asset Details</h2>
-                <button onclick="hideAssetModal()" class="icon-button size-10" aria-label="Close asset details dialog">
+                <button data-action="hideAssetModal" class="icon-button size-10" aria-label="Close asset details dialog">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -1079,11 +1180,11 @@
     </div>
 
     <!-- Update Modal -->
-    <div id="update-modal" class="hidden modal-overlay z-[60]">
+    <div id="update-modal" class="hidden modal-overlay z-[60]" role="dialog" aria-modal="true" aria-labelledby="update-modal-title">
         <div class="modal-panel flex flex-col max-w-2xl shadow-2xl border border-olive-300">
             <div class="p-6 border-b border-olive-300 flex justify-between items-center bg-olive-50 rounded-t-lg">
-                <h2 class="text-2xl font-display italic text-olive-900">Application Update</h2>
-                <button onclick="hideUpdateModal()" class="icon-button size-10" aria-label="Close update dialog">
+                <h2 id="update-modal-title" class="text-2xl font-display italic text-olive-900">Application Update</h2>
+                <button data-action="hideUpdateModal" class="icon-button size-10" aria-label="Close update dialog">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -1101,10 +1202,10 @@
                         <strong>Note:</strong> This will open your browser to download the new version. You'll need to install it manually.
                     </div>
                     <div class="flex justify-end gap-3 mt-6">
-                        <button onclick="hideUpdateModal()" class="px-5 py-2 text-olive-600 hover:text-olive-900 font-medium transition-colors">
+                        <button data-action="hideUpdateModal" class="px-5 py-2 text-olive-600 hover:text-olive-900 font-medium transition-colors">
                             Later
                         </button>
-                        <button onclick="startAppUpdate()" class="px-6 py-2 bg-amber-500 text-white font-bold rounded-full hover:bg-amber-600 shadow-sm transition-all">
+                        <button data-action="startAppUpdate" class="px-6 py-2 bg-amber-500 text-white font-bold rounded-full hover:bg-amber-600 shadow-sm transition-all">
                             Download Update
                         </button>
                     </div>
@@ -1115,7 +1216,7 @@
                         <span id="update-current-status" class="text-olive-900 font-medium">Initializing update...</span>
                         <span id="update-percentage" class="text-olive-600 text-sm">0%</span>
                     </div>
-                    <div class="w-full bg-olive-100 rounded-full h-3 overflow-hidden shadow-inner">
+                    <div class="w-full bg-olive-100 rounded-full h-3 overflow-hidden shadow-inner" role="progressbar" aria-labelledby="update-current-status" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                         <div id="update-progress-bar" class="bg-amber-500 h-full w-0 transition-all duration-500 shadow-sm"></div>
                     </div>
                     <div id="update-terminal" class="mt-4 p-4 bg-zinc-900 text-zinc-300 font-mono text-xs rounded-lg h-48 overflow-y-auto shadow-inner border border-zinc-800">
@@ -1131,7 +1232,7 @@
                     </div>
                     <h3 class="text-xl font-display text-olive-950">Update Successful</h3>
                     <p class="text-olive-700">The application is restarting. Please wait a moment...</p>
-                    <button onclick="window.location.reload()" class="mt-4 px-6 py-2 bg-olive-950 text-white rounded-full hover:bg-olive-800 transition-colors">
+                    <button data-action="reloadPage" class="mt-4 px-6 py-2 bg-olive-950 text-white rounded-full hover:bg-olive-800 transition-colors">
                         Reload Page
                     </button>
                 </div>
@@ -1140,18 +1241,18 @@
     </div>
 
     <!-- Asset Details Modal -->
-    <div id="asset-details-modal" class="hidden modal-overlay z-50">
+    <div id="asset-details-modal" class="hidden modal-overlay z-50" role="dialog" aria-modal="true" aria-labelledby="asset-details-modal-title">
         <div class="modal-panel modal-panel-scroll max-w-4xl shadow-2xl border border-olive-300">
             <!-- Modal Header -->
             <div class="p-6 border-b border-olive-300 flex justify-between items-center bg-olive-50">
                 <div>
-                    <h2 class="text-2xl font-display italic text-olive-900">Asset Details</h2>
+                    <h2 id="asset-details-modal-title" class="text-2xl font-display italic text-olive-900">Asset Details</h2>
                     <p class="text-sm text-olive-600 mt-1">
                         <span id="asset-detail-ip" class="font-mono font-bold"></span>
                         <span id="asset-detail-hostname" class="ml-2"></span>
                     </p>
                 </div>
-                <button onclick="closeAssetDetailsModal()" class="icon-button size-10" aria-label="Close asset details panel">
+                <button data-action="closeAssetDetailsModal" class="icon-button size-10" aria-label="Close asset details panel">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
@@ -1171,8 +1272,8 @@
                         <div>
                             <span class="text-olive-600 font-medium">Vendor:</span>
                             <span id="asset-detail-vendor" class="ml-2 text-olive-900"></span>
-                            <a id="asset-vendor-link" href="#" target="_blank" class="ml-2 text-olive-600 hover:text-olive-800 hidden">
-                                <svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <a id="asset-vendor-link" href="#" target="_blank" rel="noopener noreferrer" class="ml-2 text-olive-600 hover:text-olive-800 hidden" aria-label="Search the web for this vendor">
+                                <svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                                 </svg>
                             </a>
@@ -1208,7 +1309,7 @@
 
             <!-- Modal Footer -->
             <div class="p-4 border-t border-olive-300 bg-olive-50 flex justify-end">
-                <button onclick="closeAssetDetailsModal()" class="action-button action-button-primary">
+                <button data-action="closeAssetDetailsModal" class="action-button action-button-primary">
                     Close
                 </button>
             </div>
@@ -1216,7 +1317,7 @@
     </div>
 
     <!-- Scan Command Center -->
-    <div class="mt-8 bg-olive-50 p-6 rounded-2xl shadow-sm border border-olive-200">
+    <div id="scan-command-center" class="mt-8 bg-olive-50 p-6 rounded-2xl shadow-sm border border-olive-200">
         <div class="flex flex-col md:flex-row md:items-end gap-6">
             <!-- Target Input Group -->
             <div class="flex-1 space-y-2">
@@ -1228,10 +1329,10 @@
                         </svg>
                     </div>
                     <input type="text" id="scan-target" class="w-full pl-11 pr-12 py-3 bg-olive-50 border-2 border-olive-100 rounded-xl text-olive-900 placeholder-olive-400 focus:bg-white focus:border-olive-500 focus:ring-4 focus:ring-olive-500/10 transition-all outline-none" placeholder="192.168.1.0/24 or techmore.io" aria-label="Network target for scanning">
-                    <span id="info-icon" class="absolute right-4 top-1/2 -translate-y-1/2 cursor-pointer text-olive-300 hover:text-olive-600 transition-colors" title="Scan information">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    </span>
-                    <div id="tooltip" class="hidden absolute top-full right-0 mt-3 w-64 bg-olive-900 text-white p-4 rounded-xl shadow-xl border border-olive-800 text-xs z-50 leading-relaxed">
+                    <button id="info-icon" type="button" class="absolute right-4 top-1/2 -translate-y-1/2 cursor-pointer rounded-full text-olive-300 hover:text-olive-600 transition-colors" title="Scan information" aria-label="Show valid target formats" aria-expanded="false" aria-controls="tooltip">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    </button>
+                    <div id="tooltip" role="region" aria-label="Valid target formats" class="hidden absolute top-full right-0 mt-3 w-64 bg-olive-900 text-white p-4 rounded-xl shadow-xl border border-olive-800 text-xs z-50 leading-relaxed">
                         <p class="font-bold text-olive-400 mb-1 uppercase tracking-tighter">Valid Target Formats:</p>
                         <ul class="space-y-1 opacity-90">
                             <li>• IPv4 (e.g. 192.168.1.1)</li>
@@ -1247,7 +1348,7 @@
             <div class="w-full md:w-64 space-y-2">
                 <div class="flex items-center justify-between px-1">
                     <label for="customer-quick-add" class="block text-xs font-bold uppercase tracking-wider text-olive-600">Client Profile</label>
-                    <button onclick="showCustomerForm()" class="text-[10px] font-bold text-olive-600 hover:text-olive-800 uppercase tracking-wider underline underline-offset-4 decoration-olive-200 hover:decoration-olive-400 transition-all">
+                    <button data-action="showCustomerForm" class="text-[10px] font-bold text-olive-600 hover:text-olive-800 uppercase tracking-wider underline underline-offset-4 decoration-olive-200 hover:decoration-olive-400 transition-all">
                         + New Client
                     </button>
                 </div>
@@ -1295,13 +1396,17 @@
                 <button id="stop-scan-btn" class="px-5 py-2 rounded-full bg-olive-100 text-olive-600 hover:bg-red-50 hover:text-red-600 font-bold text-xs uppercase tracking-widest transition-all active:scale-95" aria-label="Terminate scanning operations">
                     Stop
                 </button>
+                <button id="stop-report-btn" type="button" class="hidden px-5 py-2 rounded-full bg-olive-100 text-olive-600 hover:bg-red-50 hover:text-red-600 font-bold text-xs uppercase tracking-widest transition-all active:scale-95" aria-label="Cancel report generation">
+                    Stop Report
+                </button>
                 <div class="h-4 w-px bg-olive-200 mx-1"></div>
-                <button id="suspend-scan-btn" class="px-5 py-2 rounded-full text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-all" aria-label="Pause scan">
+                <button id="suspend-scan-btn" type="button" disabled data-pause-state="idle" class="px-5 py-2 rounded-full text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-all" aria-label="Pause scan">
                     Pause
                 </button>
-                <button id="resume-scan-btn" class="px-5 py-2 rounded-full text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-all" aria-label="Resume scan">
+                <button id="resume-scan-btn" type="button" disabled data-pause-state="idle" class="px-5 py-2 rounded-full text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-all" aria-label="Resume scan">
                     Resume
                 </button>
+                <span id="scan-pause-status" class="hidden text-xs font-bold uppercase tracking-widest text-amber-700" role="status" aria-live="polite"></span>
             </div>
 
             <div class="flex items-center gap-4">
@@ -1314,16 +1419,16 @@
                     <button id="view-history-btn" class="flex items-center gap-2 text-olive-700 hover:text-olive-950 font-bold text-xs uppercase tracking-widest transition-colors group relative" aria-label="View historical scan archives">
                         <svg class="w-5 h-5 text-olive-400 group-hover:text-olive-600 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                         Archive
-                        <span id="history-badge" class="hidden absolute -top-2 -right-3 flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[9px] font-black shadow-lg border-2 border-white">0</span>
+                        <span id="history-badge" class="hidden ml-1 -translate-y-2 flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-600 text-white text-[9px] font-black shadow-lg border-2 border-white">0</span>
                     </button>
                     <button id="reload-last-scan-btn" class="hidden flex items-center gap-2 text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-colors" aria-label="Reload last scan results">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                         Reload Last
                     </button>
-                    <button id="log-panel-toggle-btn" onclick="toggleLogPanel()" class="flex items-center gap-2 text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-colors relative" aria-label="Toggle audit log panel">
+                    <button id="log-panel-toggle-btn" data-action="toggleLogPanel" class="flex items-center gap-2 text-olive-500 hover:text-olive-800 font-bold text-xs uppercase tracking-widest transition-colors relative" aria-label="Toggle audit log panel">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                         Log
-                        <span id="log-count-badge" class="hidden absolute -top-2 -right-3 flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-olive-600 text-white text-[9px] font-black shadow-lg border-2 border-white">0</span>
+                        <span id="log-count-badge" class="hidden ml-1 -translate-y-2 flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-olive-600 text-white text-[9px] font-black shadow-lg border-2 border-white">0</span>
                     </button>
                 </div>
 
@@ -1338,11 +1443,12 @@
         </div>
     </div>
 
-    <div id="report-status" class="hidden mt-4 p-4 rounded-lg">
+    <div id="report-status" class="hidden mt-4 p-4 rounded-lg" role="status" aria-live="polite">
         <p id="report-status-text" class="text-sm font-medium"></p>
         <div id="report-status-actions" class="hidden mt-3 flex flex-wrap gap-2"></div>
     </div>
 
+    <section id="network-plan-panel" class="hidden mt-4 p-4 rounded-xl border border-olive-300 bg-olive-50" aria-label="Customer network map"></section>
         <!-- Scan Stats Cards -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
             <div id="quick-scan-card" class="bg-olive-50 p-5 rounded-xl shadow-sm border border-olive-300 compact-card hover-lift">
@@ -1483,8 +1589,8 @@
                     </div>
                 </div>
 
-                <button onclick="hideScanSummaryBanner()" class="ml-4 text-emerald-400 hover:text-emerald-600 transition-colors">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <button type="button" data-action="hideScanSummaryBanner" class="ml-4 text-emerald-400 hover:text-emerald-600 transition-colors" aria-label="Dismiss scan summary">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                     </svg>
                 </button>
@@ -1494,9 +1600,19 @@
 
     </div>
     <!-- Results Table -->
-    <section class="page-shell">
+    <section id="dashboard-results-panel" class="page-shell" aria-label="Scan results">
         <div class="results-band">
-        <table id="discovery-table" class="table-fixed min-w-[2400px]">
+        <div id="discovery-empty-state" class="results-empty-state">
+            <h3 class="font-display italic">No hosts discovered yet</h3>
+            <p class="mt-2 text-sm">Results appear here as soon as a scan finds live hosts.</p>
+            <ol class="list-decimal pl-5">
+                <li>Enter a target above (for example <code>192.168.1.0/24</code> or a hostname).</li>
+                <li>Choose <strong>Quick Scan</strong> for discovery or <strong>Complete + PDF</strong> for ports, services and CVEs.</li>
+                <li>Use <strong>Archive</strong> to reopen a saved scan instead.</li>
+            </ol>
+        </div>
+        <table id="discovery-table" class="table-fixed min-w-[2400px] hidden">
+                        <caption class="sr-only">Discovered hosts, open ports and vulnerabilities</caption>
                         <thead>
                             <tr>
                                 <th class="w-12 px-4 py-3 text-left" data-column="status" data-fixed="true"></th>
@@ -1601,132 +1717,24 @@
     </section>
     <div class="page-shell">
 
-    <script>
-        // DOM and HTTP controls work before socket-token retrieval or transport startup.
-        function initializeTemplateDOM() {
-            if (typeof initializeReportsTab === 'function') initializeReportsTab();
-            if (typeof initializeSettingsTab === 'function') initializeSettingsTab();
-            if (typeof initializeSiteChrome === 'function') initializeSiteChrome();
-        }
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initializeTemplateDOM, { once: true });
-        } else {
-            initializeTemplateDOM();
-        }
-
-        // Set current date and time.
-        // Fetch the loopback socket token, then connect with it (#210).
-        window.socket = null;
-        let __socketReadyResolve;
-        const __socketReady = new Promise((resolve) => { __socketReadyResolve = resolve; });
-        (async function initSocket() {
-            let token = '';
-            try {
-                const res = await fetch('/api/socket-token');
-                if (res.ok) token = (await res.json()).token || '';
-            } catch (err) {
-                console.warn('Could not fetch socket token.');
-            }
-            const socket = io.connect(`http://${document.domain}:${location.port}`, {
-                auth: { token },
-                query: { token },
-                autoConnect: false
-            });
-            window.socket = socket;
-            socket.on('connect', () => console.log('Socket.IO connected'));
-            socket.on('connect_error', (err) => console.error('Socket.IO error:', err.message));
-            __socketReadyResolve(socket);
-        })();
-
-        async function bootstrapTemplateApp() {
-            const socket = await __socketReady;
-            if (document.readyState === 'loading') {
-                await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
-            }
-            // Register every listener before connecting so initial job replay
-            // cannot race startup. Socket.IO queues early outgoing requests.
-            if (typeof initializeScanRuntime === 'function') {
-                initializeScanRuntime(socket);
-            }
-            // Request the legacy sync snapshot now that all listeners are wired (#230 bridge).
-            socket.emit('get_initial_data');
-            if (typeof initializeDiscoveryUI === 'function') {
-                initializeDiscoveryUI(socket);
-            }
-            if (typeof TableSorter === 'function') {
-                window.tableSorter = new TableSorter('discovery-table');
-            }
-            if (typeof initializeUpdateModal === 'function') {
-                initializeUpdateModal(socket, {
-                    showReportStatus: window.showReportStatus
-                });
-            }
-            if (typeof initializeAutoUpdateBanner === 'function') {
-                initializeAutoUpdateBanner(socket);
-            }
-            if (typeof initializeLayoutRuntime === 'function') {
-                initializeLayoutRuntime();
-            }
-            if (typeof initializeReportsTab === 'function') {
-                initializeReportsTab();
-            }
-            if (typeof initializeSettingsTab === 'function') {
-                initializeSettingsTab();
-            }
-            if (typeof initializeAutoScanUI === 'function') {
-                initializeAutoScanUI(socket, {
-                    getClientJobs: window.getClientJobs,
-                    getLastScanTarget: window.getLastScanTarget
-                });
-            }
-            if (typeof initializeReportGenerationUI === 'function') {
-                initializeReportGenerationUI(socket, {
-                    getClientJobs: window.getClientJobs
-                });
-            }
-            if (typeof initializeCustomerUI === 'function') {
-                initializeCustomerUI(socket);
-            }
-            if (typeof initializeMonitoringHub === 'function') {
-                initializeMonitoringHub(socket);
-            }
-            if (typeof initializeAuditLog === 'function') {
-                initializeAuditLog();
-            }
-            socket.connect();
-        }
-
-        document.getElementById('reload-last-scan-btn').addEventListener('click', function() {
-            // Try localStorage first (faster, more current); fall back to server XML
-            if (!loadHostsFromStorage()) {
-                if (window.currentMatchedCustomerId && window.currentMatchedCustomerId !== 'unknown') {
-                    socket.emit('resume_from_last_scan', {
-                        customer_id: window.currentMatchedCustomerId,
-                        max_days: 30
-                    });
-                }
-            }
-        });
-        bootstrapTemplateApp();
-
-    </script>
+    <script src="/static/js/template_bootstrap.js"></script>
     
     <!-- Auto Scan Time Modal -->
-    <div id="auto-scan-modal" class="hidden modal-overlay z-50">
+    <div id="auto-scan-modal" class="hidden modal-overlay z-50" role="dialog" aria-modal="true" aria-labelledby="auto-scan-modal-title">
         <div class="modal-panel max-w-md p-6">
             <div class="flex items-center justify-between mb-4">
-                <h3 class="text-lg font-display italic text-olive-900">Set Auto Scan Times</h3>
-                <button onclick="hideAutoScanTimeModal()" class="icon-button size-8 text-xl" aria-label="Close auto scan schedule dialog">&times;</button>
+                <h3 id="auto-scan-modal-title" class="text-lg font-display italic text-olive-900">Set Auto Scan Times</h3>
+                <button data-action="hideAutoScanTimeModal" class="icon-button size-8 text-xl" aria-label="Close auto scan schedule dialog">&times;</button>
             </div>
 
             <div class="space-y-4">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-sm font-medium text-olive-700 mb-1">Start Time</label>
+                        <label for="auto-start-time" class="block text-sm font-medium text-olive-700 mb-1">Start Time</label>
                         <input type="time" id="auto-start-time" class="form-control form-control-md" value="01:00">
                     </div>
                     <div>
-                        <label class="block text-sm font-medium text-olive-700 mb-1">End Time</label>
+                        <label for="auto-end-time" class="block text-sm font-medium text-olive-700 mb-1">End Time</label>
                         <input type="time" id="auto-end-time" class="form-control form-control-md" value="06:00">
                     </div>
                 </div>
@@ -1738,13 +1746,13 @@
                 </div>
 
                 <div class="flex gap-3 pt-4">
-                    <button onclick="saveAutoScanTimes()" class="action-button action-button-primary flex-1">
+                    <button data-action="saveAutoScanTimes" class="action-button action-button-primary flex-1">
                         Enable Auto Scan
                     </button>
-                    <button onclick="saveAndRunScan()" class="action-button action-button-primary flex-1">
+                    <button data-action="saveAndRunScan" class="action-button action-button-primary flex-1">
                         Save and Run Scan
                     </button>
-                    <button onclick="hideAutoScanTimeModal()" class="action-button action-button-secondary">
+                    <button data-action="hideAutoScanTimeModal" class="action-button action-button-secondary">
                         Cancel
                     </button>
                 </div>
@@ -1753,6 +1761,7 @@
     </div>
     </div>
 
+    <script src="/static/js/job_status_state.js"></script>
     <script src="/static/js/scan_runtime.js"></script>
     <script src="/static/js/monitoring_hub.js"></script>
     <script src="/static/js/scan_banners.js"></script>
@@ -1762,17 +1771,21 @@
     <script src="/static/js/auto_update_banner.js"></script>
     <script src="/static/js/asset_details_modal.js"></script>
     <script src="/static/js/layout_runtime.js"></script>
+    <script src="/static/js/history_modal.js"></script>
     <script src="/static/js/table_sorter.js"></script>
     <script src="/static/js/site_chrome.js"></script>
     <script src="/static/js/reports_tab.js"></script>
     <script src="/static/js/settings_tab.js"></script>
+    <script src="/static/js/network_plan.js"></script>
     <script src="/static/js/auto_scan_ui.js"></script>
     <script src="/static/js/customer_ui.js"></script>
     <script src="/static/js/report_generation_ui.js"></script>
     <script src="/static/js/audit_log.js"></script>
+    <script src="/static/js/template_actions.js"></script>
+    <script src="/static/js/modal_a11y.js"></script>
 
     <!-- ── Audit Log Panel ─────────────────────────────────────────────── -->
-    <div id="log-panel" class="hidden fixed bottom-0 left-0 right-0 z-50 flex flex-col" style="height:320px;">
+    <div id="log-panel" class="hidden fixed bottom-0 left-0 right-0 z-50 flex flex-col" style="height:320px;" role="region" aria-label="Audit log">
         <div class="bg-olive-950 text-white flex items-center justify-between px-4 py-2 shadow-2xl border-t-2 border-olive-600 flex-shrink-0">
             <div class="flex items-center gap-3">
                 <svg class="w-4 h-4 text-olive-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
@@ -1780,9 +1793,9 @@
                 <span id="log-entry-count" class="text-xs font-mono text-olive-500">0 entries</span>
             </div>
             <div class="flex items-center gap-2">
-                <button onclick="copyLog()" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Copy</button>
-                <button onclick="clearLog()" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Clear</button>
-                <button onclick="toggleLogPanel()" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Close</button>
+                <button data-action="copyLog" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Copy</button>
+                <button data-action="clearLog" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Clear</button>
+                <button data-action="toggleLogPanel" class="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-olive-800 hover:bg-olive-700 text-olive-200 rounded transition-colors">Close</button>
             </div>
         </div>
         <div id="log-entries" class="flex-1 overflow-y-auto bg-olive-950 font-mono text-xs px-4 py-2 space-y-0.5"></div>

@@ -8,6 +8,29 @@ from flask_socketio import emit
 from nmapui.auth import require_socket_auth
 
 
+def _resolve_report_path(report_path: str):
+    """Resolve a report path confined to SCANS_DIR, or None when outside.
+
+    Accepts both a scans-relative path (what the UI sends) and an absolute path
+    that already lives under the scans directory.
+    """
+    from nmapui.paths import SCANS_DIR, resolve_scan_path
+
+    if not report_path:
+        return None
+
+    candidate = Path(str(report_path))
+    if candidate.is_absolute():
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(SCANS_DIR.resolve())
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return resolved
+
+    return resolve_scan_path(str(report_path))
+
+
 def register_customer_handlers(socketio, deps):
     get_customer_fingerprinter = deps["get_customer_fingerprinter"]
     network_key = deps["network_key"]
@@ -362,6 +385,20 @@ def register_customer_handlers(socketio, deps):
             if not customer_id:
                 emit("customer_error", "Customer ID is required")
                 return
+
+            # Confine the client-supplied path to the scans directory. This
+            # handler writes metadata.json, so an unvalidated path let a caller
+            # overwrite any metadata.json on the filesystem.
+            resolved_report_path = _resolve_report_path(report_path)
+            if resolved_report_path is None:
+                logger.warning(
+                    "Rejected report assignment outside the scans directory: %s",
+                    report_path,
+                )
+                emit("customer_error", "Report path is outside the scans directory")
+                return
+            report_path = str(resolved_report_path)
+
             if not os.path.exists(report_path):
                 emit("customer_error", f"Report not found at {report_path}")
                 return

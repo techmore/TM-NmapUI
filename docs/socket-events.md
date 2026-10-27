@@ -1,9 +1,8 @@
 # Socket.IO Event Reference
 
 This document reflects the current runtime contract implemented by the handler
-modules in [`/Users/techmore/projects/NmapUI/nmapui/handlers`](/Users/techmore/projects/NmapUI/nmapui/handlers).
-It is pinned by regression tests in
-[`/Users/techmore/projects/NmapUI/tests/test_runtime_contract.py`](/Users/techmore/projects/NmapUI/tests/test_runtime_contract.py).
+modules in [`nmapui/handlers`](../nmapui/handlers). It is pinned by regression tests
+in [`tests/test_runtime_contract.py`](../tests/test_runtime_contract.py).
 
 Direction key:
 - `C -> S` client emits to the server
@@ -66,7 +65,12 @@ Notes:
 
 | Event | Direction | Payload |
 |---|---|---|
-| `start_scan` | `C -> S` | `{ target }` |
+| `start_scan` | `C -> S` | `{ target, skip_host_discovery? }` |
+
+`skip_host_discovery`, when present, must be a JSON boolean. `true` applies
+`-Pn` to this job's host-discovery and deep-scan phases without changing saved
+global or target-profile settings. `false` disables it for this job. When
+omitted, the scanner's effective global/target-profile setting is used.
 | `quick_scan_start` | `S -> C` | status string |
 | `quickscan_results` | `S -> C` | `{ total_ips, hosts_up, time_taken }` |
 | `quick_scan_complete` | `S -> C` | none |
@@ -106,10 +110,41 @@ Historical resume path:
 | Event | Direction | Payload |
 |---|---|---|
 | `get_job_status` | `C -> S` | none |
-| `job_status` | `S -> C` | `{ job_type, status, started_at?, details? }` |
+| `job_status` | `S -> C` | `{ job_type, status, started_at?, details?, paused?, pause_requested?, pause_mode?, paused_at?, paused_seconds?, pause_supported? }` |
 | `job_progress` | `S -> C` | `{ job_type, phase, message, progress, details? }` |
 | `cancel_job` | `C -> S` | `{ job_type: "scan" | "report" }` |
 | `job_cancelled` | `S -> C` | `{ job_type, message }` |
+| `pause_job` | `C -> S` | `{ job_type: "scan" | "report", source_job_id? }` |
+| `resume_job` | `C -> S` | `{ job_type: "scan" | "report", source_job_id? }` |
+
+A paused job keeps `status: "running"`. `pause_requested && !paused` means the pause is pending ("pausing"); `pause_mode` is `"process"` (nmap suspended with SIGSTOP) or `"checkpoint"` (workflow parks before its next step). Any authorized browser tab may pause or resume the active scan; pass `source_job_id` to guard against acting on a newer run. A bridge cannot pause or resume a scan owned by a different command namespace; after reconnect it selects its own namespace's active job. The current state is re-broadcast as `job_status`; invalid state requests (nothing running, already paused, not paused, finished or cancelled scan) are explained with a `scan_feedback` message to the requester only. Cross-namespace requests return `scan_error`. `sync_state` carries `isPaused` / `pauseRequested` for late-joining tabs.
+
+### Daedalus bridge contract
+
+The bridge authenticates to the same local service and adds `daedalus_bridge: true`
+and a 24-character lowercase hexadecimal `command_namespace` to its Socket.IO
+handshake. The handshake token is CSRF protection; when local trust is disabled,
+it does not replace the required session or Basic credentials.
+
+`daedalus_protocol` advertises version 1, `command_results`, `source_job_metadata`
+and the accepted namespace. `start_scan`, `cancel_job` (scan only), and
+`check_app_updates` can carry a positive signed-64-bit `daedalus_command_id` and
+matching `daedalus_command_namespace`. Their durable receipts are
+`daedalus_event` envelopes whose `event_name` is `daedalus_command_result`, with
+`command_id`, `command_namespace`, `status` (`accepted`, `succeeded`, `failed`)
+and `result` in the payload. Reusing a command ID within a namespace replays its
+saved receipts instead of executing it again. The current Daedalus portal does
+not expose pause/resume commands; local pause support does not imply that feature
+is available remotely.
+
+Versioned scan/report envelopes retain `client_event_id`, `occurred_at`,
+`source_job_id` and `source_job_type` through persistence and reconnect. Active
+events present in both SQLite and memory are emitted once per reconnect with
+the original identity. Recovered command acceptance precedes its terminal
+failure receipt. This is bounded recovery, not an unlimited history API: the
+connection currently considers the latest 20 jobs, up to 200 retained events
+per job, and terminal jobs within seven days. The bridge must persist and
+acknowledge delivery independently; an idle scanner is not proof of delivery.
 
 ## Auto-scan and idle/update state
 
@@ -135,7 +170,7 @@ Historical resume path:
 - `Customer` is the runtime customer document used by the app configuration and
   assignment flows.
 - `Host[]` in scan events is the normalized frontend host list used by
-  [`/Users/techmore/projects/NmapUI/static/js/discovery_ui.js`](/Users/techmore/projects/NmapUI/static/js/discovery_ui.js).
+  [`static/js/discovery_ui.js`](../static/js/discovery_ui.js).
 - `scan_results` is intentionally overloaded:
   - live quick/deep scan path emits host rows directly
   - resume path emits `{ hosts, total, is_historical, ... }`

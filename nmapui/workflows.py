@@ -3,8 +3,12 @@ import logging
 from pathlib import Path
 import re
 import shutil
+import hashlib
+import tempfile
+import subprocess
 
 from nmapui.runtime_log import append_runtime_log
+from nmapui.runtime import env_flag
 import ipaddress
 from nmapui.reporting import (
     build_report_diff_summary,
@@ -12,10 +16,63 @@ from nmapui.reporting import (
     mark_scan_failure,
 )
 from nmapui.settings import get_effective_scan_rules
+from nmapui.networking import discovery_only_gateway_addresses
+from nmapui.host_identity import query_mdns_hostname
+from concurrent.futures import ThreadPoolExecutor
 from nmapui.validation import DEFAULT_MAX_TARGETS, count_target_addresses
 
 
 logger = logging.getLogger(__name__)
+
+
+def _run_deep_scan_with_xml(context, cmd, sid, target):
+    """Keep normal text output and capture original XML for the approved PDF."""
+    with tempfile.TemporaryDirectory(prefix="nmapui-evidence-") as directory:
+        xml_path = Path(directory) / "scan.xml"
+        argv = list(cmd[:-1]) + ["--host-timeout", "120s", "-oX", str(xml_path), cmd[-1]]
+        result = context.run_cancellable_command(argv, sid=sid, job_type="scan", timeout=135)
+        if xml_path.is_file():
+            size = xml_path.stat().st_size
+            if 0 < size <= 16 * 1024 * 1024:
+                raw = xml_path.read_bytes()
+                try:
+                    xml = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    xml = None
+                if xml is not None:
+                    digest = hashlib.sha256(raw).hexdigest()
+                    # A chunk remains below the portal's 512 KB JSON event limit,
+                    # including worst-case JSON character escaping.
+                    chunks = [xml[index:index + 32000] for index in range(0, len(xml), 32000)]
+                    for index, chunk in enumerate(chunks):
+                        context.emit_to_client(sid, "scan_xml_chunk", {
+                            "target": target, "sha256": digest, "byte_count": len(raw),
+                            "chunk_index": index, "chunk_count": len(chunks), "xml": chunk,
+                        })
+            else:
+                context.emit_to_client(sid, "scan_feedback", "Original XML report evidence exceeded the 16 MiB limit or was empty; no partial XML was uploaded.")
+        return result
+
+
+def cleanup_chunk_artifacts(xml_files, *, merged_xml_path):
+    """Remove intermediate Nmap chunk outputs after a successful merge."""
+    removed = 0
+    merged_xml_path = Path(merged_xml_path)
+    for xml_path in xml_files or []:
+        xml_path = Path(xml_path)
+        if xml_path == merged_xml_path:
+            continue
+        for candidate in (
+            xml_path,
+            xml_path.with_suffix(".nmap"),
+            xml_path.with_suffix(".gnmap"),
+        ):
+            try:
+                candidate.unlink(missing_ok=True)
+                removed += 1
+            except OSError as exc:
+                logger.warning("Unable to remove chunk artifact %s: %s", candidate, exc)
+    return removed
 
 
 def _plan_report_target_count(targets):
@@ -93,7 +150,7 @@ def copy_report_files_to_desktop(
         socketio_sleep(0)
 
 
-def start_deep_scan(context, targets, sid, is_gateway_phase=False):
+def start_deep_scan(context, targets, sid, is_gateway_phase=False, skip_host_discovery=False):
     emit_to_client = context.emit_to_client
     socketio_sleep = context.socketio_sleep
     ensure_job_not_cancelled = context.ensure_job_not_cancelled
@@ -105,20 +162,44 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False):
         emit_to_client(sid, "deep_scan_start")
         socketio_sleep(0)
 
-        for target in targets:
+        for index, target in enumerate(targets):
+            if hasattr(context, "update_job_progress"):
+                context.update_job_progress(sid, "scan", phase="service_scan", progress=(80 if is_gateway_phase else 60) + int(19 * index / max(1, len(targets))), message=f"Service scan {index + 1}/{len(targets)}: {target}")
             ensure_job_not_cancelled(sid, "scan")
             emit_to_client(sid, "deep_scan_host_start", {"ip": target})
-            cmd = ["nmap", "-T3", "-sV", "--script", str(vulners_script), target]
+            cmd = ["nmap", "-T3", "-sV"]
+            if skip_host_discovery:
+                cmd.append("-Pn")
+            if env_flag("NMAPUI_ENABLE_VULNERS", default=True):
+                cmd.extend(["--script", str(vulners_script)])
+            else:
+                emit_to_client(
+                    sid,
+                    "scan_feedback",
+                    "Vulners enrichment is disabled; this scan will not query Vulners.com.",
+                )
+            cmd.append(target)
             emit_to_client(sid, "scan_feedback", f"Executing: {' '.join(cmd)}")
             logger.info("Executing: %s", " ".join(cmd))
             socketio_sleep(0)
 
-            result = run_cancellable_command(
-                cmd,
-                sid=sid,
-                job_type="scan",
-            )
-            output = result.stdout
+            try:
+                result = _run_deep_scan_with_xml(context, cmd, sid, target)
+                output = result.stdout
+                incomplete = getattr(result, "returncode", 0) != 0 or "due to host timeout" in output.lower()
+            except subprocess.TimeoutExpired:
+                output = "Service scan exceeded the 135 second process deadline."
+                incomplete = True
+            if incomplete:
+                emit_to_client(sid, "scan_raw_output", {"target": target, "output": output})
+                emit_to_client(sid, "scan_feedback", f"{target}: incomplete service scan; retry this device separately.")
+                emit_to_client(sid, "deep_scan_host_complete", {"ip": target, "status": "incomplete"})
+                if hasattr(context, "job_registry"):
+                    job = context.job_registry.get(sid, "scan") or {}
+                    hosts = list((job.get("details") or {}).get("incomplete_hosts", []))
+                    hosts.append(target)
+                    context.job_registry.update(sid, "scan", details={"incomplete_hosts": hosts})
+                continue
             # Use target as the authoritative IP — avoids parentheses when nmap
             # resolves a hostname: "Nmap scan report for host (1.2.3.4)"
             current_host = {"ip": target, "ports": [], "cves": []}
@@ -129,7 +210,7 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False):
             emit_to_client(sid, "scan_raw_output", {"target": target, "output": output})
 
             for line in output.splitlines():
-                if "/tcp" in line:
+                if "/tcp" in line or "/udp" in line:
                     port_info = context.port_info_regex.search(line)
                     if port_info:
                         # Normalize internal whitespace that nmap uses for column alignment
@@ -137,6 +218,7 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False):
                         current_host["ports"].append(
                             {
                                 "port": port_info.group(1),
+                                "protocol": port_info.group(0).split("/", 1)[1].split()[0],
                                 "state": port_info.group(2),
                                 "service": service_raw,
                             }
@@ -166,16 +248,35 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False):
 
         emit_to_client(sid, "deep_scan_complete")
     except RuntimeError as exc:
-        if str(exc) == "scan cancelled":
-            emit_to_client(sid, "scan_error", "Scan cancelled")
-            return
-        emit_to_client(sid, "scan_error", str(exc))
-    except Exception as exc:
-        emit_to_client(sid, "scan_error", str(exc))
+        if str(exc) != "scan cancelled":
+            logger.exception("Deep scan failed")
+        raise
+    except Exception:
+        logger.exception("Deep scan failed")
+        raise
 
 
-def start_scan_task(context, sid, target):
+def _finalize_scan_job_if_active(context, sid):
+    """Close running or cancelling scans even when cancellation races completion."""
+    job = context.job_registry.get(sid, "scan")
+    if not job or job.get("status") not in {"running", "cancelling"}:
+        return
+
+    status = (
+        "cancelled"
+        if job.get("status") == "cancelling" or job.get("cancel_requested")
+        else "completed"
+    )
+    context.job_registry.complete(sid, "scan", status=status)
+    context.emit_job_status(sid, "scan")
+    if status == "cancelled":
+        context.emit_to_client(sid, "scan_error", "Scan cancelled")
+
+
+def start_scan_task(context, sid, target, skip_host_discovery_override=None):
     """Run scan workflow in a background task for a single client."""
+    if skip_host_discovery_override is not None and type(skip_host_discovery_override) is not bool:
+        raise ValueError("skip_host_discovery_override must be a boolean or None")
     ensure_job_not_cancelled = context.ensure_job_not_cancelled
     idle_state_manager = context.idle_state_manager
     update_job_progress = context.update_job_progress
@@ -195,6 +296,11 @@ def start_scan_task(context, sid, target):
         customer_id=str(current_customer.get("id", "") or ""),
     )
     scan_only_mode = bool(scan_rules.get("scan_only_mode", False))
+    skip_host_discovery = (
+        scan_rules.get("skip_host_discovery", False) is True
+        if skip_host_discovery_override is None
+        else skip_host_discovery_override
+    )
     excluded_targets = [
         str(item or "").strip()
         for item in scan_rules.get("excluded_targets", [])
@@ -218,12 +324,15 @@ def start_scan_task(context, sid, target):
             progress=5,
         )
         emit_to_client(sid, "quick_scan_start", f"Starting quick scan on {target}")
-        command_str = f"nmap -sn {target}"
+        command_str = f"nmap -sn {'-Pn ' if skip_host_discovery else ''}{target}"
         emit_to_client(sid, "scan_feedback", f"Executing: {command_str}")
         logger.info(command_str)
         socketio_sleep(0)
 
         cmd = ["nmap", "-sn", target]
+        if skip_host_discovery:
+            cmd.insert(2, "-Pn")
+            emit_to_client(sid, "scan_feedback", "Host discovery is disabled; known targets may be scanned even when they do not respond to discovery probes.")
         if excluded_targets:
             exclusion_arg = ",".join(excluded_targets)
             cmd[1:1] = ["--exclude", exclusion_arg]
@@ -273,6 +382,7 @@ def start_scan_task(context, sid, target):
                         current_host["ports"].append(
                             {
                                 "port": open_port_match.group(1),
+                                "protocol": open_port_match.group(0).split("/", 1)[1].split()[0],
                                 "state": open_port_match.group(2),
                                 "service": open_port_match.group(3),
                             }
@@ -283,11 +393,12 @@ def start_scan_task(context, sid, target):
         socketio_sleep(0)
 
         arp_data = {}
-        if scan_only_mode:
+        if scan_only_mode or excluded_targets:
             emit_to_client(
                 sid,
                 "scan_feedback",
-                "Scan-only mode enabled; skipping MAC/vendor detection",
+                "Scan-only mode enabled; skipping MAC/vendor detection" if scan_only_mode
+                else "Target exclusions are configured; skipping ARP enrichment so excluded targets are not contacted by ARP discovery.",
             )
         else:
             update_job_progress(sid, "scan", phase="arp_scan", message="Collecting MAC and vendor data", progress=35)
@@ -303,6 +414,27 @@ def start_scan_task(context, sid, target):
                 emit_to_client(sid, "arp_results", arp_data)
 
             emit_to_client(sid, "arp_scan_complete")
+
+        # Resolve missing names directly from observed clients, without depending
+        # on directory PTR records. Respect discovery-only gateway protection.
+        protected_names = set()
+        if scan_rules.get("firewall_discovery_only", True):
+            protected_names = set(discovery_only_gateway_addresses(context.get_client_state(sid=sid).get("network_key", {})))
+            _, gateway_names = identify_gateway_firewall_targets(hosts)
+            protected_names.update(h["ip"] for h in gateway_names)
+        unnamed = [h for h in sorted_hosts if not h.get("hostname") and h["ip"] not in protected_names and h.get("status")][:256]
+        if unnamed:
+            emit_to_client(sid, "scan_feedback", "Asking discovered clients directly for missing hostnames (mDNS). No reply does not mean offline.")
+            for start in range(0, len(unnamed), 8):
+                ensure_job_not_cancelled(sid, "scan")
+                batch = unnamed[start:start + 8]
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    identities = list(pool.map(lambda host: query_mdns_hostname(host["ip"]), batch))
+                ensure_job_not_cancelled(sid, "scan")
+                for host, identity in zip(batch, identities):
+                    if identity:
+                        host.update(identity)
+                socketio_sleep(0)
 
         display_hosts = []
         for host in sorted_hosts:
@@ -322,6 +454,12 @@ def start_scan_task(context, sid, target):
         regular_hosts, gateway_hosts = identify_gateway_firewall_targets(hosts)
         regular_targets = [host["ip"] for host in regular_hosts]
         gateway_targets = [host["ip"] for host in gateway_hosts]
+        if scan_rules.get("firewall_discovery_only", True):
+            protected = set(discovery_only_gateway_addresses(context.get_client_state(sid=sid).get("network_key", {}))) | set(gateway_targets)
+            regular_targets = [ip for ip in regular_targets if ip not in protected]
+            gateway_targets = []
+            job_registry.update(sid, "scan", details={"firewall_discovery_only": True, "discovery_only_addresses": sorted(protected)})
+            emit_to_client(sid, "scan_feedback", "Firewall/gateway discovery only: service scans skipped for " + (", ".join(sorted(protected)) or "no identified gateways"))
 
         logger.info("Phase 1 - Regular hosts: %s", len(regular_targets))
         logger.info("Phase 2 - Gateway hosts: %s", len(gateway_targets))
@@ -334,7 +472,7 @@ def start_scan_task(context, sid, target):
                 message=f"Deep scanning {len(regular_targets)} regular hosts",
                 progress=60,
             )
-            start_deep_scan_fn(context, regular_targets, sid, is_gateway_phase=False)
+            start_deep_scan_fn(context, regular_targets, sid, is_gateway_phase=False, **({"skip_host_discovery": True} if skip_host_discovery else {}))
 
         if gateway_targets:
             update_job_progress(
@@ -344,9 +482,10 @@ def start_scan_task(context, sid, target):
                 message=f"Deep scanning {len(gateway_targets)} gateway hosts",
                 progress=80,
             )
-            start_deep_scan_fn(context, gateway_targets, sid, is_gateway_phase=True)
+            start_deep_scan_fn(context, gateway_targets, sid, is_gateway_phase=True, **({"skip_host_discovery": True} if skip_host_discovery else {}))
 
-        update_job_progress(sid, "scan", phase="complete", message="Scan workflow completed", progress=100)
+        incomplete_hosts = ((context.job_registry.get(sid, "scan") or {}).get("details") or {}).get("incomplete_hosts", [])
+        update_job_progress(sid, "scan", phase="complete", message=f"Scan workflow completed; {len(hosts)} discovered or explicitly selected hosts; {len(incomplete_hosts)} incomplete service scans", progress=100, details={"host_count": len(hosts), "skip_host_discovery": skip_host_discovery, "incomplete_hosts": incomplete_hosts})
     except RuntimeError as exc:
         if str(exc) == "scan cancelled":
             job_registry.complete(sid, "scan", status="cancelled")
@@ -361,10 +500,7 @@ def start_scan_task(context, sid, target):
         emit_job_status(sid, "scan")
         emit_to_client(sid, "scan_error", str(exc))
     finally:
-        current_job = job_registry.get(sid, "scan")
-        if current_job and current_job.get("status") == "running":
-            job_registry.complete(sid, "scan", status="completed")
-            emit_job_status(sid, "scan")
+        _finalize_scan_job_if_active(context, sid)
         job_registry.clear_if_disconnected(sid, "scan")
         idle_state_manager.end_operation(operation_id)
         # Tear down the broadcaster slot so new tabs no longer join this job
@@ -437,11 +573,18 @@ def generate_report_task(context, sid, data):
         customer_id=current_customer_id,
     )
     scan_only_mode = bool(scan_rules.get("scan_only_mode", False))
+    skip_host_discovery = scan_rules.get("skip_host_discovery", False) is True
     excluded_targets = [
         str(item or "").strip()
         for item in scan_rules.get("excluded_targets", [])
         if str(item or "").strip()
     ]
+
+    if scan_rules.get("firewall_discovery_only", True):
+        protected = discovery_only_gateway_addresses(network_key)
+        excluded_targets = sorted(set(excluded_targets) | set(protected))
+        job_registry.update(sid, "report", details={"firewall_discovery_only": True, "discovery_only_addresses": protected})
+        emit_to_client(sid, "scan_feedback", "Firewall/gateway discovery-only protection: comprehensive report scans exclude " + (", ".join(protected) or "no identified gateway addresses") + ". Run Quick Scan for their discovery inventory.")
 
     if not target:
         job_registry.complete(sid, "report", status="failed", details={"error": "No target specified"})
@@ -599,6 +742,8 @@ def generate_report_task(context, sid, data):
                 run_kwargs["excluded_targets"] = excluded_targets
             if scan_only_mode:
                 run_kwargs["scan_only_mode"] = True
+            if skip_host_discovery:
+                run_kwargs["skip_host_discovery"] = True
             max_scan_minutes = int(scan_rules.get("max_scan_minutes", 120) or 120)
             run_kwargs["timeout_seconds"] = max(max_scan_minutes, 15) * 60
             run_kwargs["force_privileged_scan"] = True
@@ -665,6 +810,7 @@ def generate_report_task(context, sid, data):
             socketio_sleep(0)
             xml_path = scan_dir / "scan.xml"
             merge_nmap_xml_files(xml_files, xml_path)
+            cleanup_chunk_artifacts(xml_files, merged_xml_path=xml_path)
         else:
             xml_path = output_base.with_suffix(".xml")
 
@@ -694,7 +840,7 @@ def generate_report_task(context, sid, data):
         emit_to_client(sid, "scan_feedback", "📄 Converting XML to HTML (web view)...")
         update_job_progress(sid, "report", phase="html_web", message="Generating web HTML report", progress=70)
         socketio_sleep(0)
-        if convert_xml_to_html(xml_path, web_html_path, stylesheet=web_stylesheet, get_app_version=get_app_version, feedback=feedback):
+        if convert_xml_to_html(xml_path, web_html_path, stylesheet=web_stylesheet, get_app_version=get_app_version, feedback=feedback, report_target=target, report_customer_id=current_customer_id):
             inject_diff_summary_into_report_html(web_html_path, diff_summary)
             file_size = web_html_path.stat().st_size if web_html_path.exists() else 0
             logger.info("✓ Web HTML created: %s (%s bytes)", web_html_path, file_size)
@@ -706,7 +852,7 @@ def generate_report_task(context, sid, data):
         emit_to_client(sid, "scan_feedback", "📄 Converting XML to HTML (PDF view)...")
         update_job_progress(sid, "report", phase="html_pdf", message="Generating PDF HTML report", progress=78)
         socketio_sleep(0)
-        if convert_xml_to_html(xml_path, pdf_html_path, stylesheet=pdf_stylesheet, get_app_version=get_app_version, feedback=feedback):
+        if convert_xml_to_html(xml_path, pdf_html_path, stylesheet=pdf_stylesheet, get_app_version=get_app_version, feedback=feedback, report_target=target, report_customer_id=current_customer_id):
             inject_diff_summary_into_report_html(pdf_html_path, diff_summary)
             file_size = pdf_html_path.stat().st_size if pdf_html_path.exists() else 0
             logger.info("✓ PDF HTML created: %s (%s bytes)", pdf_html_path, file_size)
