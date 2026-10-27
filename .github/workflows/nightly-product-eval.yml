@@ -14,21 +14,30 @@ on:
           - run
           - dry-run
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   eval:
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "24"
+          cache: npm
 
       - name: Install dependencies
         run: |
-          npm install
+          npm ci
 
       - name: Run nightly product evaluation
         run: npm run nightly-eval:${{ github.event.inputs.mode || 'run' }}
