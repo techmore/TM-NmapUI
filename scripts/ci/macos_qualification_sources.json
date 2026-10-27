@@ -1,0 +1,82 @@
+{
+  "python": {
+    "url": "https://www.python.org/ftp/python/3.11.17/Python-3.11.17.tar.xz",
+    "sha256": "bfb74ad39efae27cda510f134ab408e00f9992c56851cfc0b1cdb5646da11599",
+    "directory": "Python-3.11.17",
+    "license": "LICENSE",
+    "checksum_provenance": "Official .sigstore messageSignature.messageDigest SHA2_256 (digest checked; signature verification is not claimed).",
+    "upstream_archive_metadata": {
+      "owners_uid_gid": [
+        [
+          0,
+          0
+        ]
+      ],
+      "group_or_other_writable_members": 0
+    }
+  },
+  "openssl": {
+    "url": "https://www.openssl.org/source/openssl-3.5.8.tar.gz",
+    "sha256": "a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2",
+    "directory": "openssl-3.5.8",
+    "license": "LICENSE.txt",
+    "checksum_provenance": "Official https://www.openssl.org/source/openssl-3.5.8.tar.gz.sha256.",
+    "upstream_archive_metadata": {
+      "owners_uid_gid": [
+        [
+          0,
+          0
+        ]
+      ],
+      "group_or_other_writable_members": 6065
+    }
+  },
+  "nmap": {
+    "url": "https://nmap.org/dist/nmap-7.992.tar.bz2",
+    "sha256": "0c12660eddbf7eabeff6996cb0c044a4eadf2bb0c6fbcb340d6cf72b1caee402",
+    "directory": "nmap-7.992",
+    "license": "LICENSE",
+    "checksum_provenance": "Official https://nmap.org/dist/sigs/nmap-7.992.tar.bz2.digest.txt SHA256.",
+    "upstream_archive_metadata": {
+      "owners_uid_gid": [
+        [
+          0,
+          0
+        ]
+      ],
+      "group_or_other_writable_members": 0
+    }
+  },
+  "libpcap": {
+    "url": "https://www.tcpdump.org/release/libpcap-1.10.6.tar.gz",
+    "sha256": "872dd11337fe1ab02ad9d4fee047c9da244d695c6ddf34e2ebb733efd4ed8aa9",
+    "directory": "libpcap-1.10.6",
+    "license": "LICENSE",
+    "checksum_provenance": "SHA256 computed from upstream HTTPS release archive; upstream provides .sig, not a SHA256 sidecar. No PGP verification claim.",
+    "upstream_archive_metadata": {
+      "owners_uid_gid": [
+        [
+          1001,
+          1001
+        ]
+      ],
+      "group_or_other_writable_members": 0
+    }
+  },
+  "arp-scan": {
+    "url": "https://github.com/royhills/arp-scan/releases/download/1.10.0/arp-scan-1.10.0.tar.gz",
+    "sha256": "a078fe8711ecbb8b99121c3d8be26ae7e7f339f11010ef61318be4f33394d012",
+    "directory": "arp-scan-1.10.0",
+    "license": "COPYING",
+    "checksum_provenance": "SHA256 computed from upstream GitHub release asset; upstream asset API digest is null.",
+    "upstream_archive_metadata": {
+      "owners_uid_gid": [
+        [
+          1000,
+          1000
+        ]
+      ],
+      "group_or_other_writable_members": 0
+    }
+  }
+}

@@ -1,0 +1,84 @@
+name: Disposable macOS Installed Qualification
+
+on:
+  push:
+    branches: [codex/macos-installed-qualification-2026-10-25]
+  workflow_dispatch:
+    inputs:
+      confirm_disposable_install:
+        description: Install a root LaunchDaemon ONLY in a fresh GitHub-hosted VM
+        type: boolean
+        required: true
+        default: false
+      source_sha:
+        description: Immutable canonical runtime commit to qualify
+        type: string
+        required: true
+        default: b99472d4b6c1b002dadd40b10ace473a200496a8
+
+permissions:
+  contents: read
+
+concurrency:
+  group: disposable-macos-installed-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  installed-macos:
+    if: >-
+      github.repository == 'techmore/TM-NmapUI' &&
+      github.ref == 'refs/heads/codex/macos-installed-qualification-2026-10-25' &&
+      (github.event_name == 'push' || inputs.confirm_disposable_install == true)
+    runs-on: macos-15
+    timeout-minutes: 80
+    env:
+      # Exact two-directory preparation reviewed against inventory40245362133.
+      QUALIFICATION_PHASE: lifecycle
+      QUALIFIED_SOURCE: ${{ inputs.source_sha || 'b99472d4b6c1b002dadd40b10ace473a200496a8' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Validate immutable source selection
+        shell: bash
+        run: '[[ "$QUALIFIED_SOURCE" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@v5
+        with:
+          repository: techmore/TM-NmapUI
+          ref: ${{ env.QUALIFIED_SOURCE }}
+          path: runtime
+          persist-credentials: false
+      - name: Read-only hosted ownership, ACL and child-file inventory
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          NMAPUI_DISPOSABLE_MAC_QUALIFICATION: "1"
+          NMAPUI_QUALIFIED_SOURCE: ${{ env.QUALIFIED_SOURCE }}
+        run: >-
+          /usr/bin/python3 harness/scripts/ci/macos_installed_qualification.py
+          --inventory-output "$GITHUB_WORKSPACE/diagnostics/macos-directory-inventory.json"
+      - name: Provision protected tools and qualify the actual system LaunchDaemon
+        if: env.QUALIFICATION_PHASE == 'lifecycle'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C runtime rev-parse HEAD)" = "$QUALIFIED_SOURCE"
+          sudo -n /usr/bin/env -i \
+            PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            GITHUB_ACTIONS=true RUNNER_ENVIRONMENT='${{ runner.environment }}' RUNNER_OS=macOS \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_REF="$GITHUB_REF" \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_SHA="$GITHUB_SHA" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" \
+            NMAPUI_DISPOSABLE_MAC_QUALIFICATION=1 NMAPUI_QUALIFIED_SOURCE="$QUALIFIED_SOURCE" \
+            /usr/bin/python3 harness/scripts/ci/macos_installed_qualification.py \
+            --source "$GITHUB_WORKSPACE/runtime"
+      - name: Retain sanitized qualification receipts and upstream licenses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: disposable-macos-installed-${{ env.QUALIFIED_SOURCE }}
+          path: |
+            /Library/NmapUIQualification/receipts
+            diagnostics/macos-directory-inventory.json
+          if-no-files-found: warn
+          retention-days: 14
