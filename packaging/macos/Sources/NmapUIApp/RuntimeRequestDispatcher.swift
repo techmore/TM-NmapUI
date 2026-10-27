@@ -10,12 +10,30 @@ protocol RuntimeRequestDispatching {
     ) -> RuntimeRequestDispatchResult
 }
 
+/// Effects stay explicit so request-contract tests never authenticate or install services.
+@MainActor
+struct RuntimeAutoScanServices {
+    var ensureHelperReady: () async throws -> Void
+    var sync: (Bool, String, String) -> Result<Void, Error>
+    var presentFailure: (Error) -> Void
+
+    static var live: Self {
+        Self(
+            ensureHelperReady: { try await PrivilegeElevationController.ensurePrivilegedHelperReady(interactive: true) },
+            sync: { AutoScanScheduler.sync(enabled: $0, recurrence: $1, startTime: $2) },
+            presentFailure: { PrivilegeElevationController.presentHelperInstallFailure($0) }
+        )
+    }
+}
+
 @MainActor
 final class RuntimeRequestDispatcher: RuntimeRequestDispatching {
     private let sessionState: AppSessionState
+    private let autoScanServices: RuntimeAutoScanServices
 
-    init(sessionState: AppSessionState) {
+    init(sessionState: AppSessionState, autoScanServices: RuntimeAutoScanServices = .live) {
         self.sessionState = sessionState
+        self.autoScanServices = autoScanServices
     }
 
     func dispatch(
@@ -63,8 +81,8 @@ final class RuntimeRequestDispatcher: RuntimeRequestDispatching {
             // Install privileged helper (interactive once) then schedule unattended runs.
             Task { @MainActor in
                 do {
-                    try await PrivilegeElevationController.ensurePrivilegedHelperReady(interactive: true)
-                    switch AutoScanScheduler.sync(enabled: true, recurrence: recurrence, startTime: startTime) {
+                    try await autoScanServices.ensureHelperReady()
+                    switch autoScanServices.sync(true, recurrence, startTime) {
                     case .success:
                         break
                     case .failure(let error):
@@ -79,7 +97,7 @@ final class RuntimeRequestDispatcher: RuntimeRequestDispatching {
                         sessionState.emitAutoScanConfig()
                     }
                 } catch {
-                    PrivilegeElevationController.presentHelperInstallFailure(error)
+                    autoScanServices.presentFailure(error)
                     sessionState.updateAutoScanConfig(
                         enabled: false,
                         recurrence: recurrence,
@@ -103,7 +121,7 @@ final class RuntimeRequestDispatcher: RuntimeRequestDispatching {
                 target: sessionState.runtimeAutoScanSnapshot.target,
                 dataDirectory: dataDirectory
             )
-            AutoScanScheduler.sync(enabled: false, recurrence: sessionState.runtimeAutoScanSnapshot.recurrence, startTime: sessionState.runtimeAutoScanSnapshot.startTime)
+            _ = autoScanServices.sync(false, sessionState.runtimeAutoScanSnapshot.recurrence, sessionState.runtimeAutoScanSnapshot.startTime)
             if let autoScan = sessionState.runtimeAutoScanConfigEnvelope() {
                 return RuntimeRequestDispatchResult(events: [.autoScanConfig(autoScan)])
             }

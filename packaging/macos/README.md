@@ -45,13 +45,34 @@ cd packaging/macos
 swift build
 ```
 
-To assemble a launchable `.app` bundle:
+To assemble a native `.app` without launching or installing it:
 
 ```bash
-cd packaging/macos
-./bundle.sh
-open build/NmapUI.app
+APP_BUNDLE=/tmp/nmapui-native/NmapUI.app \
+BUILD_DIR=/tmp/nmapui-native-swift-build \
+CODESIGN_IDENTITY=- ./bundle.sh
 ```
+
+`NMAPUI_BUILD_CONFIGURATION=release` selects an optimized build (default:
+`debug`). Temporary assets follow the bundle output directory. The bundle
+contains all four SwiftPM products, the resource bundle, icon, report styles
+and runtime assets. `codesign --verify --deep --strict /path/NmapUI.app` verifies
+its local signatures. Ad-hoc signing (`-`) provides local integrity checks;
+Developer ID signing, notarization and installed-helper authorization require
+separate distribution qualification.
+
+`bundle_version.py` validates VERSION before build/cleanup. Marketing metadata
+is numeric `YYYY.M.D`; build metadata is `YYYY.M.P`, where
+`P = (day - 1) * 1440 + hour * 60 + minute`. Historical `.HH_MM` and `.HH.MM`
+suffixes retain chronological ordering, and date-only versions mean midnight.
+For example, `v2026.3.14.00_10` becomes marketing `2026.3.14` and build
+`2026.3.18730`. Advance VERSION before redistributing changed binaries.
+The raw product version stays in `NmapUIProductVersion`, bundled `VERSION`,
+and native UI/runtime identity; `NmapUISourceRevision` records the source commit.
+
+The native app currently requests privileged-helper authorization shortly after
+startup, even with empty temporary state. Do not launch it merely to preview a
+bundle when service authorization or host changes are outside the task scope.
 
 To install the bundle into Applications:
 
@@ -105,3 +126,31 @@ The menu bar icon includes a `Runtime:` status row plus an `About NmapUI` item a
 - The runtime should write its working data into Application Support, not inside the app bundle.
 - The shell should open the local loopback UI once the runtime is healthy.
 - This directory intentionally starts small so the migration can grow without forcing a rewrite all at once.
+
+The retained Flask wrapper uses the selected local runtime URL (the default
+local loopback URL is `http://127.0.0.1:9000`). Native SwiftUI does not need that
+listener. For Flask runtime-store migration, use
+`scripts/backfill_runtime_store.py --help` before changing stored data.
+
+## Verification and compatibility clients
+
+CI keeps the Flask unit/browser/wrapper jobs and additionally requires the full
+SwiftPM test suite and an optimized native bundle with strict signature/resource
+checks. Tests use temporary data and loopback listeners; they never launch the
+native GUI or install its service. The browser suite uses real Socket.IO clients
+and has no expected-failure masks.
+
+`templates/index.html` uses the compatible Flask API modules. The retained native
+web bridge in root `index.html` loads its transport-specific variants from
+`static/js/native/`; the production SwiftUI controls remain in `Sources/NmapUIApp`.
+The shared Monitoring Hub display lives in `static/js/monitoring_hub.js` for the
+Flask page. Desktop Flask startup skips public traceroute by default; an explicit
+`NMAPUI_STARTUP_TRACEROUTE=true` still opts in. Readiness requires the scanner and
+scheduler, independently of optional public topology discovery.
+
+Build/bundle/install replacement now refuses active or unverified destinations.
+It never signals processes from a stale PID marker or command substring, and it
+never removes the scanner's shared scheduler lock. Quit the selected copy first;
+review stale markers manually. Temporary-destination installer smoke checks
+preserve the completed resource seal and nested helper identities without
+launching the app or registering services.

@@ -135,7 +135,10 @@ final class AppSessionState: ObservableObject {
     /// Deliberately transient: Dashboard actions belong only to the scan just completed.
     @Published var currentScanReportArtifacts: CurrentScanReportArtifacts?
 
+    private let googleDriveStatusProvider: (URL) -> GoogleDriveService.Status
+
     init(
+        googleDriveStatusProvider: @escaping (URL) -> GoogleDriveService.Status = { GoogleDriveService.status(dataDirectory: $0) },
         eventRouter: RuntimeEventRouting = RuntimeEventRouter(
             emitHandler: { message in
                 let envelope = RuntimeEventEncoder.encode(message)
@@ -151,6 +154,7 @@ final class AppSessionState: ObservableObject {
             }
         )
     ) {
+        self.googleDriveStatusProvider = googleDriveStatusProvider
         self.eventRouter = eventRouter
         self.lifecycleEventBridge = lifecycleEventBridge
     }
@@ -552,7 +556,7 @@ final class AppSessionState: ObservableObject {
 
     func runtimeGoogleDriveStatusEnvelope() -> RuntimeGoogleDriveStatusEnvelope? {
         let dataDirectory = RuntimeSettingsStore.currentDataDirectoryURL()
-        let live = GoogleDriveService.status(dataDirectory: dataDirectory)
+        let live = googleDriveStatusProvider(dataDirectory)
         var config = runtimeGoogleDriveSnapshot.config
         config["enabled"] = .bool(runtimeGoogleDriveSnapshot.enabled)
         config["folderId"] = .string(runtimeGoogleDriveSnapshot.folderId)

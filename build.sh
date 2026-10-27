@@ -3,11 +3,6 @@
 # Build script for the NmapUI macOS wrapper
 # Builds the Swift application bundle and opens it
 
-# Clean up any existing instances
-echo "Cleaning up any existing instances..."
-pkill -f "NmapUI.app" 2>/dev/null || true
-sleep 1  # Give processes time to terminate
-
 # Set variables
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$SCRIPT_DIR"
@@ -26,14 +21,11 @@ RUNTIME_SUPPORT_DIR="${NMAPUI_SUPPORT_DIR:-$HOME/Library/Application Support/Nma
 RUNTIME_DATA_DIR="${NMAPUI_DATA_DIR:-$RUNTIME_SUPPORT_DIR/data}"
 RUNTIME_LOG_DIR="${NMAPUI_LOG_DIR:-$RUNTIME_SUPPORT_DIR/logs}"
 TEMP_MIGRATION_DB=""
+# Validate before SDK discovery or any process/artifact cleanup.
+VERSION_METADATA="$(python3 "$PACKAGING_DIR/bundle_version.py" "$ROOT_DIR/VERSION")" || exit 1
+IFS=$'\t' read -r APP_VERSION BUNDLE_SHORT_VERSION BUNDLE_BUILD_VERSION <<< "$VERSION_METADATA"
 SDK=$(xcrun --show-sdk-path --sdk macosx)
 HOST_ARCH="$(uname -m)"
-APP_VERSION="$(tr -d '\r\n' < "$ROOT_DIR/VERSION")"
-
-if [[ -z "$APP_VERSION" ]]; then
-    echo "ERROR: VERSION file is empty" >&2
-    exit 1
-fi
 
 if [[ -n "${NMAPUI_SWIFT_TARGET:-}" ]]; then
     SWIFT_TARGET="$NMAPUI_SWIFT_TARGET"
@@ -72,7 +64,6 @@ fi
 
 RUNTIME_PID_FILE_REL="Contents/Resources/nmapui-runtime.pid"
 SHUTDOWN_MARKER_REL="Contents/Resources/nmapui-shutdown"
-AUTO_SCAN_LOCK_REL="Contents/Resources/data/auto_scan_scheduler.lock"
 
 shell_escape() {
     printf "'%s'" "${1//\'/\'\"\'\"\'}"
@@ -85,68 +76,14 @@ applescript_escape() {
     printf '%s' "$value"
 }
 
-kill_runtime_tree() {
-    local bundle_path="$1"
-    local pid_file="$bundle_path/$RUNTIME_PID_FILE_REL"
-    local shutdown_marker="$bundle_path/$SHUTDOWN_MARKER_REL"
-    local resource_root="$bundle_path/Contents/Resources"
-    local run_script="$resource_root/run.sh"
-
-    kill_tree() {
-        local target_pid="$1"
-        if [[ -z "$target_pid" ]]; then
-            return
-        fi
-        local child_pid
-        while IFS= read -r child_pid; do
-            [[ -z "$child_pid" ]] && continue
-            kill_tree "$child_pid"
-        done < <(/usr/bin/pgrep -P "$target_pid" 2>/dev/null || true)
-        /bin/kill -TERM "$target_pid" 2>/dev/null || true
-    }
-
-    force_kill_tree() {
-        local target_pid="$1"
-        if [[ -z "$target_pid" ]]; then
-            return
-        fi
-        local child_pid
-        while IFS= read -r child_pid; do
-            [[ -z "$child_pid" ]] && continue
-            force_kill_tree "$child_pid"
-        done < <(/usr/bin/pgrep -P "$target_pid" 2>/dev/null || true)
-        /bin/kill -KILL "$target_pid" 2>/dev/null || true
-    }
-
-    /usr/bin/touch "$shutdown_marker" 2>/dev/null || true
-    if [[ -f "$pid_file" ]]; then
-        local target_pid
-        target_pid="$(/bin/cat "$pid_file" 2>/dev/null | /usr/bin/tr -cd '0-9')"
-        if [[ -n "$target_pid" ]]; then
-            kill_tree "$target_pid"
-            /bin/sleep 2
-            force_kill_tree "$target_pid"
-        fi
-    fi
-    /usr/bin/pkill -TERM -f "$run_script" 2>/dev/null || true
-    /usr/bin/pkill -TERM -f "$resource_root/app.py" 2>/dev/null || true
-    /usr/bin/pkill -TERM -f "$resource_root/.venv/bin/python3" 2>/dev/null || true
-    /bin/sleep 1
-    /usr/bin/pkill -KILL -f "$run_script" 2>/dev/null || true
-    /usr/bin/pkill -KILL -f "$resource_root/app.py" 2>/dev/null || true
-    /usr/bin/pkill -KILL -f "$resource_root/.venv/bin/python3" 2>/dev/null || true
-    /bin/rm -f "$pid_file" "$shutdown_marker" "$bundle_path/$AUTO_SCAN_LOCK_REL" "$RUNTIME_DATA_DIR/auto_scan_scheduler.lock" 2>/dev/null || true
-}
-
-purge_bundle_artifacts() {
-    local bundle_path="$1"
-    [[ -z "$bundle_path" ]] && return
-    kill_runtime_tree "$bundle_path"
+assert_bundles_stopped() {
+    python3 "$PACKAGING_DIR/assert_bundle_stopped.py" "$@" || exit 1
 }
 
 remove_bundle_path() {
     local bundle_path="$1"
     [[ -z "$bundle_path" ]] && return
+    assert_bundles_stopped "$bundle_path"
 
     rm -rf "$bundle_path" 2>/dev/null || true
     if [[ ! -e "$bundle_path" ]]; then
@@ -206,8 +143,7 @@ stage_google_drive_credentials() {
 
 # Ensure build output doesn't collide with the nmapui package on case-insensitive filesystems.
 echo "Purging stale runtime state and build artifacts..."
-purge_bundle_artifacts "$APP_NAME"
-purge_bundle_artifacts "$INSTALLED_APP_NAME"
+assert_bundles_stopped "$APP_NAME" "$INSTALLED_APP_NAME"
 rm -rf "$BUILD_DIR"
 rm -rf "$APP_NAME"
 mkdir -p "$BUILD_DIR"
@@ -365,6 +301,7 @@ export PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright-browsers"
 # a separate production WSGI stack, so allow Werkzeug explicitly for this
 # packaged desktop entrypoint.
 export NMAPUI_ALLOW_UNSAFE_WERKZEUG=true
+export NMAPUI_STARTUP_TRACEROUTE="${NMAPUI_STARTUP_TRACEROUTE:-false}"
 export NMAPUI_TRUST_LOCAL_UI=true
 
 # Run the NmapUI application
@@ -388,9 +325,9 @@ cat > "$APP_NAME/Contents/Info.plist" << EOF
     <key>CFBundleIdentifier</key>
     <string>com.techmore.nmapui</string>
     <key>CFBundleVersion</key>
-    <string>$APP_VERSION</string>
+    <string>$BUNDLE_BUILD_VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>$APP_VERSION</string>
+    <string>$BUNDLE_SHORT_VERSION</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>NSPrincipalClass</key>

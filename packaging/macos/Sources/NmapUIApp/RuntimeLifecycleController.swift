@@ -31,7 +31,7 @@ final class RuntimeLifecycleController {
         sessionState.preloadMessage = "Loading dashboard..."
         sessionState.showLoadingStrip = true
         sessionState.emitBootstrapState(
-            version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+            version: RuntimeIdentity.productVersion(),
             hosts: []
         )
         sessionState.emitHistoryData()

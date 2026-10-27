@@ -217,7 +217,7 @@ struct NativeShellView: View {
                 .frame(width: 102, height: 36)
             VStack(alignment: .leading, spacing: 5) {
                 Text("TM-NMAPUI").font(.system(size: 30, weight: .regular, design: .serif)).italic().foregroundStyle(NativePalette.olive950)
-                Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")")
+                Text("Version \(RuntimeIdentity.productVersion())")
                     .font(.caption.weight(.medium)).foregroundStyle(NativePalette.olive600)
             }
             Spacer()
@@ -1137,7 +1137,7 @@ struct WebPortalView: NSViewRepresentable {
                     let result = dispatcher.dispatch(
                         request,
                         dataDirectory: RuntimeSettingsStore.currentDataDirectoryURL(),
-                        version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+                        version: RuntimeIdentity.productVersion()
                     )
                     for event in result.events {
                         appDelegate.sessionState.eventRouter.emit(event)

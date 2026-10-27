@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RuntimeDiagnosticsLogger.log(
             "Application did finish launching as user euid=\(geteuid()) privileged helper probe deferred"
         )
-        let fallbackIdentity = RuntimeIdentity.localFallback(version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")
+        let fallbackIdentity = RuntimeIdentity.localFallback(version: RuntimeIdentity.productVersion())
         let dataDirectory = RuntimeSettingsStore.currentDataDirectoryURL()
         RuntimeDiagnosticsLogger.configure(dataDirectory: dataDirectory)
         try? FileManager.default.createDirectory(
@@ -102,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.sessionState.refreshCustomerProfileSnapshot(from: dataDirectory, networkState: freshNetworkState)
                 self.sessionState.emitInitialData()
                 self.sessionState.emitSyncState(
-                    version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+                    version: RuntimeIdentity.productVersion(),
                     hosts: []
                 )
                 self.sessionState.emitTracerouteHops()
@@ -552,7 +552,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 : "Scan complete with warnings: \(completionWarnings.joined(separator: "; "))"
         }
         sessionState.emitSyncState(
-            version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+            version: RuntimeIdentity.productVersion(),
             hosts: result.summary?.hosts ?? []
         )
         sessionState.refreshDataSnapshot(from: RuntimeSettingsStore.currentDataDirectoryURL())
@@ -907,7 +907,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionState.emitScanStopped()
         sessionState.clearScanSession()
         sessionState.emitSyncState(
-            version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+            version: RuntimeIdentity.productVersion(),
             hosts: []
         )
     }
@@ -955,7 +955,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         sessionState.emitInitialData()
         sessionState.emitSyncState(
-            version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+            version: RuntimeIdentity.productVersion(),
             hosts: []
         )
         sessionState.emitTracerouteHops()

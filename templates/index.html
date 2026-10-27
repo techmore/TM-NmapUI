@@ -1627,7 +1627,8 @@
             }
             const socket = io.connect(`http://${document.domain}:${location.port}`, {
                 auth: { token },
-                query: { token }
+                query: { token },
+                autoConnect: false
             });
             window.socket = socket;
             socket.on('connect', () => console.log('Socket.IO connected'));
@@ -1640,11 +1641,8 @@
             if (document.readyState === 'loading') {
                 await new Promise((resolve) => document.addEventListener('DOMContentLoaded', resolve, { once: true }));
             }
-            // Ensure the underlying engine.io connection is live so early
-            // emits (tab loads, get_reports) are not dropped.
-            if (!socket.connected) {
-                await new Promise((resolve) => socket.on('connect', resolve));
-            }
+            // Register every listener before connecting so initial job replay
+            // cannot race startup. Socket.IO queues early outgoing requests.
             if (typeof initializeScanRuntime === 'function') {
                 initializeScanRuntime(socket);
             }
@@ -1674,7 +1672,7 @@
                 initializeReportsTab();
             }
             if (typeof initializeSettingsTab === 'function') {
-                initializeSettingsTab(socket);
+                initializeSettingsTab();
             }
             if (typeof initializeAutoScanUI === 'function') {
                 initializeAutoScanUI(socket, {
@@ -1696,6 +1694,7 @@
             if (typeof initializeAuditLog === 'function') {
                 initializeAuditLog();
             }
+            socket.connect();
         }
 
         document.getElementById('reload-last-scan-btn').addEventListener('click', function() {
@@ -1756,6 +1755,7 @@
     </div>
 
     <script src="/static/js/scan_runtime.js"></script>
+    <script src="/static/js/monitoring_hub.js"></script>
     <script src="/static/js/scan_banners.js"></script>
     <script src="/static/js/discovery_ui.js"></script>
     <script src="/static/js/report_status.js"></script>

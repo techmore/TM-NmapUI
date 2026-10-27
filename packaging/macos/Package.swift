@@ -56,7 +56,7 @@ let package = Package(
         ),
         .testTarget(
             name: "NmapUIAppTests",
-            dependencies: ["NmapUIApp", "RuntimeContracts"],
+            dependencies: ["NmapUIApp", "NmapPrivilegedHelper", "RuntimeContracts"],
             path: "Tests/NmapUIAppTests"
         )
     ]

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import RuntimeContracts
 import Testing
 import RuntimeContracts
@@ -335,13 +336,39 @@ struct RuntimeSettingsTests {
     }
     @Test("runs a native quick discovery scan through ScanCoordinator")
     func nativeQuickDiscoveryScanProducesHostSummary() async throws {
-        let nmapPath = "/opt/homebrew/bin/nmap"
-        guard FileManager.default.isExecutableFile(atPath: nmapPath) else { return }
+        let nmapPath = try #require(RuntimeToolchain.current().nmapPath, "Native integration tests require nmap")
         let workDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("nmapui-scan-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: workDirectory) }
 
-        let coordinator = ScanCoordinator(workDirectory: workDirectory, nmapPath: nmapPath)
+        // Unprivileged -sn uses TCP discovery on default ports 80/443. A host
+        // with neither responding can legitimately produce zero hosts. Supply a
+        // real loopback listener and direct Nmap's discovery probe to its port.
+        let listener = socket(AF_INET, SOCK_STREAM, 0)
+        #expect(listener >= 0)
+        defer { close(listener) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        try #require(bound == 0)
+        try #require(listen(listener, 4) == 0)
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(listener, $0, &length) }
+        }
+        try #require(named == 0)
+        let port = UInt16(bigEndian: address.sin_port)
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let probe = workDirectory.appendingPathComponent("nmap-loopback-probe")
+        try "#!/bin/sh\nexec \(nmapPath) -PS\(port) \"$@\"\n".write(to: probe, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: probe.path)
+        let coordinator = ScanCoordinator(workDirectory: workDirectory, nmapPath: probe.path)
         let result = await coordinator.runPhase1(.init(
             target: "127.0.0.1",
             usePn: false,
@@ -379,7 +406,7 @@ struct RuntimeSettingsTests {
         #expect(arguments.contains("--top-ports"))
         #expect(arguments.contains("100"))
         #expect(arguments.contains("--host-timeout"))
-        #expect(arguments.contains("25s"))
+        #expect(arguments.contains("2m"))
         #expect(arguments.contains("--max-retries"))
         #expect(arguments.contains("--open"))
         #expect(arguments.contains("-iL"))
@@ -1779,8 +1806,8 @@ struct RuntimeSettingsTests {
     }
 
     @MainActor
-    @Test("refreshes and emits google drive status from metadata")
-    func refreshesAndEmitsGoogleDriveStatusFromMetadata() throws {
+    @Test("refreshes and emits google drive status from metadata", arguments: [true, false])
+    func refreshesAndEmitsGoogleDriveStatusFromMetadata(helperSuccess: Bool) throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         defer {
@@ -1798,7 +1825,18 @@ struct RuntimeSettingsTests {
         try data.write(to: configURL)
 
         let recorder = RuntimeEventRecorder()
-        let sessionState = AppSessionState(eventRouter: recorder)
+        let sessionState = AppSessionState(
+            googleDriveStatusProvider: { _ in
+                GoogleDriveService.Status(
+                    success: helperSuccess,
+                    status: helperSuccess ? "Connected" : "Credentials missing",
+                    configured: helperSuccess,
+                    connected: helperSuccess,
+                    error: helperSuccess ? nil : "missing configuration"
+                )
+            },
+            eventRouter: recorder
+        )
         sessionState.refreshGoogleDriveSnapshot(from: tempDirectory)
         sessionState.emitGoogleDriveStatus()
 
@@ -1806,7 +1844,9 @@ struct RuntimeSettingsTests {
         #expect(sessionState.runtimeGoogleDriveSnapshot.folderId == "folder-123")
         #expect(recorder.messages.count == 1)
         if case .googleDriveStatus(let payload) = recorder.messages[0] {
-            #expect(payload.success)
+            #expect(payload.success == helperSuccess)
+            #expect(payload.config["configured"] == .bool(helperSuccess))
+            #expect(payload.config["connected"] == .bool(helperSuccess))
             #expect(payload.status == "Google Drive enabled")
             #expect(payload.config["enabled"] == .bool(true))
             #expect(payload.config["folderId"] == .string("folder-123"))
@@ -2144,7 +2184,7 @@ struct RuntimeSettingsTests {
 
     @MainActor
     @Test("dispatches Swift-owned client requests")
-    func dispatchesSwiftOwnedClientRequests() throws {
+    func dispatchesSwiftOwnedClientRequests() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         defer {
@@ -2180,7 +2220,16 @@ struct RuntimeSettingsTests {
         sessionState.emitHistoryData()
         sessionState.emitReportsData()
 
-        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState)
+        var serviceCalls: [String] = []
+        let services = RuntimeAutoScanServices(
+            ensureHelperReady: { serviceCalls.append("authorize") },
+            sync: { enabled, recurrence, time in
+                serviceCalls.append("schedule:\(enabled):\(recurrence):\(time)")
+                return .success(())
+            },
+            presentFailure: { _ in Issue.record("Unexpected authorization failure") }
+        )
+        let dispatcher = RuntimeRequestDispatcher(sessionState: sessionState, autoScanServices: services)
 
         let initial = dispatcher.dispatch(
             RuntimeClientRequestEnvelope(event: .getInitialData),
@@ -2238,6 +2287,11 @@ struct RuntimeSettingsTests {
         } else {
             Issue.record("Expected autoScanConfig payload")
         }
+
+        for _ in 0..<20 where serviceCalls.count < 2 { await Task.yield() }
+        #expect(serviceCalls == ["authorize", "schedule:true:weekly:02:30"])
+        _ = dispatcher.dispatch(RuntimeClientRequestEnvelope(event: .disableAutoScan), dataDirectory: tempDirectory, version: "1.0.0")
+        #expect(serviceCalls.last == "schedule:false:weekly:02:30")
 
         let prefix = dispatcher.dispatch(
             RuntimeClientRequestEnvelope(
