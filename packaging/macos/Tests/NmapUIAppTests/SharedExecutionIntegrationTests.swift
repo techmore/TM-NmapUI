@@ -81,7 +81,15 @@ struct SharedExecutionIntegrationTests {
             #expect(fixture.pids.count == 1)
             let stop = RuntimeClientRequestEnvelope(event: .stopScan, payload: ["source_job_id": .string(first.uuidString)])
             #expect(app.routeNonLegacyBridge(stop))
-            try await wait("typed WebKit port cancels observed source") { model.controlState.latestCompletion[.scan]?.sourceJobID == first && model.controlState.latestCompletion[.scan]?.status == .cancelled }
+            // The engine publishes the cancelled status, then an uncorrelated
+            // "Scan cancelled" scan_error. Settle both before the next start:
+            // that error arriving while a start is submitting marks the start
+            // uncertain and drops controls to synchronizing, so a pause sent
+            // in that window is refused client-side and never reaches the engine.
+            try await wait("typed WebKit port cancels observed source") {
+                model.controlState.latestCompletion[.scan]?.sourceJobID == first && model.controlState.latestCompletion[.scan]?.status == .cancelled
+                    && model.controlState.lastError == "Scan cancelled"
+            }
             try await wait("first owned scanner reaped") { kill(firstPID, 0) == -1 && errno == ESRCH }
 
             let start = RuntimeClientRequestEnvelope(event: .startQuickScan, payload: ["target": .string("127.0.0.1")])
@@ -93,7 +101,10 @@ struct SharedExecutionIntegrationTests {
             app.sharedMenuAction(.pause, observedID: next)
             try await wait("next run paused") { model.controlState.jobs[.scan]?.paused == true }
             app.sharedMenuAction(.stop, observedID: next)
-            try await wait("menu stop wakes and cancels paused process") { model.controlState.latestCompletion[.scan]?.sourceJobID == next && model.controlState.latestCompletion[.scan]?.status == .cancelled }
+            try await wait("menu stop wakes and cancels paused process") {
+                model.controlState.latestCompletion[.scan]?.sourceJobID == next && model.controlState.latestCompletion[.scan]?.status == .cancelled
+                    && model.controlState.lastError == "Scan cancelled"
+            }
             let secondPID = try #require(fixture.pids.last)
             try await wait("second owned scanner reaped") { kill(secondPID, 0) == -1 && errno == ESRCH }
 
@@ -169,13 +180,7 @@ private final class NativeControlFixture {
         process.standardOutput = pipe; process.standardError = FileHandle.standardError
         try process.run(); try pipe.fileHandleForWriting.close()
         do {
-            let data: Data = try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    var descriptor = pollfd(fd: pipe.fileHandleForReading.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
-                    guard poll(&descriptor, 1, 25000) > 0 else { continuation.resume(throwing: CocoaError(.fileReadUnknown)); return }
-                    continuation.resume(returning: pipe.fileHandleForReading.availableData)
-                }
-            }
+            let data = try await childReadinessLine(pipe.fileHandleForReading, timeout: 25)
             struct Ready: Decodable { let port: Int; let root: String }
             let ready = try JSONDecoder().decode(Ready.self, from: data)
             endpoint = try SharedEngineEndpoint("http://127.0.0.1:\(ready.port)")
