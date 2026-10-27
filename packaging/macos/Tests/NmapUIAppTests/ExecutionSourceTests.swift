@@ -82,13 +82,8 @@ struct ExecutionSourceTests {
         try child.run()
         try pipe.fileHandleForWriting.close()
         defer { if child.isRunning { kill(child.processIdentifier, SIGTERM) } }
-        let ready: Data = try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                var descriptor = pollfd(fd: pipe.fileHandleForReading.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
-                guard poll(&descriptor, 1, 5000) > 0 else { continuation.resume(throwing: CocoaError(.fileReadUnknown)); return }
-                continuation.resume(returning: pipe.fileHandleForReading.availableData)
-            }
-        }
+        // The child prints only after flock succeeds; wait for the whole line.
+        let ready = try await childReadinessLine(pipe.fileHandleForReading, timeout: 5)
         #expect(ready == Data("locked\n".utf8))
         let router = ApplicationExecutionRouter(store: source)
         #expect(!router.choose(.shared, localScanActive: false))
