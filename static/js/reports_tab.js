@@ -489,7 +489,7 @@ function createHistoryCard(scan, options = {}) {
         const toneClasses = {
             olive: 'text-olive-700 bg-olive-100 border-olive-200',
             amber: 'text-amber-800 bg-amber-50 border-amber-200',
-            slate: 'text-slate-700 bg-slate-100 border-slate-200',
+            slate: 'text-stone-700 bg-stone-100 border-stone-200',
         };
         timeline.className = `mt-3 inline-flex items-center rounded-full border px-3 py-1 text-xs font-bold uppercase tracking-widest ${toneClasses[options.timelineTone || 'olive'] || toneClasses.olive}`;
         timeline.textContent = options.timelineLabel;

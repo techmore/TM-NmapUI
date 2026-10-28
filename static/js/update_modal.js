@@ -185,7 +185,7 @@ function initializeUpdateModal(socket, deps = {}) {
         const progressBar = document.getElementById("update-progress-bar");
         if (status) {
             status.textContent = "Update failed";
-            status.classList.add("text-red-500");
+            status.classList.add("text-red-700");
         }
         if (progressBar) {
             progressBar.classList.add("bg-red-500");

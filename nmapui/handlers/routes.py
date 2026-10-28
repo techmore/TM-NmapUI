@@ -25,6 +25,19 @@ from nmapui.auth import (
     set_session_cookie,
 )
 from nmapui.handlers.scans import delete_scan_artifacts
+
+# The elementary OS theme layer (static/css/elementary*.css) belongs to the
+# native GTK/WebKit shell only; a regular browser always gets the olive web UI.
+# The shell opts in with a "NmapUI-elementary/<version>" user-agent token, or
+# once with ?shell=elementary (remembered in a cookie; ?shell=web clears it).
+ELEMENTARY_SHELL_UA_TOKEN = "NmapUI-elementary/"
+ELEMENTARY_SHELL_COOKIE = "nmapui_shell"
+
+
+def elementary_shell_requested(req):
+    if ELEMENTARY_SHELL_UA_TOKEN in req.headers.get("User-Agent", ""):
+        return True
+    return req.cookies.get(ELEMENTARY_SHELL_COOKIE) == "elementary"
 from nmapui.reporting import (
     _resolve_artifact_file_path,
     build_artifact_downloads,
@@ -135,7 +148,21 @@ def register_core_routes(app, deps):
 
     @app.route("/")
     def index():
-        return render_template("index.html", management_history_url=management_history_url())
+        shell_param = request.args.get("shell", "").strip().lower()
+        if shell_param in ("elementary", "web"):
+            elementary_shell = shell_param == "elementary"
+        else:
+            elementary_shell = elementary_shell_requested(request)
+        response = make_response(render_template(
+            "index.html",
+            management_history_url=management_history_url(),
+            elementary_shell=elementary_shell,
+        ))
+        if shell_param == "elementary":
+            response.set_cookie(ELEMENTARY_SHELL_COOKIE, "elementary", max_age=365 * 24 * 3600, samesite="Lax", httponly=True)
+        elif shell_param == "web":
+            response.delete_cookie(ELEMENTARY_SHELL_COOKIE)
+        return response
 
     @app.route("/login", methods=["GET", "POST"])
     def login():

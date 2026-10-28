@@ -135,9 +135,9 @@ html tbody tr:nth-child(even) { background-color: var(--e-row-alt); }
 html tbody tr:hover { background-color: var(--e-row-hover); }
 
 /* Status accents use elementary's semantic colors */
-html .text-green-600, html .text-emerald-600, html .text-emerald-500 { color: var(--e-lime); }
+html .text-green-600, html .text-emerald-600, html .text-emerald-500, html .text-emerald-700 { color: var(--e-lime); }
 html .text-red-600, html .text-red-700 { color: var(--e-strawberry); }
-html .text-orange-600, html .text-amber-600 { color: var(--e-orange); }
+html .text-orange-600, html .text-amber-600, html .text-amber-800 { color: var(--e-orange); }
 html .bg-orange-600, html .bg-orange-700 { background-color: var(--e-orange); color: #fff; }
 html .card-pulsing { border-color: var(--e-accent) !important; box-shadow: 0 0 0 4px color-mix(in srgb, var(--e-accent) 40%, transparent); }
 
