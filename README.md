@@ -84,6 +84,11 @@ those lookups, put `KEY=VALUE` lines (for example `NMAPUI_PORT=9010`) in
 `~/Library/Application Support/NmapUI-brew/nmapui.env` and run
 `brew services restart nmapui`.
 
+The first time the service touches your network, macOS asks whether
+"Python" may find devices on your local network. Choose **Allow**. Until
+then, scans report 0 hosts. You can change it later in System Settings →
+Privacy & Security → Local Network.
+
 Without privileges, NmapUI uses connect scans and TCP ping discovery. SYN
 scans, OS detection and ARP discovery need root for nmap only, never for the
 app. To enable them, install the official
