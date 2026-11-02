@@ -107,8 +107,13 @@ def resolve_scan_path(path: str) -> Optional[Path]:
         return None
 
     try:
-        scan_dir.relative_to(scans_root)
+        relative = scan_dir.relative_to(scans_root)
     except ValueError:
+        return None
+
+    # Callers act on one scan folder or report. The scans root itself
+    # ("." or "a/..") must never resolve, or a delete would remove every scan.
+    if relative == Path("."):
         return None
 
     return scan_dir

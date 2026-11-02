@@ -1,0 +1,78 @@
+#!/bin/bash
+# Launch the NmapUI web service as the current (non-root) user.
+# Installed by the Homebrew formula as `nmapui`; `brew services start nmapui`
+# runs it as a per-user LaunchAgent. Environment variables override defaults.
+set -euo pipefail
+
+if [[ "$(id -u)" == 0 ]]; then
+  echo "nmapui: refusing to run the web service as root. Privileged scans use the" >&2
+  echo "validating helper instead: see 'nmapui-privileged-setup'." >&2
+  exit 1
+fi
+
+APP_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd -P)"
+VENV="${NMAPUI_VENV:-$APP_ROOT/venv}"
+STATE="${NMAPUI_STATE_DIR:-$HOME/Library/Application Support/NmapUI-brew}"
+
+# Optional settings file for the service (brew services passes no custom
+# environment). KEY=VALUE lines; only the keys below are read, values are
+# never executed, and variables already set in the environment win.
+SETTINGS="$STATE/nmapui.env"
+if [[ -f "$SETTINGS" ]]; then
+  while IFS='=' read -r key value || [[ -n "$key" ]]; do
+    [[ "$key" =~ ^[[:space:]]*(#|$) ]] && continue
+    case "$key" in
+      NMAPUI_PORT|NMAPUI_HOST|NMAPUI_USERNAME|NMAPUI_PASSWORD|NMAPUI_TRUST_LOCAL_UI|\
+      NMAPUI_ALLOWED_ORIGINS|NMAPUI_COOKIE_SECURE|NMAPUI_ENABLE_VULNERS|NMAPUI_ENABLE_UPDATE_CHECK|\
+      NMAPUI_ENABLE_NETWORK_FINGERPRINT|NMAPUI_SERVICE_SCAN_HOST_TIMEOUT|NMAPUI_MAX_CONCURRENT_JOBS)
+        [[ -z "${!key+x}" ]] && export "$key=$value" ;;
+      *) echo "nmapui: ignoring unsupported setting '$key' in $SETTINGS" >&2 ;;
+    esac
+  done < "$SETTINGS"
+fi
+
+export NMAPUI_DATA_DIR="${NMAPUI_DATA_DIR:-$STATE/data}"
+export NMAPUI_LOG_DIR="${NMAPUI_LOG_DIR:-$STATE/logs}"
+export NMAPUI_HOST="${NMAPUI_HOST:-127.0.0.1}"
+export NMAPUI_PORT="${NMAPUI_PORT:-9000}"
+# Never fall back to `sudo nmap`; only the validating helper may run as root.
+export NMAPUI_REQUIRE_SCAN_HELPER="${NMAPUI_REQUIRE_SCAN_HELPER:-true}"
+# No outbound lookups unless the operator opts in.
+export NMAPUI_ENABLE_VULNERS="${NMAPUI_ENABLE_VULNERS:-false}"
+export NMAPUI_ENABLE_UPDATE_CHECK="${NMAPUI_ENABLE_UPDATE_CHECK:-false}"
+export NMAPUI_ENABLE_NETWORK_FINGERPRINT="${NMAPUI_ENABLE_NETWORK_FINGERPRINT:-false}"
+export NMAPUI_SKIP_LEGACY_MIGRATION="${NMAPUI_SKIP_LEGACY_MIGRATION:-1}"
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$STATE/playwright-browsers}"
+if [[ -z "${NMAPUI_PRIVILEGED_ASSETS:-}" && -d /usr/local/share/nmapui ]]; then
+  export NMAPUI_PRIVILEGED_ASSETS=/usr/local/share/nmapui
+fi
+
+umask 077
+mkdir -p "$NMAPUI_DATA_DIR" "$NMAPUI_LOG_DIR"
+
+case "${1:-serve}" in
+  serve)
+    port="$NMAPUI_PORT"
+    [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { echo "Invalid NMAPUI_PORT: $port" >&2; exit 1; }
+    bind_host="$NMAPUI_HOST"
+    [[ "$bind_host" == *:* && "$bind_host" != \[*\] ]] && bind_host="[$bind_host]"
+    cd "$APP_ROOT"
+    exec "$VENV/bin/python" -m gunicorn \
+      --bind "$bind_host:$port" \
+      --workers 1 --threads 100 --timeout 180 --graceful-timeout 30 --no-control-socket \
+      nmapui.wsgi:application
+    ;;
+  install-pdf-browser)
+    # Optional: Chromium for PDF reports (~150 MB download from Playwright's CDN).
+    exec "$VENV/bin/python" -m playwright install chromium
+    ;;
+  paths)
+    echo "app:     $APP_ROOT"
+    echo "data:    $NMAPUI_DATA_DIR"
+    echo "logs:    $NMAPUI_LOG_DIR"
+    echo "url:     http://$NMAPUI_HOST:$NMAPUI_PORT"
+    echo "settings: $SETTINGS"
+    ;;
+  *)
+    echo "usage: nmapui [serve|install-pdf-browser|paths]" >&2; exit 2 ;;
+esac

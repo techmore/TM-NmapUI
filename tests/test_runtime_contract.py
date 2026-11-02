@@ -230,7 +230,7 @@ def test_ci_workflow_covers_browser_and_packaged_smoke_jobs():
     assert "python -m playwright install --with-deps chromium" in ci_source
     assert "pytest -q tests/test_browser_regressions.py" in ci_source
     assert "pytest -q tests/test_packaged_app_smoke.py" in ci_source
-    assert "actions/upload-artifact@v4" in ci_source
+    assert "actions/upload-artifact@v7" in ci_source
 
 
 def test_template_uses_shared_report_status_module():
