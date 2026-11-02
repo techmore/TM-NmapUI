@@ -671,7 +671,7 @@ def test_stop_scan_button_cancels_active_job_and_returns_controls_to_idle(
         assert app_module.job_registry.start(sid, "scan", {"target": "127.0.0.1"})
         app_module.emit_job_status(sid, "scan")
         page.wait_for_function(
-            "() => document.getElementById('start-scan-btn').classList.contains('ring-4')"
+            "() => document.getElementById('start-scan-btn').getAttribute('aria-busy') === 'true'"
         )
         page.evaluate(
             "window.__scanCancelled = null; "
@@ -691,7 +691,7 @@ def test_stop_scan_button_cancels_active_job_and_returns_controls_to_idle(
         app_module.job_registry.complete(sid, "scan", status="cancelled")
         app_module.emit_job_status(sid, "scan")
         page.wait_for_function(
-            "() => !document.getElementById('start-scan-btn').classList.contains('ring-4')"
+            "() => document.getElementById('start-scan-btn').getAttribute('aria-busy') !== 'true'"
         )
         assert page.locator("#start-scan-btn").is_enabled()
     finally:
@@ -1023,7 +1023,9 @@ def test_deep_scan_results_reject_javascript_cve_urls(browser_server, playwright
                 window.__nmapuiDeepScanXss = false;
                 window.updateRowWithResults({
                     ip,
-                    ports: [{ port: 80, service: '<img src=x onerror=window.__nmapuiDeepScanXss=true>' }],
+                    // The service name leads (it shows under Open Ports); the
+                    // product/version text after it lands in the Version column.
+                    ports: [{ port: 80, service: 'http <img src=x onerror=window.__nmapuiDeepScanXss=true>' }],
                     cves: [{
                         id: 'CVE-2026-0001',
                         score: 9.8,
@@ -1249,7 +1251,7 @@ def test_second_tab_replays_active_report_state(browser_server, playwright_brows
                 "() => document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
             )
             page.wait_for_function(
-                "() => !document.getElementById('start-scan-btn').classList.contains('ring-4')"
+                "() => document.getElementById('start-scan-btn').getAttribute('aria-busy') !== 'true'"
             )
     finally:
         app_module.broadcaster.end_job(owner_sid, job_type="report")
@@ -1312,7 +1314,7 @@ def test_second_tab_replays_active_scan_state(browser_server, playwright_browser
                 "() => document.getElementById('report-status-text').textContent.includes('Running quick scan on 198.51.100.0/24')"
             )
             page.wait_for_function(
-                "() => document.getElementById('start-scan-btn').classList.contains('ring-4')"
+                "() => document.getElementById('start-scan-btn').getAttribute('aria-busy') === 'true'"
             )
             page.wait_for_function(
                 "() => !document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
@@ -1466,7 +1468,7 @@ def test_existing_open_tabs_receive_live_report_state(browser_server, playwright
                     "() => document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
                 )
                 page.wait_for_function(
-                    "() => !document.getElementById('start-scan-btn').classList.contains('ring-4')"
+                    "() => document.getElementById('start-scan-btn').getAttribute('aria-busy') !== 'true'"
                 )
                 page.wait_for_function(
                     "() => document.getElementById('report-status-text').textContent.includes('Generating report')"
@@ -1518,7 +1520,7 @@ def test_existing_open_tabs_receive_live_scan_state(browser_server, playwright_b
 
             for page in (first_page, second_page):
                 page.wait_for_function(
-                    "() => document.getElementById('start-scan-btn').classList.contains('ring-4')"
+                    "() => document.getElementById('start-scan-btn').getAttribute('aria-busy') === 'true'"
                 )
                 page.wait_for_function(
                     "() => !document.getElementById('generate-report-btn').classList.contains('card-pulsing')"
@@ -1555,7 +1557,7 @@ def test_completed_scan_job_status_updates_last_duration(browser_server, playwri
         app_module.emit_job_status(owner_sid, "scan")
 
         page.wait_for_function(
-            "() => document.getElementById('start-scan-btn').classList.contains('ring-4')"
+            "() => document.getElementById('start-scan-btn').getAttribute('aria-busy') === 'true'"
         )
         app_module.job_registry.complete(owner_sid, "scan", status="completed")
         app_module.emit_job_status(owner_sid, "scan")
