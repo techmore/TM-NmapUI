@@ -82,23 +82,40 @@ function showReportActions(path) {
 
 let reportStatusHideTimer = null;
 
-function showReportStatus(message, type) {
+const REPORT_STATUS_TONES = {
+    info: ['bg-white', 'border-olive-300', 'border-l-olive-600', 'text-olive-900'],
+    success: ['bg-emerald-50', 'border-emerald-300', 'border-l-emerald-700', 'text-emerald-900'],
+    error: ['bg-red-50', 'border-red-300', 'border-l-red-700', 'text-red-900'],
+};
+
+// Progress lines name the bundled NSE script by its absolute install path;
+// the strip shows the file name (the audit log keeps the full command).
+function shortenStatusPaths(message) {
+    return String(message ?? '').replace(/(?:\/[^\s/]+)+\/([^\s/]+\.nse)\b/g, '$1');
+}
+
+function hideReportStatus() {
+    if (reportStatusHideTimer) {
+        clearTimeout(reportStatusHideTimer);
+        reportStatusHideTimer = null;
+    }
+    document.getElementById('report-status')?.classList.add('hidden');
+}
+
+function showReportStatus(message, type, options = {}) {
     const statusDiv = document.getElementById('report-status');
     const statusText = document.getElementById('report-status-text');
+    const tone = REPORT_STATUS_TONES[type] ? type : 'info';
 
-    statusDiv.classList.remove('hidden', 'bg-olive-100', 'bg-olive-200', 'bg-red-100', 'text-olive-800', 'text-olive-900', 'text-red-800');
-    statusDiv.classList.add(
-        type === 'error' ? 'bg-red-100' : 'bg-olive-100',
-        type === 'error' ? 'text-red-800' :
-        type === 'success' ? 'text-olive-900' :
-        'text-olive-800'
-    );
+    statusDiv.classList.remove('hidden', 'bg-olive-100', 'bg-olive-200', 'bg-red-100', 'text-olive-800', 'text-red-800',
+        ...new Set(Object.values(REPORT_STATUS_TONES).flat()));
+    statusDiv.classList.add(...REPORT_STATUS_TONES[tone]);
     // Errors interrupt assistive technology; progress and success are polite.
     statusDiv.setAttribute('role', type === 'error' ? 'alert' : 'status');
     statusDiv.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
     statusDiv.dataset.statusType = type || 'info';
 
-    statusText.textContent = message;
+    statusText.textContent = shortenStatusPaths(message);
 
     if (type !== 'success') {
         clearReportStatusActions();
@@ -108,19 +125,21 @@ function showReportStatus(message, type) {
         clearTimeout(reportStatusHideTimer);
         reportStatusHideTimer = null;
     }
-    if (type === 'success' || type === 'error') {
-        // Give errors long enough to be read before they clear.
-        const hideAfter = type === 'error' ? 12000 : 5000;
+    // Errors stay until dismissed or replaced (WCAG 2.2.1); a plain success
+    // note may clear itself, but never once report links are attached.
+    if (type === 'success' && !options.persist) {
         reportStatusHideTimer = setTimeout(() => {
+            const actions = document.getElementById('report-status-actions');
+            if (actions && !actions.classList.contains('hidden') && actions.children.length) return;
             statusDiv.classList.add('hidden');
             reportStatusHideTimer = null;
-        }, hideAfter);
+        }, 8000);
     }
 }
 
 function showReportCompleteStatus(data) {
     removeReportProgressCard();
-    showReportStatus(window.formatReportCompleteMessage(data), 'success');
+    showReportStatus(window.formatReportCompleteMessage(data), 'success', { persist: true });
     showReportActions(data?.path);
 }
 
@@ -130,4 +149,5 @@ window.removeReportProgressCard = removeReportProgressCard;
 window.clearReportStatusActions = clearReportStatusActions;
 window.showReportActions = showReportActions;
 window.showReportStatus = showReportStatus;
+window.hideReportStatus = hideReportStatus;
 window.showReportCompleteStatus = showReportCompleteStatus;

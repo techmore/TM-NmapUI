@@ -454,6 +454,7 @@ function initializeDiscoveryUI(socket) {
                 if (!cell) break;
                 renderCveArrayCell(cell, data.cve_array || [], { ip: data.target });
                 mergeHostRecord(data.target, { vulnerabilities: data.cve_array || [] });
+                if (typeof updateDeepScanStats === 'function') updateDeepScanStats();
                 break;
             }
         }
@@ -480,8 +481,23 @@ function initializeDiscoveryUI(socket) {
         document.getElementById('quick-hosts').textContent = data.hosts_up;
     });
 
+    // A host whose service scan timed out would otherwise just look empty.
+    socket.on('deep_scan_host_complete', data => {
+        if (data?.status !== 'incomplete' || !data.ip) return;
+        const row = window.discoveryRowsByIp?.get(data.ip)
+            || Array.from(document.querySelectorAll('#discovery-table tbody tr')).find(r => getDiscoveryTableCell(r, 'ip')?.textContent === data.ip);
+        const cell = row && getDiscoveryTableCell(row, 'open_ports');
+        if (!cell || cell.textContent.trim()) return;
+        const note = document.createElement('div');
+        note.className = 'text-xs font-medium text-amber-800';
+        note.textContent = 'Service scan incomplete. Use Rescan to retry this host.';
+        cell.replaceChildren(note);
+    });
+
     socket.on('deep_scan_results', data => {
         data.forEach(updateRowWithResults);
+        // The Deep Scan card has no server progress events of its own.
+        if (typeof updateDeepScanStats === 'function') updateDeepScanStats();
         saveHostsToStorage();
         updateLastScanResults('deepScan', data);
         if (window.tableSorter) window.tableSorter.resort();
@@ -664,7 +680,22 @@ function initializeDiscoveryEmptyState() {
     new MutationObserver(syncDiscoveryEmptyState).observe(tbody, { childList: true });
 }
 
+// The empty state has three messages: before any scan, while one runs, and
+// after a scan that found nothing (so "Enter a target above" never follows a
+// finished scan).
+function setDiscoveryEmptyVariant(variant, target) {
+    const emptyState = document.getElementById('discovery-empty-state');
+    if (!emptyState) return;
+    emptyState.querySelectorAll('[data-empty-variant]').forEach(block => {
+        block.hidden = block.dataset.emptyVariant !== variant;
+    });
+    if (target) {
+        emptyState.querySelectorAll('[data-empty-target]').forEach(el => { el.textContent = target; });
+    }
+}
+
 window.syncDiscoveryEmptyState = syncDiscoveryEmptyState;
+window.setDiscoveryEmptyVariant = setDiscoveryEmptyVariant;
 
 function formatReportCompleteMessage(data) {
     const scanDir = data?.scan_dir || 'saved scan folder';

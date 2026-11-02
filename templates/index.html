@@ -304,6 +304,13 @@
         top: 1rem;
     }
 
+    /* The start button of the scan that is running: full strength with a ring,
+       while the other start buttons dim (scan_runtime.js setScanUIActive). */
+    .scan-button-running {
+        cursor: progress;
+        box-shadow: 0 0 0 3px oklch(96% 0.015 110), 0 0 0 6px oklch(50% 0.065 110);
+    }
+
     /* Controls that exist in the layout but have no backend yet (issue #10). */
     .control-unavailable {
         opacity: 0.45;
@@ -342,7 +349,8 @@
         color: oklch(22% 0.025 110);
     }
 
-    .results-empty-state ol {
+    .results-empty-state ol,
+    .results-empty-state ul {
         display: inline-block;
         margin-top: 1rem;
         text-align: left;
@@ -1466,8 +1474,13 @@
         </div>
     </div>
 
-    <div id="report-status" class="hidden mt-4 p-4 rounded-lg" role="status" aria-live="polite">
-        <p id="report-status-text" class="text-sm font-medium"></p>
+    <div id="report-status" class="hidden mt-4 rounded-lg border border-l-4 bg-white border-olive-300 border-l-olive-600 text-olive-900 py-3 pl-4 pr-2" role="status" aria-live="polite">
+        <div class="flex items-start gap-3">
+            <p id="report-status-text" class="min-w-0 flex-1 py-1 text-sm font-medium [overflow-wrap:anywhere]"></p>
+            <button type="button" data-action="hideReportStatus" class="icon-button size-8 shrink-0" aria-label="Dismiss message">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+        </div>
         <div id="report-status-actions" class="hidden mt-3 flex flex-wrap gap-2"></div>
     </div>
 
@@ -1626,13 +1639,28 @@
     <section id="dashboard-results-panel" class="page-shell" aria-label="Scan results">
         <div class="results-band">
         <div id="discovery-empty-state" class="results-empty-state">
-            <h3 class="font-display italic">No hosts discovered yet</h3>
-            <p class="mt-2 text-sm">Results appear here as soon as a scan finds live hosts.</p>
-            <ol class="list-decimal pl-5">
-                <li>Enter a target above (for example <code>192.168.1.0/24</code> or a hostname).</li>
-                <li>Choose <strong>Quick Scan</strong> for discovery or <strong>Complete + PDF</strong> for ports, services and CVEs.</li>
-                <li>Use <strong>Archive</strong> to reopen a saved scan instead.</li>
-            </ol>
+            <div data-empty-variant="initial">
+                <h3 class="font-display italic">No hosts discovered yet</h3>
+                <p class="mt-2 text-sm">Results appear here as soon as a scan finds live hosts.</p>
+                <ol class="list-decimal pl-5">
+                    <li>Enter a target above (for example <code>192.168.1.0/24</code> or a hostname).</li>
+                    <li>Choose <strong>Quick Scan</strong> for discovery or <strong>Complete + PDF</strong> for ports, services and CVEs.</li>
+                    <li>Use <strong>Archive</strong> to reopen a saved scan instead.</li>
+                </ol>
+            </div>
+            <div data-empty-variant="scanning" hidden>
+                <h3 class="font-display italic">Scanning <span data-empty-target></span></h3>
+                <p class="mt-2 text-sm">Hosts appear here as they respond. Progress messages show above the results.</p>
+            </div>
+            <div data-empty-variant="no-hosts" hidden>
+                <h3 class="font-display italic">No live hosts responded</h3>
+                <p class="mt-2 text-sm">The scan of <code data-empty-target></code> finished without any host answering discovery probes.</p>
+                <ul class="list-disc pl-5">
+                    <li>Check the target, and that this scanner is connected to that network.</li>
+                    <li>Without administrator privileges, discovery only probes TCP 80 and 443, so quiet hosts can be missed.</li>
+                    <li>For known hosts that block probes, turn on <strong>Scan known targets without host discovery</strong> in Settings, then scan again.</li>
+                </ul>
+            </div>
         </div>
         <table id="discovery-table" class="table-fixed w-full min-w-[70rem] hidden">
                         <caption class="sr-only">Discovered hosts, open ports and vulnerabilities</caption>
