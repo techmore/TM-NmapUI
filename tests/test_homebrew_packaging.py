@@ -104,3 +104,26 @@ def test_server_paths_command_uses_user_state(tmp_path):
     out = subprocess.run([str(BREW / "nmapui-server"), "paths"], env=env, capture_output=True, text=True, check=True).stdout
     assert str(tmp_path) in out
     assert "127.0.0.1:9000" in out
+
+
+def test_server_settings_file_is_parsed_not_sourced(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    marker = tmp_path / "pwned"
+    (state / "nmapui.env").write_text(
+        "# comment\nNMAPUI_PORT=9123\nNMAPUI_PASSWORD=a=b$(touch %s)\nPATH=/evil\n" % marker
+    )
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "NMAPUI_STATE_DIR": str(state)}
+    result = subprocess.run([str(BREW / "nmapui-server"), "paths"], env=env, capture_output=True, text=True, check=True)
+    assert "127.0.0.1:9123" in result.stdout
+    assert "ignoring unsupported setting 'PATH'" in result.stderr
+    assert not marker.exists()
+
+
+def test_environment_wins_over_settings_file(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "nmapui.env").write_text("NMAPUI_PORT=9123\n")
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "NMAPUI_STATE_DIR": str(state), "NMAPUI_PORT": "9555"}
+    out = subprocess.run([str(BREW / "nmapui-server"), "paths"], env=env, capture_output=True, text=True, check=True).stdout
+    assert "127.0.0.1:9555" in out

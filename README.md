@@ -79,7 +79,10 @@ dependencies; it does not clone `main`. The web service always runs as your
 user and refuses to start as root. Data and logs live in
 `~/Library/Application Support/NmapUI-brew` (`nmapui paths` shows them).
 Outbound lookups (Vulners, update checks, public-IP/traceroute fingerprinting)
-are off unless you enable them.
+are off unless you enable them. To change the port or credentials, or enable
+those lookups, put `KEY=VALUE` lines (for example `NMAPUI_PORT=9010`) in
+`~/Library/Application Support/NmapUI-brew/nmapui.env` and run
+`brew services restart nmapui`.
 
 Without privileges, NmapUI uses connect scans and TCP ping discovery. SYN
 scans, OS detection and ARP discovery need root for nmap only, never for the
