@@ -8,6 +8,7 @@ import tempfile
 import subprocess
 
 from nmapui.runtime_log import append_runtime_log
+from nmapui import privileged
 from nmapui.runtime import env_flag
 import ipaddress
 from nmapui.reporting import (
@@ -256,6 +257,34 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False, skip_host_dis
         raise
 
 
+def merge_arp_only_hosts(hosts, arp_data, target):
+    """Add hosts that answered ARP but not Nmap's ping probes.
+
+    Only addresses inside an IP/CIDR target are added; other target forms
+    (ranges, hostnames) are left as Nmap reported them. Returns the new hosts.
+    """
+    try:
+        network = ipaddress.ip_network(str(target).strip(), strict=False)
+    except ValueError:
+        return []
+    known = {host["ip"] for host in hosts}
+    added = []
+    for ip in arp_data or {}:
+        try:
+            address = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if ip in known or address not in network:
+            continue
+        if network.num_addresses > 2 and address in (network.network_address, network.broadcast_address):
+            continue
+        host = {"ip": ip, "hostname": "", "status": "up", "ports": [], "discovered_by": "arp"}
+        hosts.append(host)
+        known.add(ip)
+        added.append(host)
+    return added
+
+
 def _finalize_scan_job_if_active(context, sid):
     """Close running or cancelling scans even when cancellation races completion."""
     job = context.job_registry.get(sid, "scan")
@@ -324,24 +353,38 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
             progress=5,
         )
         emit_to_client(sid, "quick_scan_start", f"Starting quick scan on {target}")
-        command_str = f"nmap -sn {'-Pn ' if skip_host_discovery else ''}{target}"
-        emit_to_client(sid, "scan_feedback", f"Executing: {command_str}")
-        logger.info(command_str)
-        socketio_sleep(0)
-
-        cmd = ["nmap", "-sn", target]
-        if skip_host_discovery:
-            cmd.insert(2, "-Pn")
-            emit_to_client(sid, "scan_feedback", "Host discovery is disabled; known targets may be scanned even when they do not respond to discovery probes.")
+        discovery_options = []
         if excluded_targets:
             exclusion_arg = ",".join(excluded_targets)
-            cmd[1:1] = ["--exclude", exclusion_arg]
+            discovery_options.extend(["--exclude", exclusion_arg])
             emit_to_client(
                 sid,
                 "scan_feedback",
                 f"Applying exclusions to quick scan: {exclusion_arg}",
             )
-        output = run_cancellable_command(cmd, sid=sid, job_type="scan").stdout
+        if skip_host_discovery:
+            discovery_options.append("-Pn")
+            emit_to_client(sid, "scan_feedback", "Host discovery is disabled; known targets may be scanned even when they do not respond to discovery probes.")
+
+        # Unprivileged `nmap -sn` only tries TCP 80/443, so hosts with neither
+        # port open look down. With privileges, nmap uses ARP on local subnets.
+        # Scan-only mode stays unprivileged by design.
+        discovery_prefix = [] if scan_only_mode else privileged.privileged_prefix()
+        cmd = privileged.nmap_argv("-sn", discovery_options, target, prefix=discovery_prefix)
+        command_str = " ".join(cmd)
+        emit_to_client(sid, "scan_feedback", f"Executing: {command_str}")
+        logger.info(command_str)
+        socketio_sleep(0)
+
+        result = run_cancellable_command(cmd, sid=sid, job_type="scan")
+        if discovery_prefix and getattr(result, "returncode", 0) != 0 and privileged.is_permission_denied(result):
+            message = "Privileged discovery denied; retrying unprivileged (hosts without TCP 80/443 open may be missed)"
+            logger.warning(message)
+            emit_to_client(sid, "scan_feedback", message)
+            socketio_sleep(0)
+            cmd = privileged.nmap_argv("-sn", discovery_options, target, prefix=[])
+            result = run_cancellable_command(cmd, sid=sid, job_type="scan")
+        output = result.stdout
         lines = output.split("\n")
 
         hosts, current_host = [], None
@@ -405,6 +448,15 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
             emit_to_client(sid, "arp_scan_start")
             socketio_sleep(0)
             arp_data = run_arp_scan(target, sid=sid)
+            if not skip_host_discovery:
+                added = merge_arp_only_hosts(hosts, arp_data, target)
+                if added:
+                    sorted_hosts = sorted(hosts, key=lambda host: ip_sort_key(host["ip"]))
+                    emit_to_client(
+                        sid,
+                        "scan_feedback",
+                        f"ARP found {len(added)} live host(s) that did not answer Nmap's ping probes; including them.",
+                    )
             for host in sorted_hosts:
                 if host["ip"] in arp_data:
                     host["mac"] = arp_data[host["ip"]]["mac"]
