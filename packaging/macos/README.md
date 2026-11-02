@@ -14,6 +14,41 @@ Launch a normal (non-root) SwiftUI macOS app, run privileged Nmap operations thr
 - After install, interactive and scheduled scans need no further password prompts.
 - Quick host discovery can run without the helper.
 
+### Privileged helper security
+
+The helper (`Sources/NmapPrivilegedHelper`) is the root boundary, so it trusts
+nothing the client controls:
+
+- **Callers.** It accepts an XPC client only if the client's code, looked up
+  by audit token, satisfies
+  `anchor apple generic and identifier "com.techmore.nmapui" and certificate leaf[subject.OU] = "<TEAM>"`
+  and is signed with the hardened runtime. `<TEAM>` is the helper's own
+  signing team, so the requirement is chosen at build time by
+  `CODESIGN_IDENTITY` (see Build). A helper signed ad-hoc has no team and
+  refuses every client; the app then reports that privileged scans need a
+  signed build instead of prompting for an install.
+- **Files.** The client never names a file. `-oX`/`-oG` take fixed artifact
+  names, targets travel in the request, and the helper creates every file
+  (`O_CREAT|O_EXCL|O_NOFOLLOW`) in a fresh 0700 directory under
+  `/Library/Application Support/NmapUI/helper-runs`, then returns the
+  contents. The app writes them into its work directory as the user. Live
+  phase-2 progress comes from the helper's `progress` call.
+- **Code nmap loads.** The helper runs only
+  `/Library/PrivilegedHelperTools/com.techmore.nmapui.nmap`, and refuses it
+  unless the binary and every library it loads (resolved like dyld) are
+  root-owned and read-only. It passes `--datadir` to a root-owned copy of
+  nmap's data (NSE Lua) and starts nmap with a rebuilt environment that points
+  OpenSSL's config, provider modules and engines, and Lua's search paths, at
+  root-owned locations.
+- **Install.** `PrivilegedNmapInstallPlan` copies the user's nmap, its
+  non-system libraries and OpenSSL's `legacy` provider into
+  `/Library/PrivilegedHelperTools/com.techmore.nmapui.nmap-libs`, rewrites
+  their install names with `install_name_tool` (Command Line Tools), and
+  copies `share/nmap` to `/Library/Application Support/NmapUI/nmap-data`.
+  The helper binary is copied unchanged, so its signature and SHA-256 are
+  kept; the app reinstalls unless the installed bytes, or the daemon's stamp
+  hash, match the bundled helper exactly.
+
 ### UI model
 
 - The dashboard, scan controls, history, reports, settings, and customer workflows are native SwiftUI.
@@ -57,9 +92,18 @@ CODESIGN_IDENTITY=- ./bundle.sh
 `debug`). Temporary assets follow the bundle output directory. The bundle
 contains all four SwiftPM products, the resource bundle, icon, report styles
 and runtime assets. `codesign --verify --deep --strict /path/NmapUI.app` verifies
-its local signatures. Ad-hoc signing (`-`) provides local integrity checks;
-Developer ID signing, notarization and installed-helper authorization require
-separate distribution qualification.
+its local signatures. Ad-hoc signing (`-`) provides local integrity checks
+but no privileged scans: the root helper accepts only clients signed by its own
+Apple team. For a build that runs privileged scans, sign with a team identity,
+which also turns on the hardened runtime for the app and helper:
+
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID1234)" ./bundle.sh
+```
+
+Any identity issued by Apple works (Developer ID for distribution, Apple
+Development for local testing), as long as the app and helper are signed
+together. Notarization still requires separate distribution qualification.
 
 `bundle_version.py` validates VERSION before build/cleanup. Marketing metadata
 is numeric `YYYY.M.D`; build metadata is `YYYY.M.P`, where

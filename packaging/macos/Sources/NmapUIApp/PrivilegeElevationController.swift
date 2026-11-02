@@ -38,6 +38,11 @@ enum PrivilegeElevationController {
         guard interactive else {
             throw PrivilegeHelperClient.ClientError.notAvailable
         }
+        // The helper only trusts clients signed by its own team; don't ask
+        // for Touch ID or an administrator when that can never succeed.
+        guard PrivilegeHelperClient.runningAppTeamIdentifier != nil else {
+            throw PrivilegeHelperClient.ClientError.unsignedBuild
+        }
         try await confirmWithBiometrics(reason: "Authorize NmapUI to install its privileged scanner helper.")
         try await PrivilegeHelperClient.ensureInstalled()
         RuntimeDiagnosticsLogger.log("Privileged nmap helper is ready")
