@@ -311,6 +311,24 @@
     }
 
     /* Empty state shown in place of the results table until hosts arrive. */
+    /* Results table: fixed column widths keep every column, including CVEs and
+       actions, inside a 1440px window; long values wrap instead of widening it. */
+    #discovery-table th,
+    #discovery-table td { padding-inline: 0.625rem; }
+    #discovery-table th[data-column="status"] { width: 2rem; }
+    #discovery-table th[data-column="ip"] { width: 7.5rem; }
+    #discovery-table th[data-column="mac"] { width: 8.5rem; }
+    #discovery-table th[data-column="vendor"] { width: 7rem; }
+    #discovery-table th[data-column="hostname"] { width: 8.5rem; }
+    #discovery-table th[data-column="open_ports"] { width: 7.5rem; }
+    #discovery-table th[data-column="cves"] { width: 12.5rem; }
+    #discovery-table th[data-column="actions"] { width: 6.5rem; }
+    #discovery-table td {
+        vertical-align: top;
+        overflow-wrap: anywhere;
+    }
+    #discovery-table td[data-column="mac"] { font-size: 11px; }
+
     .results-empty-state {
         margin-inline: auto;
         max-width: 36rem;
@@ -1301,12 +1319,12 @@
                 <!-- CVE Vulnerabilities Section -->
                 <div id="asset-cve-section" class="bg-amber-50 p-4 rounded-lg border border-amber-200 hidden">
                     <h3 class="text-lg font-display italic text-amber-900 mb-3 flex items-center">
-                        <svg class="w-5 h-5 mr-2 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg class="w-5 h-5 mr-2 text-amber-600" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                         </svg>
-                        Vulnerabilities (<span id="asset-cve-count">0</span> CVEs)
+                        <span>Vulnerabilities (<span id="asset-cve-count">0</span>)</span>
                     </h3>
-                    <div id="asset-detail-cves" class="space-y-2 max-h-64 overflow-y-auto">
+                    <div id="asset-detail-cves" class="space-y-2">
                         <!-- CVEs will be populated here -->
                     </div>
                 </div>
@@ -1616,11 +1634,11 @@
                 <li>Use <strong>Archive</strong> to reopen a saved scan instead.</li>
             </ol>
         </div>
-        <table id="discovery-table" class="table-fixed min-w-[2400px] hidden">
+        <table id="discovery-table" class="table-fixed w-full min-w-[70rem] hidden">
                         <caption class="sr-only">Discovered hosts, open ports and vulnerabilities</caption>
                         <thead>
                             <tr>
-                                <th class="w-12 px-4 py-3 text-left" data-column="status" data-fixed="true"></th>
+                                <th class="px-4 py-3 text-left" data-column="status" data-fixed="true"><span class="sr-only">Status</span></th>
                                 <th class="sortable px-4 py-3 text-left cursor-pointer hover:bg-olive-100 transition-colors group" data-column="ip" data-type="ip" title="Drag to reorder">
                                     <div class="flex items-center space-x-1">
                                         <span>IP Address</span>
@@ -1634,7 +1652,7 @@
                                         </div>
                                     </div>
                                 </th>
-                                <th class="sortable px-4 py-3 text-left hidden md:table-cell cursor-pointer hover:bg-olive-100 transition-colors group" data-column="mac" data-type="mac" title="Drag to reorder">
+                                <th class="sortable px-4 py-3 text-left cursor-pointer hover:bg-olive-100 transition-colors group" data-column="mac" data-type="mac" title="Drag to reorder">
                                     <div class="flex items-center space-x-1">
                                         <span>MAC Address</span>
                                         <div class="sort-indicators opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1647,7 +1665,7 @@
                                         </div>
                                     </div>
                                 </th>
-                                <th class="sortable px-4 py-3 text-left hidden lg:table-cell cursor-pointer hover:bg-olive-100 transition-colors group" data-column="vendor" data-type="text" title="Drag to reorder">
+                                <th class="sortable px-4 py-3 text-left cursor-pointer hover:bg-olive-100 transition-colors group" data-column="vendor" data-type="text" title="Drag to reorder">
                                     <div class="flex items-center space-x-1">
                                         <span>Vendor</span>
                                         <div class="sort-indicators opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1660,7 +1678,7 @@
                                         </div>
                                     </div>
                                 </th>
-                                <th class="sortable px-4 py-3 text-left max-w-[150px] cursor-pointer hover:bg-olive-100 transition-colors group" data-column="hostname" data-type="text" title="Drag to reorder">
+                                <th class="sortable px-4 py-3 text-left cursor-pointer hover:bg-olive-100 transition-colors group" data-column="hostname" data-type="text" title="Drag to reorder">
                                     <div class="flex items-center space-x-1">
                                         <span>Hostname</span>
                                         <div class="sort-indicators opacity-0 group-hover:opacity-100 transition-opacity">

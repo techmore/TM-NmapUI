@@ -825,7 +825,7 @@ def test_frontend_layout_guide_and_page_shell_exist():
     assert template.count('class="page-shell"') >= 2
     assert 'class="results-band"' in template
     # The table starts hidden behind #discovery-empty-state until rows exist.
-    assert 'class="table-fixed min-w-[2400px] hidden"' in template
+    assert 'class="table-fixed w-full min-w-[70rem] hidden"' in template
     assert template.count("modal-overlay") >= 6
     assert template.count("modal-panel") >= 6
     assert template.count("form-control form-control-md") >= 10
@@ -1730,7 +1730,7 @@ def test_template_uses_dom_helpers_for_scan_result_rendering():
     reports_tab_module = (ROOT / "static" / "js" / "reports_tab.js").read_text()
     settings_tab_module = (ROOT / "static" / "js" / "settings_tab.js").read_text()
 
-    assert "function renderCveArrayCell(cell, cveArray)" in discovery_module
+    assert "function renderCveArrayCell(cell, cveArray, options = {})" in discovery_module
     assert "function appendServiceInfoLine(cell, line)" in discovery_module
     assert "function renderDelimitedCell(cell, items, options = {})" in discovery_module
     assert "function formatReportCompleteMessage(data)" in discovery_module
