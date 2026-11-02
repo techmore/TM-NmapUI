@@ -15,11 +15,8 @@ from customer_fingerprint_store import (
 )
 from nmapui.paths import CUSTOMER_CONFIG_FILE, CUSTOMER_TRACEROUTES_FILE, DATA_DIR
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# No logging.basicConfig() here: this module is imported by app.py, and a
+# root handler added at import time printed every log line twice.
 logger = logging.getLogger(__name__)
 
 class CustomerFingerprinter:
