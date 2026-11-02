@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
@@ -25,12 +26,32 @@ from nmapui.validation import DEFAULT_MAX_TARGETS, count_target_addresses
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_SERVICE_SCAN_HOST_TIMEOUT = 120
+SERVICE_SCAN_DEADLINE_GRACE = 15
+
+
+def service_scan_host_timeout() -> int:
+    """Per-host service-scan limit in seconds (NMAPUI_SERVICE_SCAN_HOST_TIMEOUT).
+
+    Some devices need longer than the default: a live office /24 had hosts that
+    took 107-211 s for `-T3 -sV`, which the 120 s default reported as incomplete.
+    Values outside 30-3600 fall back to the default.
+    """
+    raw = os.environ.get("NMAPUI_SERVICE_SCAN_HOST_TIMEOUT", "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_SERVICE_SCAN_HOST_TIMEOUT
+    return value if 30 <= value <= 3600 else DEFAULT_SERVICE_SCAN_HOST_TIMEOUT
+
+
 def _run_deep_scan_with_xml(context, cmd, sid, target):
     """Keep normal text output and capture original XML for the approved PDF."""
+    host_timeout = service_scan_host_timeout()
     with tempfile.TemporaryDirectory(prefix="nmapui-evidence-") as directory:
         xml_path = Path(directory) / "scan.xml"
-        argv = list(cmd[:-1]) + ["--host-timeout", "120s", "-oX", str(xml_path), cmd[-1]]
-        result = context.run_cancellable_command(argv, sid=sid, job_type="scan", timeout=135)
+        argv = list(cmd[:-1]) + ["--host-timeout", f"{host_timeout}s", "-oX", str(xml_path), cmd[-1]]
+        result = context.run_cancellable_command(argv, sid=sid, job_type="scan", timeout=host_timeout + SERVICE_SCAN_DEADLINE_GRACE)
         if xml_path.is_file():
             size = xml_path.stat().st_size
             if 0 < size <= 16 * 1024 * 1024:
@@ -188,7 +209,7 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False, skip_host_dis
                 output = result.stdout
                 incomplete = getattr(result, "returncode", 0) != 0 or "due to host timeout" in output.lower()
             except subprocess.TimeoutExpired:
-                output = "Service scan exceeded the 135 second process deadline."
+                output = f"Service scan exceeded the {service_scan_host_timeout() + SERVICE_SCAN_DEADLINE_GRACE} second process deadline."
                 incomplete = True
             if incomplete:
                 emit_to_client(sid, "scan_raw_output", {"target": target, "output": output})

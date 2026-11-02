@@ -148,6 +148,14 @@ Optional Google Drive export uses per-file OAuth access and resumable uploads.
 See [Drive setup, behavior and production requirements](docs/guides/GOOGLE_DRIVE.md)
 for consent, disconnect, retry limits and verification evidence.
 
+### Service-scan time limit
+
+Each host's service scan (`nmap -T3 -sV`) stops after
+`NMAPUI_SERVICE_SCAN_HOST_TIMEOUT` seconds (default 120, allowed 30–3600) and
+is reported as incomplete. Some devices need longer: on one office /24, hosts
+took 107–211 s. Raising the limit makes whole-network scans slower, since hosts
+are scanned one at a time.
+
 ### Vulnerability enrichment and data egress
 
 Complete scans can query Vulners.com over HTTPS for CVE matches. The bundled
