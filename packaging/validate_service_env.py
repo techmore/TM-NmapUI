@@ -23,6 +23,7 @@ ALLOWED_SETTINGS = frozenset(
         "NMAPUI_RUNTIME_LOGS_KEEP_LATEST",
         "NMAPUI_CUSTOMER_HISTORY_KEEP_LATEST",
         "NMAPUI_FINISHED_JOBS_KEEP_LATEST",
+        "NMAPUI_SERVICE_SCAN_HOST_TIMEOUT",
         "NMAPUI_ALLOW_UNSAFE_WERKZEUG",
         "NMAPUI_STARTUP_TRACEROUTE",
         "NMAPUI_ENABLE_NETWORK_FINGERPRINT",
@@ -81,6 +82,12 @@ def validate_service_env(
             raise ValueError(
                 f"{name} must be a positive integer no greater than "
                 f"{MAX_SERVICE_LIMIT} in {path}"
+            )
+    if "NMAPUI_SERVICE_SCAN_HOST_TIMEOUT" in values:
+        timeout = values["NMAPUI_SERVICE_SCAN_HOST_TIMEOUT"]
+        if not re.fullmatch(r"[0-9]{2,4}", timeout) or not 30 <= int(timeout) <= 3600:
+            raise ValueError(
+                f"NMAPUI_SERVICE_SCAN_HOST_TIMEOUT must be seconds from 30 to 3600 in {path}"
             )
     boolean_settings = (
         "NMAPUI_TRUST_LOCAL_UI",
