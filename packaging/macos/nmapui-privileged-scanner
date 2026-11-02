@@ -138,6 +138,20 @@ def _validate_exclude_list(value):
     return value
 
 
+# nmap reads --script as a comma-separated list or boolean expression
+# ("a.nse,/tmp/b.nse", "x or all"), so only a single plain path is allowed.
+ASSET_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
+
+
+def _validate_asset_file(value, *, what):
+    if not value or not ASSET_PATH_RE.match(value):
+        raise Rejected("%s must be a single plain asset path (got %r)" % (what, value))
+    resolved = _validate_contained_path(value, root=ASSET_DIR, what=what)
+    if not os.path.isfile(resolved):
+        raise Rejected("%s must be an existing asset file (got %s)" % (what, resolved))
+    return resolved
+
+
 def _validate_contained_path(value, *, root, what):
     if not value:
         raise Rejected("empty path for %s" % what)
@@ -216,7 +230,7 @@ def build_argv(request):
         if arg in (NMAP_SCRIPT_FLAG, NMAP_STYLESHEET_FLAG):
             if index + 1 >= len(args):
                 raise Rejected("%s needs a value" % arg)
-            output.extend([arg, _validate_contained_path(args[index + 1], root=ASSET_DIR, what=arg)])
+            output.extend([arg, _validate_asset_file(args[index + 1], what=arg)])
             index += 2
             continue
 
