@@ -19,7 +19,7 @@ struct MachOLinkageTests {
     /// root/opt/lib/libcrypto.3.dylib, root/opt/lib/ossl-modules/legacy.dylib
     /// (links libcrypto), root/opt/bin/tool (links libcrypto by absolute path
     /// and libextra by @rpath), and root/opt/share/nmap.
-    private func makeFixture() throws -> Fixture {
+    private func makeFixture() async throws -> Fixture {
         let root = try PrivilegedTestSupport.makeTemporaryDirectory()
         let lib = root.appendingPathComponent("opt/lib")
         let modules = lib.appendingPathComponent("ossl-modules")
@@ -28,13 +28,13 @@ struct MachOLinkageTests {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         let crypto = lib.appendingPathComponent("libcrypto.3.dylib")
-        try PrivilegedTestSupport.compile("int crypto_value(void) { return 7; }", to: crypto, arguments: ["-dynamiclib", "-Wl,-headerpad_max_install_names", "-install_name", crypto.path])
+        try await PrivilegedTestSupport.compile("int crypto_value(void) { return 7; }", to: crypto, arguments: ["-dynamiclib", "-Wl,-headerpad_max_install_names", "-install_name", crypto.path])
         let extra = lib.appendingPathComponent("libextra.dylib")
-        try PrivilegedTestSupport.compile("int extra_value(void) { return 5; }", to: extra, arguments: ["-dynamiclib", "-Wl,-headerpad_max_install_names", "-install_name", "@rpath/libextra.dylib"])
+        try await PrivilegedTestSupport.compile("int extra_value(void) { return 5; }", to: extra, arguments: ["-dynamiclib", "-Wl,-headerpad_max_install_names", "-install_name", "@rpath/libextra.dylib"])
         let legacy = modules.appendingPathComponent("legacy.dylib")
-        try PrivilegedTestSupport.compile("int crypto_value(void); int legacy_value(void) { return crypto_value(); }", to: legacy, arguments: ["-dynamiclib", "-Wl,-headerpad_max_install_names", "-L", lib.path, "-lcrypto.3"])
+        try await PrivilegedTestSupport.compile("int crypto_value(void); int legacy_value(void) { return crypto_value(); }", to: legacy, arguments: ["-dynamiclib", "-Wl,-headerpad_max_install_names", "-L", lib.path, "-lcrypto.3"])
         let tool = bin.appendingPathComponent("tool")
-        try PrivilegedTestSupport.compile(
+        try await PrivilegedTestSupport.compile(
             "#include <stdio.h>\nint crypto_value(void); int extra_value(void);\nint main(void) { printf(\"%d\\n\", crypto_value() + extra_value()); return 0; }",
             to: tool,
             arguments: ["-L", lib.path, "-lcrypto.3", "-lextra", "-Wl,-rpath,@loader_path/../lib", "-Wl,-headerpad_max_install_names"]
@@ -44,8 +44,8 @@ struct MachOLinkageTests {
     }
 
     @Test("load commands, rpaths and universal slices are parsed")
-    func parsesLoadCommands() throws {
-        let fixture = try makeFixture()
+    func parsesLoadCommands() async throws {
+        let fixture = try await makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let images = try MachOLinkage.parse(contentsOf: fixture.tool)
         let names = images.flatMap(\.libraries).map(\.installName)
@@ -60,8 +60,8 @@ struct MachOLinkageTests {
     }
 
     @Test("@rpath and @loader_path resolve like dyld")
-    func resolvesClosure() throws {
-        let fixture = try makeFixture()
+    func resolvesClosure() async throws {
+        let fixture = try await makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let closure = MachOLinkage.closure(ofExecutable: fixture.tool.path)
         #expect(closure.problems.isEmpty)
@@ -70,8 +70,8 @@ struct MachOLinkageTests {
     }
 
     @Test("a program that links user-owned libraries is refused; system binaries are not")
-    func userOwnedLibrariesAreRefused() throws {
-        let fixture = try makeFixture()
+    func userOwnedLibrariesAreRefused() async throws {
+        let fixture = try await makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let problems = MachOLinkage.untrustedLinkage(ofExecutable: fixture.tool.path)
         #expect(problems.contains { $0.contains("libcrypto.3.dylib") })
@@ -80,8 +80,8 @@ struct MachOLinkageTests {
     }
 
     @Test("an unresolvable @rpath library is a problem, not a silent pass")
-    func unresolvedRpathIsReported() throws {
-        let fixture = try makeFixture()
+    func unresolvedRpathIsReported() async throws {
+        let fixture = try await makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         try FileManager.default.removeItem(at: fixture.crypto.deletingLastPathComponent().appendingPathComponent("libextra.dylib"))
         let closure = MachOLinkage.closure(ofExecutable: fixture.tool.path)
@@ -95,8 +95,8 @@ struct MachOLinkageTests {
     }
 
     @Test("the install plan produces a self-contained copy with absolute library paths")
-    func installPlanIsSelfContained() throws {
-        let fixture = try makeFixture()
+    func installPlanIsSelfContained() async throws {
+        let fixture = try await makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let destination = fixture.root.appendingPathComponent("installed")
         var destinations = PrivilegedNmapInstallPlan.Destinations()
@@ -107,7 +107,10 @@ struct MachOLinkageTests {
         destinations.dataDirectory = destination.appendingPathComponent("nmap-data").path
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
 
-        let plan = try PrivilegedNmapInstallPlan.make(nmapPath: fixture.tool.path, destinations: destinations, requireRootOwnedTools: false)
+        let toolPath = fixture.tool.path
+        let plan = try await PrivilegedTestSupport.offPool { [destinations] in
+            try PrivilegedNmapInstallPlan.make(nmapPath: toolPath, destinations: destinations, requireRootOwnedTools: false)
+        }
         #expect(plan.libraries.map(\.destination).sorted() == [
             destinations.libraryDirectory + "/libcrypto.3.dylib",
             destinations.libraryDirectory + "/libextra.dylib",
@@ -117,7 +120,7 @@ struct MachOLinkageTests {
         #expect(!commands.contains { $0.hasPrefix("chown") })
         #expect(plan.shellCommands().contains { $0.hasPrefix("chown -R root:wheel") })
 
-        let result = try PrivilegedTestSupport.shell((["set -eu"] + commands).joined(separator: "\n"))
+        let result = try await PrivilegedTestSupport.shell((["set -eu"] + commands).joined(separator: "\n"))
         #expect(result.status == 0, "install commands failed: \(result.stderr)")
 
         let inside: (String) -> Bool = { $0.hasPrefix(destination.path) }
@@ -129,7 +132,7 @@ struct MachOLinkageTests {
 
         // The copy runs without the original libraries.
         try FileManager.default.removeItem(at: fixture.crypto.deletingLastPathComponent())
-        let output = try PrivilegedTestSupport.run(destinations.nmap, [])
+        let output = try await PrivilegedTestSupport.run(destinations.nmap, [])
         #expect(output.status == 0)
         #expect(output.stdout == "12\n")
         #expect(FileManager.default.fileExists(atPath: destinations.dataDirectory + "/nse_main.lua"))

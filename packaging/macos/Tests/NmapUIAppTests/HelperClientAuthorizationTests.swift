@@ -22,10 +22,10 @@ struct HelperClientAuthorizationTests {
 
     /// An ad-hoc signature with the app's identifier is what any local
     /// process can produce with `codesign -s - -i com.techmore.nmapui`.
-    private func adHocBinary(identifier: String, in directory: URL, name: String = "client") throws -> URL {
+    private func adHocBinary(identifier: String, in directory: URL, name: String = "client") async throws -> URL {
         let binary = directory.appendingPathComponent(name)
         try FileManager.default.copyItem(atPath: "/usr/bin/true", toPath: binary.path)
-        let result = try PrivilegedTestSupport.run("/usr/bin/codesign", ["--force", "--sign", "-", "--options", "runtime", "--identifier", identifier, binary.path])
+        let result = try await PrivilegedTestSupport.run("/usr/bin/codesign", ["--force", "--sign", "-", "--options", "runtime", "--identifier", identifier, binary.path])
         #expect(result.status == 0, "codesign failed: \(result.stderr)")
         return binary
     }
@@ -45,10 +45,10 @@ struct HelperClientAuthorizationTests {
     }
 
     @Test("an ad-hoc client carrying the app identifier is rejected")
-    func adHocClientWithAppIdentifierIsRejected() throws {
+    func adHocClientWithAppIdentifierIsRejected() async throws {
         let directory = try PrivilegedTestSupport.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let binary = try adHocBinary(identifier: NmapPrivilegedHelperContract.authorizedBundleIdentifier, in: directory)
+        let binary = try await adHocBinary(identifier: NmapPrivilegedHelperContract.authorizedBundleIdentifier, in: directory)
         let code = try staticCode(binary.path)
 
         #expect(HelperClientAuthorization.teamIdentifier(of: code) == nil)
@@ -57,7 +57,7 @@ struct HelperClientAuthorizationTests {
     }
 
     @Test("an Info.plist next to the client's executable is not trusted")
-    func infoPlistFallbackIsGone() throws {
+    func infoPlistFallbackIsGone() async throws {
         let directory = try PrivilegedTestSupport.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let macOS = directory.appendingPathComponent("Evil.app/Contents/MacOS", isDirectory: true)
@@ -65,7 +65,7 @@ struct HelperClientAuthorizationTests {
         let plist: [String: Any] = ["CFBundleIdentifier": NmapPrivilegedHelperContract.authorizedBundleIdentifier]
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
             .write(to: macOS.deletingLastPathComponent().appendingPathComponent("Info.plist"))
-        let binary = try adHocBinary(identifier: "evil", in: macOS, name: "evil")
+        let binary = try await adHocBinary(identifier: "evil", in: macOS, name: "evil")
         let code = try staticCode(binary.path)
 
         #expect(!HelperClientAuthorization.evaluate(staticCode: code, requirement: try requirement()).accepted)

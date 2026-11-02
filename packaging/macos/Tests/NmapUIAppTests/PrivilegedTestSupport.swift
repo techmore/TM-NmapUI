@@ -25,8 +25,23 @@ enum PrivilegedTestSupport {
         let stderr: String
     }
 
+    /// Runs blocking work (child processes, scans) on a GCD queue, so tests
+    /// never hold one of Swift Testing's few cooperative-pool threads while
+    /// they wait. Holding them starves other tests on small CI runners.
+    static func offPool<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(with: Result { try body() })
+            }
+        }
+    }
+
     @discardableResult
-    static func run(_ executable: String, _ arguments: [String], environment: [String: String]? = nil) throws -> Output {
+    static func run(_ executable: String, _ arguments: [String], environment: [String: String]? = nil) async throws -> Output {
+        try await offPool { try runBlocking(executable, arguments, environment: environment) }
+    }
+
+    static func runBlocking(_ executable: String, _ arguments: [String], environment: [String: String]? = nil) throws -> Output {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -36,8 +51,17 @@ enum PrivilegedTestSupport {
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
+        // Drain stderr concurrently so a chatty child cannot fill its pipe.
+        let errorBox = DataBox()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            errorBox.data = stderr.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
         let out = stdout.fileHandleForReading.readDataToEndOfFile()
-        let err = stderr.fileHandleForReading.readDataToEndOfFile()
+        group.wait()
+        let err = errorBox.data
         process.waitUntilExit()
         return Output(
             status: process.terminationStatus,
@@ -46,19 +70,23 @@ enum PrivilegedTestSupport {
         )
     }
 
-    static func shell(_ script: String) throws -> Output {
-        try run("/bin/sh", ["-c", script])
+    private final class DataBox: @unchecked Sendable {
+        var data = Data()
+    }
+
+    static func shell(_ script: String) async throws -> Output {
+        try await run("/bin/sh", ["-c", script])
     }
 
     static var hasCompiler: Bool {
-        (try? run("/usr/bin/xcrun", ["--find", "clang"]).status) == 0
+        (try? runBlocking("/usr/bin/xcrun", ["--find", "clang"]).status) == 0
     }
 
     /// Compiles C source with `xcrun clang`; `arguments` go before the output flag.
-    static func compile(_ source: String, to output: URL, arguments: [String]) throws {
+    static func compile(_ source: String, to output: URL, arguments: [String]) async throws {
         let sourceURL = output.deletingLastPathComponent().appendingPathComponent(output.lastPathComponent + ".c")
         try source.write(to: sourceURL, atomically: true, encoding: .utf8)
-        let result = try run("/usr/bin/xcrun", ["clang"] + arguments + ["-o", output.path, sourceURL.path])
+        let result = try await run("/usr/bin/xcrun", ["clang"] + arguments + ["-o", output.path, sourceURL.path])
         guard result.status == 0 else {
             throw NSError(domain: "compile", code: Int(result.status), userInfo: [NSLocalizedDescriptionKey: result.stderr])
         }

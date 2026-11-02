@@ -17,7 +17,7 @@ import Testing
 )
 struct PrivilegedNmapIntegrationTests {
     @Test("a scan with default scripts runs entirely from the installed copy")
-    func scanRunsFromInstalledCopy() throws {
+    func scanRunsFromInstalledCopy() async throws {
         let nmap = try #require(PrivilegedTestSupport.homebrewNmap())
         let root = try PrivilegedTestSupport.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -29,12 +29,14 @@ struct PrivilegedNmapIntegrationTests {
         destinations.dataDirectory = root.appendingPathComponent("nmap-data").path
         try FileManager.default.createDirectory(at: root.appendingPathComponent("bin"), withIntermediateDirectories: true)
 
-        let plan = try PrivilegedNmapInstallPlan.make(nmapPath: nmap, destinations: destinations, requireRootOwnedTools: false)
+        let plan = try await PrivilegedTestSupport.offPool { [destinations] in
+            try PrivilegedNmapInstallPlan.make(nmapPath: nmap, destinations: destinations, requireRootOwnedTools: false)
+        }
         if let crypto = plan.libraries.first(where: { ($0.source as NSString).lastPathComponent.hasPrefix("libcrypto.") }),
            FileManager.default.fileExists(atPath: (crypto.source as NSString).deletingLastPathComponent + "/ossl-modules/legacy.dylib") {
             #expect(plan.libraries.contains { $0.destination == destinations.openSSLModulesDirectory + "/legacy.dylib" })
         }
-        let install = try PrivilegedTestSupport.shell((["set -eu"] + plan.shellCommands(setOwnership: false)).joined(separator: "\n"))
+        let install = try await PrivilegedTestSupport.shell((["set -eu"] + plan.shellCommands(setOwnership: false)).joined(separator: "\n"))
         #expect(install.status == 0, "install commands failed: \(install.stderr)")
         let inside: (String) -> Bool = { $0.hasPrefix(root.path) }
         #expect(MachOLinkage.untrustedLinkage(ofExecutable: destinations.nmap, isTrusted: inside) == [])
@@ -56,15 +58,15 @@ struct PrivilegedNmapIntegrationTests {
 
         // Unprivileged nmap falls back to a connect scan; -sC loads NSE (and
         // with it OpenSSL's legacy provider) from the installed copy.
-        let response = try executeNmap(
-            NmapPrivilegedRunRequest(
+        let scan = NmapPrivilegedRunRequest(
                 arguments: ["-Pn", "-sC", "-T4", "-p", String(port), "--open", "--stylesheet", "nmap-modern.xsl",
                             "-oX", "phase2_results.xml", "-oG", "phase2_progress.gnmap"],
                 targets: ["127.0.0.1"],
                 scanID: UUID().uuidString
-            ),
-            environment: environment
-        )
+            )
+        let response = try await PrivilegedTestSupport.offPool { [environment] in
+            try executeNmap(scan, environment: environment)
+        }
 
         #expect(response.exitCode == 0, "nmap failed: \(response.stderr)")
         #expect(!response.stderr.contains("legacy provider failed to load"))

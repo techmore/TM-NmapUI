@@ -141,7 +141,7 @@ struct HelperScanRunTests {
     }
 
     @Test("a scan runs in the helper's directory, with --datadir and a clean environment, and returns its output")
-    func executeReturnsArtifacts() throws {
+    func executeReturnsArtifacts() async throws {
         let directory = try PrivilegedTestSupport.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let data = directory.appendingPathComponent("data")
@@ -162,12 +162,13 @@ struct HelperScanRunTests {
         environment.runRoot = runRoot
         environment.enforceRootOwnership = false
 
-        var startedIn: String?
-        let response = try executeNmap(
-            request(["-sS", "-oX", "phase2_results.xml"], targets: ["192.0.2.7"]),
-            environment: environment,
-            onStart: { _, run in startedIn = run }
-        )
+        final class RunBox: @unchecked Sendable { var directory: String? }
+        let box = RunBox()
+        let scan = request(["-sS", "-oX", "phase2_results.xml"], targets: ["192.0.2.7"])
+        let response = try await PrivilegedTestSupport.offPool { [environment] in
+            try executeNmap(scan, environment: environment, onStart: { _, run in box.directory = run })
+        }
+        let startedIn = box.directory
 
         #expect(response.ok)
         #expect(response.stdout == "scanned\n")
