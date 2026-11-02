@@ -76,6 +76,11 @@ def privileged_prefix() -> list[str]:
     * non-root + helper  -> ``["sudo", "-n", <helper>]`` (argv re-validated)
     * non-root + sudo    -> ``["sudo", "-n"]`` (development fallback)
     * otherwise          -> ``[]`` (unprivileged; caller must fall back)
+
+    With ``NMAPUI_REQUIRE_SCAN_HELPER=true`` (packaged installs such as
+    Homebrew) the raw ``sudo -n nmap`` fallback is never used: a sudoers rule
+    for nmap itself is root-equivalent (``--script``), so privileged scans
+    run only through the validating helper, otherwise unprivileged.
     """
     if is_root():
         return []
@@ -84,7 +89,14 @@ def privileged_prefix() -> list[str]:
     helper = scanner_helper_path()
     if helper:
         return [SUDO, "-n", helper]
+    if require_scan_helper():
+        return []
     return [SUDO, "-n"]
+
+
+def require_scan_helper() -> bool:
+    value = str(os.environ.get("NMAPUI_REQUIRE_SCAN_HELPER", "") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def nmap_argv(
