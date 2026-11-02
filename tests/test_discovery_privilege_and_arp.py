@@ -41,7 +41,7 @@ def _context(*, commands, deep_calls, events, results, arp_data, settings=None):
         "run_cancellable_command": run,
         "run_arp_scan": lambda *args, **kwargs: arp_data,
         "identify_gateway_firewall_targets": lambda hosts: (hosts, []),
-        "start_deep_scan": lambda ctx, targets, sid, **kwargs: deep_calls.append(list(targets)),
+        "start_deep_scan": lambda ctx, targets, sid, **kwargs: deep_calls.append((list(targets), kwargs.get("skip_host_discovery", False))),
         "job_registry": registry,
         "emit_job_status": lambda *args: None,
         "logger": logging.getLogger("fixture"),
@@ -55,7 +55,7 @@ def test_discovery_uses_privilege_prefix(monkeypatch):
     commands, deep, events = [], [], []
     start_scan_task(_context(commands=commands, deep_calls=deep, events=events, results=[], arp_data={}), "sid", "192.168.50.0/24")
     assert commands[0] == ["sudo", "-n", "/helper", "nmap", "-sn", "192.168.50.0/24"]
-    assert deep == [["192.168.50.10"]]
+    assert deep == [(["192.168.50.10"], False)]
 
 
 def test_discovery_falls_back_when_privilege_is_denied(monkeypatch):
@@ -65,7 +65,7 @@ def test_discovery_falls_back_when_privilege_is_denied(monkeypatch):
     start_scan_task(_context(commands=commands, deep_calls=deep, events=events, results=[denied], arp_data={}), "sid", "192.168.50.0/24")
     assert commands[:2] == [["sudo", "-n", "nmap", "-sn", "192.168.50.0/24"], ["nmap", "-sn", "192.168.50.0/24"]]
     assert any("Privileged discovery denied" in str(data) for event, data in events if event == "scan_feedback")
-    assert deep == [["192.168.50.10"]]
+    assert deep == [(["192.168.50.10"], False)]
 
 
 def test_scan_only_mode_never_uses_privilege(monkeypatch):
@@ -88,7 +88,8 @@ def test_arp_only_hosts_are_reported_and_service_scanned(monkeypatch):
     results = next(data for event, data in events if event == "scan_results")
     assert [host["ip"] for host in results] == ["192.168.50.10", "192.168.50.20"]
     assert results[1]["vendor"] == "Printer Co" and results[1]["status"] == "up"
-    assert deep == [["192.168.50.10", "192.168.50.20"]]
+    # The ARP-only host is service-scanned with -Pn, the pinged host without.
+    assert deep == [(["192.168.50.10"], False), (["192.168.50.20"], True)]
     assert any("ARP found 1 live host" in str(data) for event, data in events if event == "scan_feedback")
 
 

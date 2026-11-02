@@ -257,6 +257,20 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False, skip_host_dis
         raise
 
 
+def _deep_scan_known_up(start_deep_scan_fn, context, targets, sid, is_gateway_phase, skip_host_discovery, arp_only):
+    """Service-scan targets; hosts seen only by ARP skip Nmap's ping check.
+
+    Those hosts ignore Nmap's unprivileged ping probes, so without -Pn the
+    service scan would report them down and scan nothing.
+    """
+    pinged = [ip for ip in targets if ip not in arp_only]
+    arp_targets = [ip for ip in targets if ip in arp_only]
+    if pinged:
+        start_deep_scan_fn(context, pinged, sid, is_gateway_phase=is_gateway_phase, **({"skip_host_discovery": True} if skip_host_discovery else {}))
+    if arp_targets:
+        start_deep_scan_fn(context, arp_targets, sid, is_gateway_phase=is_gateway_phase, skip_host_discovery=True)
+
+
 def merge_arp_only_hosts(hosts, arp_data, target):
     """Add hosts that answered ARP but not Nmap's ping probes.
 
@@ -513,6 +527,7 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
             job_registry.update(sid, "scan", details={"firewall_discovery_only": True, "discovery_only_addresses": sorted(protected)})
             emit_to_client(sid, "scan_feedback", "Firewall/gateway discovery only: service scans skipped for " + (", ".join(sorted(protected)) or "no identified gateways"))
 
+        arp_only = {host["ip"] for host in hosts if host.get("discovered_by") == "arp"}
         logger.info("Phase 1 - Regular hosts: %s", len(regular_targets))
         logger.info("Phase 2 - Gateway hosts: %s", len(gateway_targets))
 
@@ -524,7 +539,7 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
                 message=f"Deep scanning {len(regular_targets)} regular hosts",
                 progress=60,
             )
-            start_deep_scan_fn(context, regular_targets, sid, is_gateway_phase=False, **({"skip_host_discovery": True} if skip_host_discovery else {}))
+            _deep_scan_known_up(start_deep_scan_fn, context, regular_targets, sid, False, skip_host_discovery, arp_only)
 
         if gateway_targets:
             update_job_progress(
@@ -534,7 +549,7 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
                 message=f"Deep scanning {len(gateway_targets)} gateway hosts",
                 progress=80,
             )
-            start_deep_scan_fn(context, gateway_targets, sid, is_gateway_phase=True, **({"skip_host_discovery": True} if skip_host_discovery else {}))
+            _deep_scan_known_up(start_deep_scan_fn, context, gateway_targets, sid, True, skip_host_discovery, arp_only)
 
         incomplete_hosts = ((context.job_registry.get(sid, "scan") or {}).get("details") or {}).get("incomplete_hosts", [])
         update_job_progress(sid, "scan", phase="complete", message=f"Scan workflow completed; {len(hosts)} discovered or explicitly selected hosts; {len(incomplete_hosts)} incomplete service scans", progress=100, details={"host_count": len(hosts), "skip_host_discovery": skip_host_discovery, "incomplete_hosts": incomplete_hosts})
