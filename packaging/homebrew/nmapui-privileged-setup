@@ -1,0 +1,116 @@
+#!/bin/bash
+# Optional, one-time setup for privileged scans (SYN, OS detection, ARP) with a
+# per-user NmapUI install such as Homebrew. The web app itself never runs as
+# root. Run with sudo:
+#
+#   sudo nmapui-privileged-setup install --user "$USER" --data-dir <dir>
+#   sudo nmapui-privileged-setup status
+#   sudo nmapui-privileged-setup uninstall
+#
+# What `install` does:
+#   * copies the validating helper to /usr/local/libexec/nmapui-privileged-scanner
+#     (root:wheel 0755); it re-checks every argument and only runs a root-owned
+#     nmap with a root-owned data directory;
+#   * copies the Vulners script and report stylesheet to /usr/local/share/nmapui;
+#   * records the user-owned data directory in /usr/local/etc/nmapui;
+#   * adds /etc/sudoers.d/nmapui-helper allowing <user> to run ONLY the helper.
+#
+# It never grants sudo for nmap itself (that is root-equivalent through
+# --script) and never makes Homebrew's user-writable nmap root-trusted.
+# Privileged scans need a root-owned nmap, such as the nmap.org macOS package
+# (/usr/local/bin/nmap); without one, scans run unprivileged.
+set -euo pipefail
+
+HELPER_DEST=/usr/local/libexec/nmapui-privileged-scanner
+ASSET_DEST=/usr/local/share/nmapui
+CONFIG_DIR=/usr/local/etc/nmapui
+CONFIG_FILE=$CONFIG_DIR/privileged-scanner.conf
+SUDOERS_FILE=/etc/sudoers.d/nmapui-helper
+SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+
+die() { echo "nmapui-privileged-setup: $*" >&2; exit 1; }
+
+root_owned_nmap() {
+  local candidate
+  for candidate in /usr/local/bin/nmap /usr/bin/nmap /opt/homebrew/bin/nmap; do
+    [[ -x "$candidate" ]] || continue
+    local real owner
+    real="$(/usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$candidate")"
+    owner="$(/usr/bin/stat -f %u "$real")"
+    [[ "$owner" == 0 ]] && { echo "$real"; return 0; }
+  done
+  return 1
+}
+
+raw_nmap_rules() {
+  # Report sudoers rules that grant nmap or arp-scan directly.
+  /usr/bin/grep -lE 'NOPASSWD:.*(/nmap|/arp-scan)([ ,]|$)' /etc/sudoers.d/* 2>/dev/null || true
+}
+
+cmd_status() {
+  echo "helper:      $([[ -x $HELPER_DEST ]] && echo "installed ($HELPER_DEST)" || echo missing)"
+  echo "data dir:    $([[ -f $CONFIG_FILE ]] && sed -n 's/^data_dir=//p' "$CONFIG_FILE" || echo "default")"
+  echo "sudoers:     $([[ -f $SUDOERS_FILE ]] && cat "$SUDOERS_FILE" || echo missing)"
+  local nmap_path
+  if nmap_path="$(root_owned_nmap)"; then echo "root nmap:   $nmap_path"; else echo "root nmap:   none (install the nmap.org macOS package for privileged scans)"; fi
+  local rules
+  rules="$(raw_nmap_rules)"
+  if [[ -n "$rules" ]]; then
+    echo "WARNING: these sudoers files grant nmap/arp-scan directly (root-equivalent):"
+    echo "$rules" | sed 's/^/  /'
+    echo "  Remove them once the helper works: sudo rm <file>"
+  fi
+}
+
+cmd_install() {
+  local user="" data_dir=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --user) user="${2:?--user needs a value}"; shift 2 ;;
+      --data-dir) data_dir="${2:?--data-dir needs a value}"; shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  [[ -n "$user" && -n "$data_dir" ]] || die "install needs --user and --data-dir"
+  [[ "$user" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid user name: $user"
+  /usr/bin/id -u "$user" >/dev/null 2>&1 || die "no such user: $user"
+  [[ "$(/usr/bin/id -u "$user")" != 0 ]] || die "the service user must not be root"
+  [[ "$data_dir" == /* && "$data_dir" != *..* && "$data_dir" != *$'\n'* ]] || die "data dir must be an absolute path"
+  [[ -d "$data_dir" ]] || die "data dir does not exist yet: $data_dir (start NmapUI once first)"
+  [[ "$(/usr/bin/stat -f %Su "$data_dir")" == "$user" ]] || die "data dir must be owned by $user"
+  local helper_src="$SOURCE_ROOT/packaging/macos/nmapui-privileged-scanner"
+  [[ -f "$helper_src" ]] || die "helper source not found: $helper_src"
+
+  /usr/bin/install -d -o root -g wheel -m 0755 /usr/local/libexec "$ASSET_DEST" "$CONFIG_DIR"
+  /usr/bin/install -o root -g wheel -m 0755 "$helper_src" "$HELPER_DEST"
+  local source_name asset_name
+  for pair in "nmap-vulners/vulners.nse:vulners.nse" "nmap-modern.xsl:nmap-modern.xsl" "nmap-pdf-olive-legacy.xsl:nmap-pdf-olive-legacy.xsl"; do
+    source_name="${pair%%:*}"; asset_name="${pair##*:}"
+    [[ -f "$SOURCE_ROOT/$source_name" ]] || die "missing asset: $source_name"
+    /usr/bin/install -o root -g wheel -m 0644 "$SOURCE_ROOT/$source_name" "$ASSET_DEST/$asset_name"
+  done
+  printf 'data_dir=%s\n' "$data_dir" > "$CONFIG_FILE.tmp"
+  /usr/sbin/chown root:wheel "$CONFIG_FILE.tmp"; /bin/chmod 0644 "$CONFIG_FILE.tmp"; /bin/mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+
+  local rule="$user ALL=(root) NOPASSWD: $HELPER_DEST"
+  local staged; staged="$(/usr/bin/mktemp /tmp/nmapui-sudoers.XXXXXX)"
+  printf '%s\n' "$rule" > "$staged"
+  /usr/sbin/visudo -cf "$staged" >/dev/null || { /bin/rm -f "$staged"; die "generated sudoers rule failed validation"; }
+  /usr/sbin/chown root:wheel "$staged"; /bin/chmod 0440 "$staged"; /bin/mv "$staged" "$SUDOERS_FILE"
+  echo "Installed. NmapUI will use the helper for privileged scans."
+  cmd_status
+}
+
+cmd_uninstall() {
+  /bin/rm -f "$SUDOERS_FILE" "$HELPER_DEST" "$CONFIG_FILE"
+  /bin/rm -rf "$ASSET_DEST"
+  /bin/rmdir "$CONFIG_DIR" 2>/dev/null || true
+  echo "Removed the NmapUI privileged helper and its sudoers rule."
+}
+
+case "${1:-status}" in
+  install) shift; [[ "$(id -u)" == 0 ]] || die "run with sudo"; cmd_install "$@" ;;
+  uninstall) [[ "$(id -u)" == 0 ]] || die "run with sudo"; cmd_uninstall ;;
+  status) cmd_status ;;
+  *) die "usage: nmapui-privileged-setup install --user <name> --data-dir <dir> | status | uninstall" ;;
+esac
