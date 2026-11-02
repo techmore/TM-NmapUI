@@ -11,7 +11,7 @@ enum PrivilegeHelperClient {
     static let helperLabel = "com.techmore.nmapui.nmap-helper"
     static let helperInstallPath = "/Library/PrivilegedHelperTools/com.techmore.nmapui.nmap-helper"
     static let nmapInstallPath = NmapPrivilegedHelperContract.privilegedNmapPath
-    static let vulnersInstallPath = "/Library/Application Support/NmapUI/nmap-vulners/vulners.nse"
+    static let vulnersInstallPath = NmapPrivilegedHelperContract.privilegedVulnersScriptPath
     static let launchDaemonPlistPath = "/Library/LaunchDaemons/com.techmore.nmapui.nmap-helper.plist"
     static let socketPath = "/Library/Application Support/NmapUI/helper.sock"
     static let machServiceName = NmapPrivilegedHelperContract.machServiceName

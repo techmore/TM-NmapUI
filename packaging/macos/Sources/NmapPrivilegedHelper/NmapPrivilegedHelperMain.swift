@@ -391,7 +391,7 @@ private func validate(_ request: HelperRunRequest, clientUID: uid_t) throws {
     try validateNmapArguments(request.arguments)
 }
 
-private func validateNmapArguments(_ arguments: [String]) throws {
+func validateNmapArguments(_ arguments: [String]) throws {
     let flagsWithValues: Set<String> = [
         "-p", "--host-timeout", "--script-timeout", "--max-retries", "--max-rtt-timeout",
         "--min-hostgroup", "--max-hostgroup", "--script", "--script-args", "--stylesheet",
@@ -420,12 +420,12 @@ private func validateNmapArguments(_ arguments: [String]) throws {
                 throw HelperError.invalidRequest("unsafe privileged scan artifact path")
             }
         case "--script":
-            let scriptURL = URL(fileURLWithPath: value).standardizedFileURL.resolvingSymlinksInPath()
-            guard scriptURL.lastPathComponent == "vulners.nse",
-                  let attributes = try? FileManager.default.attributesOfItem(atPath: scriptURL.path),
-                  (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == 0,
-                  ((attributes[.posixPermissions] as? NSNumber)?.uint16Value ?? 0) & 0o022 == 0 else {
-                throw HelperError.invalidRequest("privileged Vulners script must be root-owned and immutable")
+            // nmap reads --script as a comma list or expression, and a resolved
+            // symlink can be swapped after the check. Accept only the fixed,
+            // root-owned install path, so the checked path is the one nmap opens.
+            guard value == NmapPrivilegedHelperContract.privilegedVulnersScriptPath,
+                  NmapPrivilegedHelperContract.isRootOwnedImmutablePath(value) else {
+                throw HelperError.invalidRequest("privileged Vulners script must be the root-owned install path")
             }
         default:
             break
