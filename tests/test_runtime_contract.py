@@ -1637,7 +1637,7 @@ def test_template_does_not_keep_inline_report_generation_block():
     assert "getClientJobs: window.getClientJobs" in bootstrap
     assert "getLastScanTarget: window.getLastScanTarget" in bootstrap
     assert "Complete + PDF" in template
-    assert 'aria-label="Run a complete scan and generate a new PDF"' in template
+    assert 'title="Scan ports, services and Vulners CVEs, then build a PDF report"' in template
     assert 'id="report-status-actions"' in template
     assert 'id="tab-dashboard-btn"' in template
     assert 'id="tab-history-btn"' in template

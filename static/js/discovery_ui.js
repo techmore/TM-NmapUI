@@ -160,7 +160,8 @@ function updateHistoryBadge(customerName) {
     if (count > 0) {
         badge.textContent = count > 99 ? '99+' : count;
         badge.classList.remove('hidden');
-        badge.className = 'absolute -top-1 -right-1 flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-olive-900 text-white text-[10px] font-bold shadow-sm transition-all scale-110';
+        // In flow after the label: an absolute badge covered the end of "Archive".
+        badge.className = 'ml-0.5 -translate-y-1.5 flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-olive-900 text-white text-[10px] font-bold shadow-sm transition-all scale-110';
         badge.classList.remove('scale-110');
         void badge.offsetWidth;
         badge.classList.add('scale-110');

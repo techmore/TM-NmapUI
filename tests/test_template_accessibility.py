@@ -192,3 +192,79 @@ def test_skip_link_targets_the_scan_controls():
     template = TEMPLATE.read_text(encoding="utf-8")
     assert '<a href="#scan-target" class="skip-link">' in template
     assert ".skip-link:focus" in template
+
+
+def _buttons_with_visible_text():
+    """(attrs, visible text) for every <button>/<a> in the template."""
+
+    class Collector(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack, self.found = [], []
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("button", "a"):
+                self.stack.append([dict(attrs), ""])
+
+        def handle_data(self, data):
+            for entry in self.stack:
+                entry[1] += data
+
+        def handle_endtag(self, tag):
+            if tag in ("button", "a") and self.stack:
+                attrs, text = self.stack.pop()
+                self.found.append((attrs, " ".join(text.split())))
+
+    collector = Collector()
+    collector.feed(TEMPLATE.read_text(encoding="utf-8"))
+    return collector.found
+
+
+def test_accessible_names_contain_the_visible_label():
+    """WCAG 2.5.3: speech users say what they see, so aria-label must include it."""
+    mismatches = []
+    for attrs, text in _buttons_with_visible_text():
+        label = attrs.get("aria-label")
+        words = re.sub(r"[^A-Za-z ]", "", text).strip().lower()
+        if label and words and words not in label.lower():
+            mismatches.append(f"{attrs.get('id') or attrs.get('data-action')}: {text!r} vs {label!r}")
+    assert mismatches == []
+
+
+def test_auto_monitor_switch_shows_keyboard_focus():
+    template = TEMPLATE.read_text(encoding="utf-8")
+    elements = _elements()
+    _, toggle = _by_id(elements, "auto-scan-toggle")
+    assert toggle.get("role") == "switch"
+    assert "aria-label" not in toggle  # named by its visible "Auto-Monitor" label
+    assert "peer-focus-visible:ring-2" in template
+    assert "peer-focus:outline-none" not in template
+
+
+def test_small_targets_and_scroll_regions_are_operable():
+    elements = _elements()
+    _, info = _by_id(elements, "info-icon")
+    assert "size-8" in info.get("class", "").split()
+    _, logs = _by_id(elements, "logs-tab-entries")
+    assert logs.get("tabindex") == "0" and logs.get("role") == "log"
+
+
+def test_history_scope_buttons_expose_pressed_state():
+    elements = _elements()
+    assert _by_id(elements, "history-focus-current-btn")[1].get("aria-pressed") == "true"
+    assert _by_id(elements, "history-focus-all-btn")[1].get("aria-pressed") == "false"
+    reports_tab = (STATIC_JS / "reports_tab.js").read_text(encoding="utf-8")
+    assert "button.setAttribute('aria-pressed', selected ? 'true' : 'false');" in reports_tab
+
+
+def test_profile_discovery_select_has_its_own_label():
+    template = TEMPLATE.read_text(encoding="utf-8")
+    assert '<label for="settings-profile-skip-host-discovery"' in template
+    assert 'aria-describedby="settings-profile-skip-host-discovery-help"' in template
+
+
+def test_secondary_scan_controls_wrap_on_small_screens():
+    template = TEMPLATE.read_text(encoding="utf-8")
+    discovery_ui = (STATIC_JS / "discovery_ui.js").read_text(encoding="utf-8")
+    assert '<div class="flex items-center gap-3 ml-4">' not in template
+    assert "badge.className = 'absolute -top-1 -right-1" not in discovery_ui
