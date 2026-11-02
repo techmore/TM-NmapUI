@@ -67,6 +67,42 @@ packaging/macos/install-daemon.sh --dry-run
 
 For Ubuntu host setup, see [the setup guide](docs/guides/SETUP.md#ubuntu-scanner-host).
 
+## Install with Homebrew (macOS)
+
+```bash
+brew install techmore/tap/nmapui
+brew services start nmapui      # runs as your user, on http://127.0.0.1:9000
+```
+
+The formula installs a pinned, checksummed release with hash-locked Python
+dependencies; it does not clone `main`. The web service always runs as your
+user and refuses to start as root. Data and logs live in
+`~/Library/Application Support/NmapUI-brew` (`nmapui paths` shows them).
+Outbound lookups (Vulners, update checks, public-IP/traceroute fingerprinting)
+are off unless you enable them.
+
+Without privileges, NmapUI uses connect scans and TCP ping discovery. SYN
+scans, OS detection and ARP discovery need root for nmap only, never for the
+app. To enable them, install the official
+[nmap.org macOS package](https://nmap.org/download.html#macosx) (a root-owned
+`/usr/local/bin/nmap`; Homebrew's nmap is user-writable and is never run as
+root), start NmapUI once, then run the one-time setup:
+
+```bash
+sudo "$(brew --prefix nmapui)/libexec/packaging/homebrew/nmapui-privileged-setup" \
+  install --user "$USER" --data-dir "$HOME/Library/Application Support/NmapUI-brew/data"
+```
+
+This installs the validating helper
+(`/usr/local/libexec/nmapui-privileged-scanner`) and a sudoers rule for that
+helper only. The helper re-checks every nmap argument and refuses user-owned
+binaries, scripts and data. `nmapui-privileged-setup status` reports the state
+and warns about any sudoers rule that grants `nmap` itself (root-equivalent);
+`sudo … uninstall` removes it. Never run `sudo nmapui`, `sudo npm start` or
+grant `NOPASSWD` for nmap.
+
+PDF reports need Chromium for Playwright (about 150 MB): `nmapui install-pdf-browser`.
+
 ## Quick Start (macOS development)
 
 ```bash
