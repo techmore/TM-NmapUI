@@ -98,7 +98,7 @@ This installs the validating helper
 helper only. The helper re-checks every nmap argument and refuses user-owned
 binaries, scripts and data. `nmapui-privileged-setup status` reports the state
 and warns about any sudoers rule that grants `nmap` itself (root-equivalent);
-`sudo … uninstall` removes it. Never run `sudo nmapui`, `sudo npm start` or
+`sudo … uninstall` removes it. Never run NmapUI itself with `sudo`, or
 grant `NOPASSWD` for nmap.
 
 PDF reports need Chromium for Playwright (about 150 MB): `nmapui install-pdf-browser`.
