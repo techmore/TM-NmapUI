@@ -54,7 +54,7 @@ function clearReportStatusActions() {
     actions.classList.add('hidden');
 }
 
-function showReportActions(path) {
+function showReportActions(path, { pdf = true } = {}) {
     const actions = document.getElementById('report-status-actions');
     if (!actions || !path) {
         return;
@@ -75,7 +75,7 @@ function showReportActions(path) {
     };
 
     buildLink(`/api/runtime/reports/${path}/html`, 'View Report', true);
-    buildLink(`/api/runtime/reports/${path}/pdf`, 'Download PDF');
+    if (pdf) buildLink(`/api/runtime/reports/${path}/pdf`, 'Download PDF');
     buildLink(`/api/runtime/reports/${path}/xml`, 'Download XML');
     actions.classList.remove('hidden');
 }
@@ -140,7 +140,7 @@ function showReportStatus(message, type, options = {}) {
 function showReportCompleteStatus(data) {
     removeReportProgressCard();
     showReportStatus(window.formatReportCompleteMessage(data), 'success', { persist: true });
-    showReportActions(data?.path);
+    showReportActions(data?.path, { pdf: data?.pdf_available !== false });
 }
 
 window.createReportProgressCard = createReportProgressCard;

@@ -88,3 +88,13 @@ def test_host_detail_understands_live_and_historical_port_shapes():
 def test_vulnerability_heading_keeps_its_spacing():
     template = TEMPLATE.read_text(encoding="utf-8")
     assert re.search(r'<span>Vulnerabilities \(<span id="asset-cve-count">0</span>\)</span>', template)
+
+
+def test_report_complete_drops_the_pdf_link_when_rendering_failed():
+    workflows = (ROOT / "nmapui" / "workflows.py").read_text(encoding="utf-8")
+    report_status = (STATIC_JS / "report_status.js").read_text(encoding="utf-8")
+    discovery_ui = (STATIC_JS / "discovery_ui.js").read_text(encoding="utf-8")
+    assert '"pdf_available": pdf_path.exists(),' in workflows
+    assert "if (pdf) buildLink(`/api/runtime/reports/${path}/pdf`, 'Download PDF');" in report_status
+    assert "showReportActions(data?.path, { pdf: data?.pdf_available !== false });" in report_status
+    assert "The PDF could not be rendered on this scanner" in discovery_ui

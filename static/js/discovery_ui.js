@@ -711,8 +711,12 @@ function formatReportCompleteMessage(data) {
         driveMessage = ' Google Drive upload was skipped.';
     }
 
+    // The PDF renderer can be missing on a scanner; say so instead of offering a dead link.
+    const pdfMessage = data?.pdf_available === false
+        ? ' The PDF could not be rendered on this scanner: open the HTML report and print it to PDF.'
+        : '';
     if (!diffSummary || !diffSummary.has_changes) {
-        return `Report generated successfully. Check: ${scanDir}.${driveMessage}`;
+        return `Report generated successfully. Check: ${scanDir}.${pdfMessage}${driveMessage}`;
     }
 
     const facts = [];
@@ -733,7 +737,7 @@ function formatReportCompleteMessage(data) {
     }
 
     const summaryText = facts.length ? ` Changes detected: ${facts.join(', ')}.` : ' Changes detected.';
-    return `Report generated successfully. Check: ${scanDir}.${summaryText}${driveMessage}`;
+    return `Report generated successfully. Check: ${scanDir}.${summaryText}${pdfMessage}${driveMessage}`;
 }
 
 window.setSafeExternalLink = setSafeExternalLink;
