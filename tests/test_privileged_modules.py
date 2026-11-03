@@ -57,6 +57,30 @@ def test_privileged_prefix_empty_without_sudo(monkeypatch):
     assert privileged.privileged_prefix() == []
 
 
+def _daedalus_arp_helper_present(monkeypatch):
+    helper = "/Library/PrivilegedHelperTools/DaedalusARP/scan"
+    real_isfile, real_access = privileged.os.path.isfile, privileged.os.access
+    monkeypatch.setattr(privileged.os.path, "isfile", lambda path: path == helper or real_isfile(path))
+    monkeypatch.setattr(privileged.os, "access", lambda path, mode: path == helper or real_access(path, mode))
+    monkeypatch.setattr(privileged, "is_root", lambda: False)
+    monkeypatch.setattr(privileged, "scanner_helper_path", lambda: "")
+    return helper
+
+
+def test_arp_prefix_uses_daedalus_helper_through_sudo(monkeypatch):
+    helper = _daedalus_arp_helper_present(monkeypatch)
+    monkeypatch.setattr(privileged, "sudo_available", lambda: True)
+
+    assert privileged.arp_privileged_prefix() == ["sudo", "-n", helper]
+
+
+def test_arp_prefix_skips_daedalus_helper_without_sudo(monkeypatch):
+    _daedalus_arp_helper_present(monkeypatch)
+    monkeypatch.setattr(privileged, "sudo_available", lambda: False)
+
+    assert privileged.arp_privileged_prefix() == []
+
+
 def test_is_permission_denied_detects_sudo_password_requirement():
     assert privileged.is_permission_denied(_denied(["nmap"])) is True
     assert privileged.is_permission_denied(_ok(["nmap"])) is False
