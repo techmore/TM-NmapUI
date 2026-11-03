@@ -35,7 +35,7 @@
         div.className = `flex gap-2 leading-5 ${LEVEL_STYLES[entry.level] || 'text-olive-300'}`;
 
         const timeSpan = document.createElement('span');
-        timeSpan.className = 'text-olive-600 flex-shrink-0 select-none';
+        timeSpan.className = 'text-olive-400 flex-shrink-0 select-none';
         timeSpan.textContent = entry.timestamp;
 
         const levelSpan = document.createElement('span');

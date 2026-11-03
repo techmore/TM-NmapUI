@@ -329,6 +329,11 @@ def test_resolve_scan_path_rejects_traversal():
     assert resolve_scan_path("../outside") is None
 
 
+@pytest.mark.parametrize("path", [".", "./", "Customer/..", "Customer/2026-03-13/../.."])
+def test_resolve_scan_path_rejects_the_scans_root(path):
+    assert resolve_scan_path(path) is None
+
+
 def test_resolve_scan_path_accepts_nested_scan_path():
     resolved = resolve_scan_path("Customer/2026-03-13/scan_010000_target")
 
@@ -778,3 +783,14 @@ def test_execute_auto_scan_reports_last_run_persistence_failure():
     assert len(saved["report_calls"]) == 1
     assert deps["job_registry"].get(AUTO_SCAN_SID, "report")["status"] == "completed"
     assert deps["auto_scan_config"]["last_run"] is not None
+
+
+def test_resolve_scan_path_root_guard_with_real_directory(tmp_path, monkeypatch):
+    import nmapui.paths as paths
+
+    scans = tmp_path / "scans"
+    (scans / "Acme" / "2026-03-13" / "scan_1").mkdir(parents=True)
+    monkeypatch.setattr(paths, "SCANS_DIR", scans)
+    assert paths.resolve_scan_path(".") is None
+    assert paths.resolve_scan_path("Acme/..") is None
+    assert paths.resolve_scan_path("Acme/2026-03-13/scan_1") == (scans / "Acme/2026-03-13/scan_1").resolve()

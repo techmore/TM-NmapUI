@@ -38,7 +38,43 @@ import tempfile
 RELEASE_ASSET_DIR = "/usr/local/lib/nmapui/current/privileged-assets"
 LEGACY_ASSET_DIR = "/usr/local/share/nmapui"
 ASSET_DIR = RELEASE_ASSET_DIR if os.path.isdir(RELEASE_ASSET_DIR) else LEGACY_ASSET_DIR
-DATA_DIR = "/Library/Application Support/NmapUI/data"
+DEFAULT_DATA_DIR = "/Library/Application Support/NmapUI/data"
+# Per-user installs (Homebrew) keep data elsewhere. Root writes this file once
+# (`nmapui-privileged-setup`); the helper trusts it only when it and every
+# parent directory are root-owned and not group- or world-writable. Scan
+# output is still moved into the data directory after dropping to its owner.
+CONFIG_FILE = "/usr/local/etc/nmapui/privileged-scanner.conf"
+
+
+def _root_owned_chain(path):
+    current = os.path.abspath(path)
+    while True:
+        details = os.lstat(current)
+        if stat.S_ISLNK(details.st_mode) or details.st_uid != 0 or stat.S_IMODE(details.st_mode) & 0o022:
+            return False
+        parent = os.path.dirname(current)
+        if parent == current:
+            return True
+        current = parent
+
+
+def _configured_data_dir(config_file=CONFIG_FILE, default=DEFAULT_DATA_DIR):
+    try:
+        if not os.path.isfile(config_file) or not _root_owned_chain(config_file):
+            return default
+        with open(config_file, encoding="utf-8") as handle:
+            for line in handle:
+                key, _, value = line.strip().partition("=")
+                if key.strip() == "data_dir":
+                    value = value.strip()
+                    if value.startswith("/") and ".." not in value.split("/") and "\x00" not in value:
+                        return os.path.normpath(value)
+    except OSError:
+        pass
+    return default
+
+
+DATA_DIR = _configured_data_dir()
 
 # Only these locations are trusted to hold the scanner binaries.
 TRUSTED_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin")
@@ -138,6 +174,20 @@ def _validate_exclude_list(value):
     return value
 
 
+# nmap reads --script as a comma-separated list or boolean expression
+# ("a.nse,/tmp/b.nse", "x or all"), so only a single plain path is allowed.
+ASSET_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
+
+
+def _validate_asset_file(value, *, what):
+    if not value or not ASSET_PATH_RE.match(value):
+        raise Rejected("%s must be a single plain asset path (got %r)" % (what, value))
+    resolved = _validate_contained_path(value, root=ASSET_DIR, what=what)
+    if not os.path.isfile(resolved):
+        raise Rejected("%s must be an existing asset file (got %s)" % (what, resolved))
+    return resolved
+
+
 def _validate_contained_path(value, *, root, what):
     if not value:
         raise Rejected("empty path for %s" % what)
@@ -216,7 +266,7 @@ def build_argv(request):
         if arg in (NMAP_SCRIPT_FLAG, NMAP_STYLESHEET_FLAG):
             if index + 1 >= len(args):
                 raise Rejected("%s needs a value" % arg)
-            output.extend([arg, _validate_contained_path(args[index + 1], root=ASSET_DIR, what=arg)])
+            output.extend([arg, _validate_asset_file(args[index + 1], what=arg)])
             index += 2
             continue
 
