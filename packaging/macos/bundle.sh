@@ -127,9 +127,21 @@ fi
 # Sign the executable with the same stable identifier that the privileged
 # helper authorizes. SwiftPM's default executable identifier is derived from
 # the product name and is not stable across builds.
-codesign --force --sign "${SIGN_IDENTITY:--}" --identifier com.techmore.nmapui "$REAL_EXECUTABLE"
+#
+# The root helper accepts XPC clients only when they are signed by the same
+# Apple team as the helper itself and use the hardened runtime, so set
+# CODESIGN_IDENTITY to a Developer ID or Apple Development identity for a
+# build that runs privileged scans. Ad-hoc builds ("-" or unset) still build
+# and run, but their helper refuses every client.
+RUNTIME_OPTIONS=""
+if [ -n "$SIGN_IDENTITY" ] && [ "$SIGN_IDENTITY" != "-" ]; then
+    RUNTIME_OPTIONS="--options runtime"
+fi
+# shellcheck disable=SC2086 # RUNTIME_OPTIONS is deliberately word-split.
+codesign --force --sign "${SIGN_IDENTITY:--}" $RUNTIME_OPTIONS --identifier com.techmore.nmapui "$REAL_EXECUTABLE"
 if [ -f "$HELPER_EXECUTABLE" ]; then
-    codesign --force --sign "${SIGN_IDENTITY:--}" --identifier com.techmore.nmapui.nmap-helper "$HELPER_EXECUTABLE"
+    # shellcheck disable=SC2086
+    codesign --force --sign "${SIGN_IDENTITY:--}" $RUNTIME_OPTIONS --identifier com.techmore.nmapui.nmap-helper "$HELPER_EXECUTABLE"
 fi
 if [ -f "$MACOS_DIR/GoogleDriveHelper" ]; then
     codesign --force --sign "${SIGN_IDENTITY:--}" --identifier com.techmore.nmapui.GoogleDriveHelper "$MACOS_DIR/GoogleDriveHelper"
