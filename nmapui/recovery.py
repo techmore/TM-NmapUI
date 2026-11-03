@@ -172,7 +172,11 @@ def install_process_reaper(*, job_registry, logger=logger) -> bool:
             job_registry.terminate_all()
         except Exception:
             write_notice("Failed to terminate scan processes during shutdown\n")
-        raise SystemExit(128 + signum)
+        # Exit now. Raising SystemExit made Python wait for every non-daemon
+        # thread (request threads, Socket.IO connections), so a stopped
+        # Gunicorn worker could outlive its master and keep the port bound.
+        # State is in SQLite, and interrupted jobs are reconciled at startup.
+        os._exit(128 + signum)
 
     installed = False
     for name in ("SIGTERM", "SIGINT"):
