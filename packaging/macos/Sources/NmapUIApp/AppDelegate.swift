@@ -95,6 +95,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var statusItem: NSStatusItem?
     private var sharedStatusSubscription: AnyCancellable?
+    /// Classic menu, shown on right-click or Control-click of the status item.
+    private var statusMenu: NSMenu?
+    let menuBarPanelStore = MenuBarPanelStore()
+    private var menuBarPopover: NSPopover?
+    private var menuBarPanelSubscription: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ScheduledScanRunner.isScheduledScanInvocation {
@@ -104,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         NSApp.setActivationPolicy(.regular)
         setupStatusItem()
+        configureMenuBarPanel()
         beginSelectedRuntime()
         syncRuntimeMenuState()
     }
@@ -290,7 +296,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 menu.insertItem(action, at: 4 + index)
             }
         }
-        statusItem?.menu = menu
+        // Left-click opens the panel; the classic menu stays on right-click.
+        statusMenu = menu
+        statusItem?.menu = nil
+        button.target = self
+        button.action = #selector(statusItemClicked(_:))
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        button.setAccessibilityHelp("Click for status and quick scan. Right-click for more options.")
         runtimeMenuPresenter.configureStatusItem(
             statusItem,
             runtimeStatusMenuItem: runtimeStatusItem,
@@ -1310,3 +1322,202 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 }
+
+// MARK: - Menu bar panel
+
+extension AppDelegate {
+    func configureMenuBarPanel() {
+        menuBarPanelStore.actions = MenuBarPanelActions(
+            scanNow: { [weak self] target, profileID in self?.panelScanNow(target: target, profileID: profileID) },
+            stop: { [weak self] in self?.panelControl(.stop) },
+            pause: { [weak self] in self?.panelControl(.pause) },
+            resume: { [weak self] in self?.panelControl(.resume) },
+            openReport: { [weak self] path in
+                guard let self else { return }
+                self.closeMenuBarPanel()
+                if self.executionRouter.source == .legacy { self.openReportPath(path) } else { self.appCommandController.openApp() }
+            },
+            openApp: { [weak self] in self?.closeMenuBarPanel(); self?.appCommandController.openApp() },
+            openSettings: { [weak self] in self?.closeMenuBarPanel(); self?.appCommandController.openPreferences() },
+            quit: { [weak self] in self?.quitApp() },
+            close: { [weak self] in self?.closeMenuBarPanel() }
+        )
+        let changes: [AnyPublisher<Void, Never>] = [
+            sessionState.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            executionRouter.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+            executionRouter.sharedScanner.objectWillChange.map { _ in () }.eraseToAnyPublisher()
+        ]
+        // objectWillChange fires before the value changes; the short debounce
+        // reads the settled state and coalesces bursts of scan events.
+        menuBarPanelSubscription = Publishers.MergeMany(changes)
+            .debounce(for: .milliseconds(150), scheduler: RunLoop.main)
+            .sink { [weak self] in self?.refreshMenuBarPanel() }
+        refreshMenuBarPanel()
+    }
+
+    func refreshMenuBarPanel() {
+        menuBarPanelStore.update(menuBarPanelInput())
+    }
+
+    func menuBarPanelInput() -> MenuBarPanelModel.Input {
+        var input = MenuBarPanelModel.Input()
+        switch executionRouter.source {
+        case .shared:
+            let model = executionRouter.sharedScanner
+            let state = model.controlState
+            let job = state.jobs[.scan]
+            input.source = .shared
+            input.engineReady = model.connected && (try? state.requireReady()) != nil
+            input.engineStatus = model.controlNotice
+            input.engineAddress = model.observedAddress.nilIfEmpty ?? model.address
+            input.scanning = job.map { !$0.status.isTerminal } ?? false
+            input.paused = job?.paused == true || job?.pauseRequested == true
+            input.scanTarget = job?.details?.target
+            input.phase = job?.effectiveMessage ?? job?.effectivePhase
+            input.progress = job?.effectiveProgress
+            input.lastError = state.lastError
+            input.defaultTarget = model.scanTarget
+            // Readiness only; the panel checks its own target field.
+            input.canStart = (try? state.validateStart(target: "panel")) != nil
+            if let id = job?.sourceJobID {
+                input.canStop = (try? state.validateControl(.scan, observedID: id, action: "cancel_job")) != nil
+                input.canPause = (try? state.validateControl(.scan, observedID: id, action: "pause_job")) != nil
+                input.canResume = (try? state.validateControl(.scan, observedID: id, action: "resume_job")) != nil
+            }
+            input.recent = (model.snapshot?.history ?? []).prefix(MenuBarPanelModel.maxRecent).map { row in
+                MenuBarPanelModel.RecentScan(
+                    id: row.id,
+                    target: row.target ?? "Unknown target",
+                    when: Self.panelTimestamp(row.timestamp),
+                    summary: row.hostCount.map { "\($0) host\($0 == 1 ? "" : "s")" } ?? (row.status ?? ""),
+                    changes: nil,
+                    succeeded: row.status == "completed" || row.status == "success",
+                    reportPath: nil
+                )
+            }
+        case .legacy:
+            let session = sessionState.runtimeScanSession
+            input.source = .native
+            input.engineReady = sessionState.runtimeIsReady
+            input.engineStatus = sessionState.runtimeStatusText
+            input.networkCIDR = sessionState.runtimeNetworkState?.cidr
+            input.scanning = session.isScanning
+            input.scanTarget = session.currentTarget
+            input.phase = sessionState.scanStageDescription
+            input.canStart = sessionState.runtimeIsReady
+            input.canStop = session.isScanning
+            input.defaultTarget = sessionState.runtimeNetworkState?.cidr ?? sessionState.runtimeAutoScanSnapshot.target
+            input.profiles = sessionState.customerRegistry.customers.map { .init(id: $0.id, name: $0.name) }
+            if case .assigned(let record, _) = sessionState.customerResolution { input.selectedProfileID = record.id }
+            input.recent = sessionState.runtimeDataSnapshot.history.prefix(MenuBarPanelModel.maxRecent).map { entry in
+                MenuBarPanelModel.RecentScan(
+                    id: entry.timestamp + entry.target,
+                    target: entry.target,
+                    when: Self.panelTimestamp(entry.timestamp),
+                    summary: "\(entry.hostCount) host\(entry.hostCount == 1 ? "" : "s") · \(entry.duration)",
+                    changes: entry.comparison.flatMap {
+                        MenuBarPanelModel.changeSummary(newHosts: $0.newHosts.count, missingHosts: $0.removedHosts.count, newVulnerabilities: $0.newVulnerabilities.count)
+                    },
+                    succeeded: entry.status == "success",
+                    reportPath: entry.reportUrl
+                )
+            }
+            input.driveEnabled = sessionState.runtimeGoogleDriveSnapshot.enabled
+            input.driveConfigured = !sessionState.runtimeGoogleDriveSnapshot.folderId.isEmpty
+        case .unselected:
+            input.source = .unselected
+        }
+        return input
+    }
+
+    /// "2026-11-02T13:21:10" or "2026-11-02 13:21:10" -> "13:21" today, else "Nov 2".
+    static func panelTimestamp(_ raw: String?) -> String {
+        guard let raw, !raw.isEmpty else { return "" }
+        let cleaned = raw.replacingOccurrences(of: "T", with: " ")
+        let parts = cleaned.split(separator: " ")
+        guard parts.count >= 2 else { return raw }
+        let today = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .none)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let day = formatter.date(from: String(parts[0])) else { return raw }
+        if DateFormatter.localizedString(from: day, dateStyle: .short, timeStyle: .none) == today {
+            return String(parts[1].prefix(5))
+        }
+        let display = DateFormatter()
+        display.setLocalizedDateFormatFromTemplate("MMM d")
+        return display.string(from: day)
+    }
+
+    private func panelScanNow(target: String, profileID: UUID?) {
+        switch executionRouter.source {
+        case .shared:
+            executionRouter.sharedScanner.scanTarget = target
+            sharedMenuAction(.start, observedID: nil)
+        case .legacy:
+            if case .assigned(let record, _) = sessionState.customerResolution, record.id == profileID {
+                // Already selected.
+            } else {
+                selectCustomer(profileID)
+            }
+            startScanFromNativeShell(target: target, scanKind: "quick", vpnHelper: false)
+        case .unselected:
+            appCommandController.openApp()
+        }
+        refreshMenuBarPanel()
+    }
+
+    private func panelControl(_ action: SharedMenuAction) {
+        if executionRouter.source == .legacy {
+            if action == .stop { stopSwiftManagedScan() }
+        } else {
+            sharedMenuAction(action, observedID: executionRouter.sharedScanner.controlState.jobs[.scan]?.sourceJobID)
+        }
+        refreshMenuBarPanel()
+    }
+
+    @objc func statusItemClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            showClassicStatusMenu()
+        } else {
+            toggleMenuBarPanel(relativeTo: sender)
+        }
+    }
+
+    private func showClassicStatusMenu() {
+        guard let statusItem, let statusMenu else { return }
+        closeMenuBarPanel()
+        statusItem.menu = statusMenu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    private func toggleMenuBarPanel(relativeTo button: NSStatusBarButton) {
+        if let popover = menuBarPopover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        refreshMenuBarPanel()
+        let popover = menuBarPopover ?? makeMenuBarPopover()
+        menuBarPopover = popover
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    private func makeMenuBarPopover() -> NSPopover {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+        let host = NSHostingController(rootView: MenuBarPanelView(store: menuBarPanelStore))
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
+        return popover
+    }
+
+    func closeMenuBarPanel() {
+        menuBarPopover?.performClose(nil)
+    }
+}
+
