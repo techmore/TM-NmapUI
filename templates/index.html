@@ -455,10 +455,14 @@
         transform: scale(0.98);
     }
     
-    /* Historical / dimmed rows shown while a new scan is pending */
-    .historical-row {
-        opacity: 0.4;
-        transition: opacity 0.4s ease;
+    /* Historical rows shown while a new scan is pending. Muted by colour and a
+       left marker rather than opacity, so their text keeps WCAG AA contrast. */
+    .historical-row > td {
+        filter: saturate(0.35);
+        background-color: oklch(98% 0.008 110);
+    }
+    .historical-row > td:first-child {
+        box-shadow: inset 3px 0 0 oklch(78% 0.03 110);
     }
 
     /* Gradient text */

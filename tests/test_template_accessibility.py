@@ -268,3 +268,11 @@ def test_secondary_scan_controls_wrap_on_small_screens():
     discovery_ui = (STATIC_JS / "discovery_ui.js").read_text(encoding="utf-8")
     assert '<div class="flex items-center gap-3 ml-4">' not in template
     assert "badge.className = 'absolute -top-1 -right-1" not in discovery_ui
+
+
+def test_historical_rows_are_muted_without_fading_their_text():
+    # Opacity fades the text with the row, which failed WCAG 1.4.3 at 0.4.
+    html = TEMPLATE.read_text(encoding="utf-8")
+    rules = re.findall(r"\.historical-row[^{]*\{([^}]*)\}", html)
+    assert rules, "historical-row style missing"
+    assert all("opacity" not in body for body in rules)
