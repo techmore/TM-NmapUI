@@ -310,7 +310,7 @@ function populateTableWithResults(data, isHistorical = false) {
 
                     if (col === 'cves') {
                         renderDelimitedCell(cell, items, {
-                            className: 'whitespace-nowrap text-purple-600 hover:text-purple-800 underline',
+                            className: 'whitespace-nowrap text-olive-800 hover:text-olive-950 underline decoration-olive-400',
                             onClick: event => {
                                 event.stopPropagation();
                                 showAssetDetailsModal(window.assetData[result.ip]);

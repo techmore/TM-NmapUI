@@ -275,6 +275,11 @@ def test_process_reaper_ignores_reentrant_signals_without_buffered_logging(monke
     monkeypatch.setattr(recovery.signal, "signal", lambda signum, handler: handlers.update({signum: handler}))
     monkeypatch.setattr(recovery.os, "write", lambda fd, message: notices.append((fd, message)))
 
+    def fake_exit(code):
+        raise SystemExit(code)
+
+    monkeypatch.setattr(recovery.os, "_exit", fake_exit)
+
     class Registry:
         def terminate_all(self):
             calls.append(True)
@@ -401,3 +406,29 @@ def test_scheduler_lock_releases_after_owner_is_killed(tmp_path):
         if process.poll() is None:
             process.kill()
         process.communicate(timeout=10)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Signal handling requires POSIX")
+def test_sigterm_exits_even_with_a_busy_non_daemon_thread(tmp_path):
+    """A stopped worker must not wait for request threads to finish."""
+    script = tmp_path / "busy.py"
+    script.write_text(
+        "import sys, threading, time\n"
+        "sys.path.insert(0, %r)\n"
+        "from nmapui.recovery import install_process_reaper\n"
+        "class Registry:\n"
+        "    def terminate_all(self): pass\n"
+        "assert install_process_reaper(job_registry=Registry())\n"
+        "threading.Thread(target=time.sleep, args=(60,), daemon=False).start()\n"
+        "print('ready', flush=True)\n"
+        "time.sleep(60)\n" % str(Path(__file__).resolve().parents[1])
+    )
+    env = {key: value for key, value in os.environ.items() if key != "PYTEST_CURRENT_TEST"}
+    process = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, text=True, env=env)
+    try:
+        assert process.stdout.readline().strip() == "ready"
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=10) == 128 + signal.SIGTERM
+    finally:
+        if process.poll() is None:
+            process.kill()

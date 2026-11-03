@@ -25,17 +25,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Retry stalled apt downloads
         # Config file, so apt calls made by other tools (playwright --with-deps) retry too.
         run: echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
       - name: Install system test dependencies
         run: sudo apt-get update && sudo apt-get install -y xsltproc
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
@@ -74,13 +74,13 @@ jobs:
       NMAPUI_ENABLE_UPDATE_CHECK: "false"
       NMAPUI_ENABLE_VULNERS: "false"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Retry stalled apt downloads
         # Config file, so apt calls made by other tools (playwright --with-deps) retry too.
         run: echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
       - name: Install report transformation dependency
         run: sudo apt-get update && sudo apt-get install -y xsltproc
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -98,7 +98,7 @@ jobs:
           tests/test_reporting_modules.py::test_representative_report_fixture_renders_shared_landmarks_for_web_and_pdf
       - name: Upload browser regression diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: browser-regression-diagnostics
           path: |
@@ -115,7 +115,7 @@ jobs:
       NMAPUI_RUN_PRODUCTION_SMOKE: "1"
       NMAPUI_RUN_STAGED_SMOKE: "1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Retry stalled apt downloads
         # Config file, so apt calls made by other tools (playwright --with-deps) retry too.
         run: echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
@@ -300,8 +300,8 @@ jobs:
       NMAPUI_ENABLE_UPDATE_CHECK: "false"
       NMAPUI_ENABLE_VULNERS: "false"
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -318,7 +318,7 @@ jobs:
         run: pytest -q tests/test_packaged_app_smoke.py
       - name: Upload packaged smoke diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: packaged-smoke-diagnostics
           path: |
@@ -341,14 +341,14 @@ jobs:
       NMAPUI_BUILD_CONFIGURATION: release
       CODESIGN_IDENTITY: "-"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Check out the exact shared engine for native HTTP integration
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: techmore/TM-NmapUI
           ref: 0e7d22ed8f60ea325dd6cbc77192ea9ff64340b9
           path: .shared-engine-fixture
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -383,7 +383,7 @@ jobs:
         run: python -m pytest -q -s --basetemp "$RUNNER_TEMP/nmapui-native-pytest" tests/test_macos_bundle_version.py tests/test_native_bundle.py tests/test_macos_build_preflight.py
       - name: Upload native diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-shared-scanner-evidence
           path: ${{ runner.temp }}/nmapui-shared-engine-ui
@@ -391,7 +391,7 @@ jobs:
           retention-days: 14
       - name: Upload native failure diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-macos-diagnostics
           path: |

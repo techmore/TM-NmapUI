@@ -230,7 +230,7 @@ def test_ci_workflow_covers_browser_and_packaged_smoke_jobs():
     assert "python -m playwright install --with-deps chromium" in ci_source
     assert "pytest -q tests/test_browser_regressions.py" in ci_source
     assert "pytest -q tests/test_packaged_app_smoke.py" in ci_source
-    assert "actions/upload-artifact@v4" in ci_source
+    assert "actions/upload-artifact@v7" in ci_source
     assert "native-macos:" in ci_source
     assert 'swift test --package-path packaging/macos --scratch-path "$NMAPUI_NATIVE_BUILD_DIR"' in ci_source
     assert "tests/test_macos_bundle_version.py tests/test_native_bundle.py" in ci_source

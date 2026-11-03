@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
@@ -8,6 +9,7 @@ import tempfile
 import subprocess
 
 from nmapui.runtime_log import append_runtime_log
+from nmapui import privileged
 from nmapui.runtime import env_flag
 import ipaddress
 from nmapui.reporting import (
@@ -25,12 +27,32 @@ from nmapui.validation import DEFAULT_MAX_TARGETS, count_target_addresses
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_SERVICE_SCAN_HOST_TIMEOUT = 120
+SERVICE_SCAN_DEADLINE_GRACE = 15
+
+
+def service_scan_host_timeout() -> int:
+    """Per-host service-scan limit in seconds (NMAPUI_SERVICE_SCAN_HOST_TIMEOUT).
+
+    Some devices need longer than the default: a live office /24 had hosts that
+    took 107-211 s for `-T3 -sV`, which the 120 s default reported as incomplete.
+    Values outside 30-3600 fall back to the default.
+    """
+    raw = os.environ.get("NMAPUI_SERVICE_SCAN_HOST_TIMEOUT", "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_SERVICE_SCAN_HOST_TIMEOUT
+    return value if 30 <= value <= 3600 else DEFAULT_SERVICE_SCAN_HOST_TIMEOUT
+
+
 def _run_deep_scan_with_xml(context, cmd, sid, target):
     """Keep normal text output and capture original XML for the approved PDF."""
+    host_timeout = service_scan_host_timeout()
     with tempfile.TemporaryDirectory(prefix="nmapui-evidence-") as directory:
         xml_path = Path(directory) / "scan.xml"
-        argv = list(cmd[:-1]) + ["--host-timeout", "120s", "-oX", str(xml_path), cmd[-1]]
-        result = context.run_cancellable_command(argv, sid=sid, job_type="scan", timeout=135)
+        argv = list(cmd[:-1]) + ["--host-timeout", f"{host_timeout}s", "-oX", str(xml_path), cmd[-1]]
+        result = context.run_cancellable_command(argv, sid=sid, job_type="scan", timeout=host_timeout + SERVICE_SCAN_DEADLINE_GRACE)
         if xml_path.is_file():
             size = xml_path.stat().st_size
             if 0 < size <= 16 * 1024 * 1024:
@@ -188,7 +210,7 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False, skip_host_dis
                 output = result.stdout
                 incomplete = getattr(result, "returncode", 0) != 0 or "due to host timeout" in output.lower()
             except subprocess.TimeoutExpired:
-                output = "Service scan exceeded the 135 second process deadline."
+                output = f"Service scan exceeded the {service_scan_host_timeout() + SERVICE_SCAN_DEADLINE_GRACE} second process deadline."
                 incomplete = True
             if incomplete:
                 emit_to_client(sid, "scan_raw_output", {"target": target, "output": output})
@@ -254,6 +276,48 @@ def start_deep_scan(context, targets, sid, is_gateway_phase=False, skip_host_dis
     except Exception:
         logger.exception("Deep scan failed")
         raise
+
+
+def _deep_scan_known_up(start_deep_scan_fn, context, targets, sid, is_gateway_phase, skip_host_discovery, arp_only):
+    """Service-scan targets; hosts seen only by ARP skip Nmap's ping check.
+
+    Those hosts ignore Nmap's unprivileged ping probes, so without -Pn the
+    service scan would report them down and scan nothing.
+    """
+    pinged = [ip for ip in targets if ip not in arp_only]
+    arp_targets = [ip for ip in targets if ip in arp_only]
+    if pinged:
+        start_deep_scan_fn(context, pinged, sid, is_gateway_phase=is_gateway_phase, **({"skip_host_discovery": True} if skip_host_discovery else {}))
+    if arp_targets:
+        start_deep_scan_fn(context, arp_targets, sid, is_gateway_phase=is_gateway_phase, skip_host_discovery=True)
+
+
+def merge_arp_only_hosts(hosts, arp_data, target):
+    """Add hosts that answered ARP but not Nmap's ping probes.
+
+    Only addresses inside an IP/CIDR target are added; other target forms
+    (ranges, hostnames) are left as Nmap reported them. Returns the new hosts.
+    """
+    try:
+        network = ipaddress.ip_network(str(target).strip(), strict=False)
+    except ValueError:
+        return []
+    known = {host["ip"] for host in hosts}
+    added = []
+    for ip in arp_data or {}:
+        try:
+            address = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if ip in known or address not in network:
+            continue
+        if network.num_addresses > 2 and address in (network.network_address, network.broadcast_address):
+            continue
+        host = {"ip": ip, "hostname": "", "status": "up", "ports": [], "discovered_by": "arp"}
+        hosts.append(host)
+        known.add(ip)
+        added.append(host)
+    return added
 
 
 def _finalize_scan_job_if_active(context, sid):
@@ -324,24 +388,38 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
             progress=5,
         )
         emit_to_client(sid, "quick_scan_start", f"Starting quick scan on {target}")
-        command_str = f"nmap -sn {'-Pn ' if skip_host_discovery else ''}{target}"
-        emit_to_client(sid, "scan_feedback", f"Executing: {command_str}")
-        logger.info(command_str)
-        socketio_sleep(0)
-
-        cmd = ["nmap", "-sn", target]
-        if skip_host_discovery:
-            cmd.insert(2, "-Pn")
-            emit_to_client(sid, "scan_feedback", "Host discovery is disabled; known targets may be scanned even when they do not respond to discovery probes.")
+        discovery_options = []
         if excluded_targets:
             exclusion_arg = ",".join(excluded_targets)
-            cmd[1:1] = ["--exclude", exclusion_arg]
+            discovery_options.extend(["--exclude", exclusion_arg])
             emit_to_client(
                 sid,
                 "scan_feedback",
                 f"Applying exclusions to quick scan: {exclusion_arg}",
             )
-        output = run_cancellable_command(cmd, sid=sid, job_type="scan").stdout
+        if skip_host_discovery:
+            discovery_options.append("-Pn")
+            emit_to_client(sid, "scan_feedback", "Host discovery is disabled; known targets may be scanned even when they do not respond to discovery probes.")
+
+        # Unprivileged `nmap -sn` only tries TCP 80/443, so hosts with neither
+        # port open look down. With privileges, nmap uses ARP on local subnets.
+        # Scan-only mode stays unprivileged by design.
+        discovery_prefix = [] if scan_only_mode else privileged.privileged_prefix()
+        cmd = privileged.nmap_argv("-sn", discovery_options, target, prefix=discovery_prefix)
+        command_str = " ".join(cmd)
+        emit_to_client(sid, "scan_feedback", f"Executing: {command_str}")
+        logger.info(command_str)
+        socketio_sleep(0)
+
+        result = run_cancellable_command(cmd, sid=sid, job_type="scan")
+        if discovery_prefix and getattr(result, "returncode", 0) != 0 and privileged.is_permission_denied(result):
+            message = "Privileged discovery denied; retrying unprivileged (hosts without TCP 80/443 open may be missed)"
+            logger.warning(message)
+            emit_to_client(sid, "scan_feedback", message)
+            socketio_sleep(0)
+            cmd = privileged.nmap_argv("-sn", discovery_options, target, prefix=[])
+            result = run_cancellable_command(cmd, sid=sid, job_type="scan")
+        output = result.stdout
         lines = output.split("\n")
 
         hosts, current_host = [], None
@@ -405,6 +483,15 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
             emit_to_client(sid, "arp_scan_start")
             socketio_sleep(0)
             arp_data = run_arp_scan(target, sid=sid)
+            if not skip_host_discovery:
+                added = merge_arp_only_hosts(hosts, arp_data, target)
+                if added:
+                    sorted_hosts = sorted(hosts, key=lambda host: ip_sort_key(host["ip"]))
+                    emit_to_client(
+                        sid,
+                        "scan_feedback",
+                        f"ARP found {len(added)} live host(s) that did not answer Nmap's ping probes; including them.",
+                    )
             for host in sorted_hosts:
                 if host["ip"] in arp_data:
                     host["mac"] = arp_data[host["ip"]]["mac"]
@@ -461,6 +548,7 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
             job_registry.update(sid, "scan", details={"firewall_discovery_only": True, "discovery_only_addresses": sorted(protected)})
             emit_to_client(sid, "scan_feedback", "Firewall/gateway discovery only: service scans skipped for " + (", ".join(sorted(protected)) or "no identified gateways"))
 
+        arp_only = {host["ip"] for host in hosts if host.get("discovered_by") == "arp"}
         logger.info("Phase 1 - Regular hosts: %s", len(regular_targets))
         logger.info("Phase 2 - Gateway hosts: %s", len(gateway_targets))
 
@@ -472,7 +560,7 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
                 message=f"Deep scanning {len(regular_targets)} regular hosts",
                 progress=60,
             )
-            start_deep_scan_fn(context, regular_targets, sid, is_gateway_phase=False, **({"skip_host_discovery": True} if skip_host_discovery else {}))
+            _deep_scan_known_up(start_deep_scan_fn, context, regular_targets, sid, False, skip_host_discovery, arp_only)
 
         if gateway_targets:
             update_job_progress(
@@ -482,7 +570,7 @@ def start_scan_task(context, sid, target, skip_host_discovery_override=None):
                 message=f"Deep scanning {len(gateway_targets)} gateway hosts",
                 progress=80,
             )
-            start_deep_scan_fn(context, gateway_targets, sid, is_gateway_phase=True, **({"skip_host_discovery": True} if skip_host_discovery else {}))
+            _deep_scan_known_up(start_deep_scan_fn, context, gateway_targets, sid, True, skip_host_discovery, arp_only)
 
         incomplete_hosts = ((context.job_registry.get(sid, "scan") or {}).get("details") or {}).get("incomplete_hosts", [])
         update_job_progress(sid, "scan", phase="complete", message=f"Scan workflow completed; {len(hosts)} discovered or explicitly selected hosts; {len(incomplete_hosts)} incomplete service scans", progress=100, details={"host_count": len(hosts), "skip_host_discovery": skip_host_discovery, "incomplete_hosts": incomplete_hosts})

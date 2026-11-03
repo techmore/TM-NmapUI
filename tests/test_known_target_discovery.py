@@ -36,7 +36,8 @@ def test_known_target_global_profile_persistence(tmp_path):
 
 
 @pytest.mark.parametrize("scan_only, exclusions", [(True, []), (False, ["192.168.1.9"])])
-def test_known_target_workflow_passes_flag_through_both_phases(scan_only, exclusions):
+def test_known_target_workflow_passes_flag_through_both_phases(scan_only, exclusions, monkeypatch):
+    monkeypatch.setattr('nmapui.workflows.privileged.privileged_prefix', lambda: [])
     commands, deep_calls, events = [], [], []
     registry = ClientJobRegistry()
     registry.start('sid', 'scan')
@@ -53,7 +54,7 @@ def test_known_target_workflow_passes_flag_through_both_phases(scan_only, exclus
         'emit_job_status': lambda *args: None, 'logger': logging.getLogger('fixture'), 'vulners_script': Path('vulners.nse'), 'ip_sort_key': lambda ip: ip,
     })
     start_scan_task(context, 'sid', '127.0.0.1')
-    assert commands == [["nmap", *(["--exclude", "192.168.1.9"] if exclusions else []), '-sn', '-Pn', '127.0.0.1']]
+    assert commands == [["nmap", '-sn', *(["--exclude", "192.168.1.9"] if exclusions else []), '-Pn', '127.0.0.1']]
     if exclusions:
         assert any('skipping ARP enrichment' in str(data) for event, data in events if event == 'scan_feedback')
     assert deep_calls == [{'is_gateway_phase': False, 'skip_host_discovery': True}]
@@ -61,7 +62,8 @@ def test_known_target_workflow_passes_flag_through_both_phases(scan_only, exclus
 
 
 @pytest.mark.parametrize("override, expected", [(True, True), (False, False)])
-def test_per_scan_known_target_override_controls_discovery_and_deep_scan(override, expected):
+def test_per_scan_known_target_override_controls_discovery_and_deep_scan(override, expected, monkeypatch):
+    monkeypatch.setattr('nmapui.workflows.privileged.privileged_prefix', lambda: [])
     commands, deep_calls = [], []
     saved_settings = {'scan_rules': {'skip_host_discovery': not expected, 'firewall_discovery_only': False}}
     registry = ClientJobRegistry()
