@@ -182,3 +182,20 @@ def test_service_env_rejects_process_injection_settings(tmp_path, setting):
 
     with pytest.raises(ValueError, match="Unsupported service setting"):
         _validate(credentials)
+
+
+@pytest.mark.parametrize("value, ok", [("30", True), ("300", True), ("3600", True), ("29", False), ("3601", False), ("5m", False), ("", False)])
+def test_service_env_validates_service_scan_host_timeout(tmp_path, value, ok):
+    credentials = tmp_path / "nmapui.env"
+    credentials.write_text(
+        "NMAPUI_DATA_DIR=/var/lib/nmapui\n"
+        "NMAPUI_LOG_DIR=/var/log/nmapui\n"
+        "PLAYWRIGHT_BROWSERS_PATH=/opt/nmapui/playwright-browsers\n"
+        f"NMAPUI_SERVICE_SCAN_HOST_TIMEOUT={value}\n",
+        encoding="utf-8",
+    )
+    if ok:
+        _validate(credentials)
+    else:
+        with pytest.raises(ValueError, match="NMAPUI_SERVICE_SCAN_HOST_TIMEOUT"):
+            _validate(credentials)
