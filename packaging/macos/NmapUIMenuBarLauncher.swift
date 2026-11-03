@@ -128,7 +128,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startItem.isEnabled = !running
         let ownsRuntime = pythonProcess?.isRunning == true
         stopItem.isEnabled = ownsRuntime
-        restartItem.isEnabled = ownsRuntime || !running
+        // Restart only applies to a runtime this app started; when nothing is
+        // running, Start Scanner is the action.
+        restartItem.isEnabled = ownsRuntime
         let managedDetail = running && !ownsRuntime ? "This scanner is managed by its service; this app only displays its status." : nil
         stopItem.toolTip = managedDetail
         restartItem.toolTip = managedDetail
@@ -323,7 +325,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func uninstallApp(_ sender: Any?) {
         let alert = NSAlert()
         alert.messageText = "Uninstall NmapUI"
-        alert.informativeText = "Quit the app and move NmapUI.app to the Trash to uninstall."
+        alert.informativeText = """
+        1. If you installed the background service, remove it first: \
+        sudo packaging/macos/install-daemon.sh --uninstall (from the NmapUI source folder).
+        2. Quit NmapUI and move NmapUI.app to the Trash.
+
+        Scan data, reports and settings stay in the NmapUI data folder. \
+        Delete that folder too if you no longer need them.
+        """
         alert.addButton(withTitle: "OK")
         alert.alertStyle = .informational
         alert.runModal()
