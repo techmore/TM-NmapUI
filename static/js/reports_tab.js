@@ -750,8 +750,14 @@ async function loadReportsTab(force = false) {
 }
 
 function syncHistoryFocusButtons() {
-    document.getElementById('history-focus-current-btn')?.classList.toggle('action-button-primary', historyViewMode === 'current');
-    document.getElementById('history-focus-all-btn')?.classList.toggle('action-button-primary', historyViewMode === 'all');
+    [['history-focus-current-btn', 'current'], ['history-focus-all-btn', 'all']].forEach(([id, mode]) => {
+        const button = document.getElementById(id);
+        if (!button) return;
+        const selected = historyViewMode === mode;
+        button.classList.toggle('action-button-primary', selected);
+        button.classList.toggle('action-button-secondary', !selected);
+        button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    });
 }
 
 // Tab switching lives in site_chrome.js (the one switchAppTab). This module

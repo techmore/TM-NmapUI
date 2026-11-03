@@ -1184,6 +1184,8 @@ def generate_report_task(context, sid, data):
                 "status": "success",
                 "path": relative_path,
                 "scan_dir": str(scan_dir),
+                # Lets the UI drop the PDF download when rendering failed.
+                "pdf_available": pdf_path.exists(),
                 "diff_summary": diff_summary,
                 "google_drive_upload": google_drive_upload,
             },

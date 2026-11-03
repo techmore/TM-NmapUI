@@ -825,7 +825,7 @@ def test_frontend_layout_guide_and_page_shell_exist():
     assert template.count('class="page-shell"') >= 2
     assert 'class="results-band"' in template
     # The table starts hidden behind #discovery-empty-state until rows exist.
-    assert 'class="table-fixed min-w-[2400px] hidden"' in template
+    assert 'class="table-fixed w-full min-w-[70rem] hidden"' in template
     assert template.count("modal-overlay") >= 6
     assert template.count("modal-panel") >= 6
     assert template.count("form-control form-control-md") >= 10
@@ -1637,7 +1637,7 @@ def test_template_does_not_keep_inline_report_generation_block():
     assert "getClientJobs: window.getClientJobs" in bootstrap
     assert "getLastScanTarget: window.getLastScanTarget" in bootstrap
     assert "Complete + PDF" in template
-    assert 'aria-label="Run a complete scan and generate a new PDF"' in template
+    assert 'title="Scan ports, services and Vulners CVEs, then build a PDF report"' in template
     assert 'id="report-status-actions"' in template
     assert 'id="tab-dashboard-btn"' in template
     assert 'id="tab-history-btn"' in template
@@ -1730,7 +1730,7 @@ def test_template_uses_dom_helpers_for_scan_result_rendering():
     reports_tab_module = (ROOT / "static" / "js" / "reports_tab.js").read_text()
     settings_tab_module = (ROOT / "static" / "js" / "settings_tab.js").read_text()
 
-    assert "function renderCveArrayCell(cell, cveArray)" in discovery_module
+    assert "function renderCveArrayCell(cell, cveArray, options = {})" in discovery_module
     assert "function appendServiceInfoLine(cell, line)" in discovery_module
     assert "function renderDelimitedCell(cell, items, options = {})" in discovery_module
     assert "function formatReportCompleteMessage(data)" in discovery_module
@@ -1740,10 +1740,10 @@ def test_template_uses_dom_helpers_for_scan_result_rendering():
     assert "socket.on('connect', () => {" in discovery_module
     assert "window.setTimeout(() => {" in discovery_module
     assert "socket.emit('get_local_ip');" in discovery_module
-    assert "function showReportActions(path)" in report_status_module
+    assert "function showReportActions(path, { pdf = true } = {})" in report_status_module
     assert "function showReportCompleteStatus(data)" in report_status_module
     assert "buildLink(`/api/runtime/reports/${path}/html`, 'View Report', true);" in report_status_module
-    assert "buildLink(`/api/runtime/reports/${path}/pdf`, 'Download PDF');" in report_status_module
+    assert "if (pdf) buildLink(`/api/runtime/reports/${path}/pdf`, 'Download PDF');" in report_status_module
     assert "buildLink(`/api/runtime/reports/${path}/xml`, 'Download XML');" in report_status_module
     assert "function initializeReportsTab()" in reports_tab_module
     assert "async function compareHistoryScans(basePath, currentPath)" in reports_tab_module

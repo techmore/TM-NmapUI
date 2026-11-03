@@ -15,6 +15,17 @@ let activeScanSourceJobId = null;
 // paused, and when the current pause began (ms epoch) while paused.
 let activeScanPausedSeconds = 0;
 let activeScanPausedSince = null;
+// Running scan/report jobs as last reported by job_status. Complete and
+// Chunked runs are a scan job plus a report job; either one locks every start
+// button, and the report job says which kind of run it is.
+const runningScanJobs = { scan: null, report: null };
+
+function runningScanKind() {
+    if (runningScanJobs.report) return runningScanJobs.report.details?.chunked ? 'chunked' : 'complete';
+    if (!runningScanJobs.scan) return null;
+    // A Complete/Chunked run's scan job can outlive its report job.
+    return activeScanKind && activeScanKind !== 'quick' ? activeScanKind : 'quick';
+}
 
 function setText(id, value) {
     const el = document.getElementById(id);
@@ -324,11 +335,18 @@ function getDiscoveryTableStats() {
     const rows = Array.from(document.querySelectorAll('#discovery-table tbody tr'));
     return rows.reduce((stats, row) => {
         stats.hostCount++;
-        const ports = row.querySelector('.ports-cell')?.textContent || '';
-        if (ports && ports !== '--') {
-            stats.openPortCount += ports.split(',').map(port => port.trim()).filter(Boolean).length;
+        const portsCell = window.getDiscoveryTableCell?.(row, 'open_ports') || row.querySelector('.ports-cell');
+        if (portsCell) {
+            // Port cells hold one line per port (or a legacy comma list).
+            const lines = portsCell.children.length
+                ? Array.from(portsCell.children).map(line => line.textContent.trim())
+                : (portsCell.textContent || '').split(',').map(port => port.trim());
+            stats.openPortCount += lines.filter(port => port && port !== '--').length;
         }
-        stats.criticalCVECount += Number(row.dataset.highCveCount || 0);
+        const ip = window.getDiscoveryTableCell?.(row, 'ip')?.textContent;
+        const vulnerabilities = (ip && window.assetData?.[ip]?.vulnerabilities) || [];
+        const high = vulnerabilities.filter(cve => Number.parseFloat(cve.score) >= 7).length;
+        stats.criticalCVECount += high || Number(row.dataset.highCveCount || 0);
         stats.lowCVECount += Number(row.dataset.lowCveCount || 0);
         return stats;
     }, { hostCount: 0, openPortCount: 0, criticalCVECount: 0, lowCVECount: 0 });
@@ -341,7 +359,7 @@ function updateQuickScanStats(stats = getDiscoveryTableStats()) {
 function updateDeepScanStats(stats = getDiscoveryTableStats()) {
     setText('deep-hosts', stats.hostCount || '--');
     setText('deep-ports', stats.openPortCount || '--');
-    setText('deep-cves', stats.criticalCVECount ? `${stats.criticalCVECount} >=7.0` : '--');
+    setText('deep-cves', stats.criticalCVECount ? `${stats.criticalCVECount} (CVSS 7.0+)` : '--');
 }
 
 function highlightActiveScanHost(data) {
@@ -410,8 +428,12 @@ function initializeScanRuntime(socket) {
         const pauseState = applyScanPauseState(job);
         if (job.status === 'running' || job.status === 'cancelling') {
             activeScanSourceJobId = job.source_job_id || null;
-            setScanUIActive(1, 'quick');
-            if (activeScanPhase !== 1) startPhaseTimer(1, job.started_at);
+            runningScanJobs.scan = job;
+            // Complete/Chunked runs time the Deep Scan card; Quick times Quick.
+            const kind = runningScanKind() || 'quick';
+            const phase = kind === 'quick' ? 1 : 2;
+            setScanUIActive(phase, kind);
+            if (activeScanPhase !== phase) startPhaseTimer(phase, job.started_at);
         } else if (activeScanKind === 'quick') {
             let duration = activePhaseStartedAt ? (Date.now() - activePhaseStartedAt) / 1000 : 0;
             const startedAt = Date.parse(job.started_at || '');
@@ -422,6 +444,30 @@ function initializeScanRuntime(socket) {
             stopPhaseTimer(1, duration);
             if (job.status === 'completed') showLastScanDuration(duration);
             resetScanUI();
+        }
+    });
+
+    socket.on('job_status', (job = {}) => {
+        if ((job?.job_type !== 'scan' && job?.job_type !== 'report') || !window.acceptJobStatus(job)) return;
+        const wasBusy = !!runningScanKind();
+        const running = job.status === 'running' || job.status === 'cancelling';
+        runningScanJobs[job.job_type] = running ? job : null;
+        const kind = runningScanKind();
+        if (kind) {
+            if (kind !== 'quick' && activeScanPhase === 1) {
+                // The scan job can report before its report job; move the
+                // running clock from the Quick Scan card to the Deep Scan card.
+                setText('quick-time', '--:--:--');
+                startPhaseTimer(2, runningScanJobs.scan?.started_at || job.started_at);
+            }
+            setScanUIActive(activeScanPhase || (kind === 'quick' ? 1 : 2), kind);
+            window.setDiscoveryEmptyVariant?.('scanning', job.details?.target);
+        } else if (wasBusy) {
+            if (activeScanPhase === 2 && activePhaseStartedAt) {
+                stopPhaseTimer(2, (Date.now() - activePhaseStartedAt) / 1000 - activeScanPausedSeconds);
+            }
+            resetScanUI();
+            announceScanOutcome(job);
         }
     });
 
@@ -564,7 +610,8 @@ function initializeScanRuntime(socket) {
                 reportActionLink({ href: data.pdfUrl, title: 'Download PDF', icon: 'download', download: true, disabled: !data.pdfUrl }),
                 reportActionLink({ href: data.drivePdfUrl || data.driveHtmlUrl, title: 'Open PDF in Google Drive', icon: 'cloud', disabled: !(data.drivePdfUrl || data.driveHtmlUrl) })
             ].join('');
-            reportStatus.classList.remove('hidden');
+            // Links to the finished report must not time out with the strip.
+            window.showReportStatus?.('', 'success', { persist: true });
             document.getElementById('report-status-text').innerHTML = `
                 <div class="flex flex-wrap items-center gap-3">
                     <span class="min-w-0 flex-1 text-sm text-emerald-900 font-medium">Report Ready: <strong>${escapeHTML(data.name)}</strong>${data.customerProfile ? `<span class="block truncate text-xs text-emerald-700">${escapeHTML(data.customerProfile.folderName)}</span>` : ''}</span>
@@ -715,26 +762,51 @@ function renderHop(data) {
 
 function getScanButtonByKind(kind) {
     if (kind === 'complete') return document.getElementById('generate-report-btn');
+    if (kind === 'chunked') return document.getElementById('chunked-scan-btn');
     if (kind === 'dragnet') return document.getElementById('dragnet-scan-btn');
     return document.getElementById('start-scan-btn');
 }
 
+function scanStartButtons() {
+    return ['start-scan-btn', 'generate-report-btn', 'chunked-scan-btn', 'dragnet-scan-btn']
+        .map(id => document.getElementById(id))
+        .filter(Boolean);
+}
+
+// Replace the last progress line with the outcome so a finished scan never
+// leaves "Executing: nmap ..." or a gateway notice as the final status.
+function announceScanOutcome(job) {
+    const rows = document.querySelectorAll('#discovery-table tbody tr').length;
+    const target = job?.details?.target || document.getElementById('scan-target')?.value || 'the target';
+    const show = typeof window.showReportStatus === 'function' ? window.showReportStatus : () => {};
+    if (job.status === 'completed') {
+        if (rows === 0) {
+            window.setDiscoveryEmptyVariant?.('no-hosts', target);
+            show(`Scan of ${target} finished: no live hosts responded.`, 'info');
+        } else if (job.job_type === 'scan') {
+            show(`Scan of ${target} finished: ${rows} live host${rows === 1 ? '' : 's'} found.`, 'success');
+        }
+        return;
+    }
+    if (rows === 0) window.setDiscoveryEmptyVariant?.('initial');
+    if (job.status === 'cancelled') show(`Scan of ${target} was stopped before it finished.`, 'info');
+}
+
 function setScanUIActive(phase, scanKind = activeScanKind || 'quick') {
     activeScanKind = scanKind;
-    const scanButtons = [
-        document.getElementById('start-scan-btn'),
-        document.getElementById('generate-report-btn'),
-        document.getElementById('dragnet-scan-btn')
-    ].filter(Boolean);
     const activeButton = getScanButtonByKind(scanKind);
 
-    scanButtons.forEach(button => {
+    // Every start button is locked while anything runs; the running one stays
+    // at full strength and says so, the others dim and explain why.
+    scanStartButtons().forEach(button => {
+        const isActive = button === activeButton;
         button.disabled = true;
-        button.classList.toggle('opacity-50', button !== activeButton);
-        button.classList.toggle('opacity-90', button === activeButton);
-        button.classList.toggle('ring-4', button === activeButton);
-        button.classList.toggle('ring-white/50', button === activeButton);
-        button.querySelector('.scan-button-pulse')?.classList.toggle('hidden', button !== activeButton);
+        button.classList.toggle('opacity-50', !isActive);
+        button.classList.toggle('cursor-not-allowed', !isActive);
+        button.classList.toggle('scan-button-running', isActive);
+        button.setAttribute('aria-busy', isActive ? 'true' : 'false');
+        button.title = isActive ? 'This scan is running' : 'Another scan is running. Stop it or wait for it to finish.';
+        button.querySelector('.scan-button-pulse')?.classList.toggle('hidden', !isActive);
     });
 
     if (phase === 1) {
@@ -750,13 +822,11 @@ function setScanUIActive(phase, scanKind = activeScanKind || 'quick') {
 function resetScanUI() {
     activeScanKind = null;
     applyScanPauseState(null);
-    [
-        document.getElementById('start-scan-btn'),
-        document.getElementById('generate-report-btn'),
-        document.getElementById('dragnet-scan-btn')
-    ].filter(Boolean).forEach(button => {
+    scanStartButtons().forEach(button => {
         button.disabled = false;
-        button.classList.remove('opacity-50', 'opacity-90', 'ring-4', 'ring-white/50');
+        button.classList.remove('opacity-50', 'cursor-not-allowed', 'scan-button-running');
+        button.removeAttribute('aria-busy');
+        button.removeAttribute('title');
         button.querySelector('.scan-button-pulse')?.classList.add('hidden');
     });
     if (document.getElementById('quick-scan-indicator')) document.getElementById('quick-scan-indicator').classList.add('hidden');

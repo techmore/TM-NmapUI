@@ -13,6 +13,7 @@
         closeAssetDetailsModal: () => window.closeAssetDetailsModal(),
         showCustomerForm: () => window.showCustomerForm(),
         hideScanSummaryBanner: () => window.hideScanSummaryBanner(),
+        hideReportStatus: () => window.hideReportStatus(),
         hideAutoScanTimeModal: () => window.hideAutoScanTimeModal(),
         saveAutoScanTimes: () => window.saveAutoScanTimes(),
         saveAndRunScan: () => window.saveAndRunScan(),

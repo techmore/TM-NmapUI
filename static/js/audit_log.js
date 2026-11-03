@@ -340,6 +340,7 @@
         if (!panel) return;
         const isHidden = panel.classList.contains('hidden');
         panel.classList.toggle('hidden');
+        document.getElementById('log-panel-toggle-btn')?.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
         if (isHidden) {
             const container = document.getElementById('log-entries');
             if (container) {
