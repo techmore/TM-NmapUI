@@ -8,6 +8,9 @@ function setSafeExternalLink(link, rawUrl) {
     return true;
 }
 
+// Shared line box for the port, version and CVE columns so their rows align.
+const RESULT_LINE_CLASS = 'whitespace-nowrap text-xs leading-6';
+
 function renderDelimitedCell(cell, items, options = {}) {
     cell.replaceChildren();
     const values = Array.isArray(items) ? items : [];
@@ -23,31 +26,66 @@ function renderDelimitedCell(cell, items, options = {}) {
     });
 }
 
-function renderCveArrayCell(cell, cveArray) {
-    cell.replaceChildren();
-    cveArray.forEach(cve => {
-        const row = document.createElement('div');
-        row.className = 'text-xs py-0.5';
+// The table shows the worst few findings; the host's Details dialog lists all.
+const CVE_CELL_LIMIT = 4;
 
-        const score = document.createElement('span');
-        score.className = 'inline-block px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-medium mr-1';
-        score.textContent = cve.score;
-        row.appendChild(score);
+function renderCveArrayCell(cell, cveArray, options = {}) {
+    cell.replaceChildren();
+    const sorted = window.sortCvesBySeverity(cveArray);
+    sorted.slice(0, CVE_CELL_LIMIT).forEach(cve => {
+        const row = document.createElement('div');
+        row.className = 'flex flex-wrap items-center gap-x-1.5 gap-y-0.5 py-0.5 text-xs';
+        row.appendChild(window.createCveSeverityChip(cve.score));
 
         const link = document.createElement('a');
-        link.className = 'text-olive-600 hover:text-olive-800 hover:underline';
+        link.className = 'font-mono text-olive-700 underline decoration-olive-300 underline-offset-2 hover:text-olive-950';
         link.textContent = cve.id;
         if (setSafeExternalLink(link, cve.url)) {
+            link.setAttribute('aria-label', `${cve.id} (opens in a new tab)`);
             row.appendChild(link);
         } else {
             const fallback = document.createElement('span');
-            fallback.className = 'text-olive-700';
+            fallback.className = 'font-mono text-olive-800';
             fallback.textContent = cve.id;
             row.appendChild(fallback);
         }
 
         cell.appendChild(row);
     });
+
+    const hidden = sorted.length - CVE_CELL_LIMIT;
+    if (hidden > 0) {
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'mt-1 min-h-6 text-xs font-semibold text-olive-700 underline underline-offset-2 hover:text-olive-950';
+        more.textContent = `+${hidden} more`;
+        if (options.ip) more.setAttribute('aria-label', `+${hidden} more vulnerabilities on ${options.ip}`);
+        more.addEventListener('click', event => {
+            event.stopPropagation();
+            if (options.ip) openHostDetails(options.ip);
+        });
+        cell.appendChild(more);
+    }
+}
+
+function hostRecord(ip) {
+    return (window.assetData && window.assetData[ip]) || (window.currentHosts && window.currentHosts[ip]) || null;
+}
+
+// Keep the record behind the Details dialog in step with live scan results.
+function mergeHostRecord(ip, fields) {
+    window.assetData = window.assetData || {};
+    window.currentHosts = window.currentHosts || {};
+    const record = hostRecord(ip) || { ip };
+    Object.assign(record, fields);
+    window.assetData[ip] = record;
+    window.currentHosts[ip] = record;
+    return record;
+}
+
+function openHostDetails(ip) {
+    const record = hostRecord(ip);
+    if (record && typeof showAssetDetailsModal === 'function') showAssetDetailsModal(record);
 }
 
 function appendServiceInfoLine(cell, line) {
@@ -122,7 +160,8 @@ function updateHistoryBadge(customerName) {
     if (count > 0) {
         badge.textContent = count > 99 ? '99+' : count;
         badge.classList.remove('hidden');
-        badge.className = 'absolute -top-1 -right-1 flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-olive-900 text-white text-[10px] font-bold shadow-sm transition-all scale-110';
+        // In flow after the label: an absolute badge covered the end of "Archive".
+        badge.className = 'ml-0.5 -translate-y-1.5 flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-olive-900 text-white text-[10px] font-bold shadow-sm transition-all scale-110';
         badge.classList.remove('scale-110');
         void badge.offsetWidth;
         badge.classList.add('scale-110');
@@ -179,29 +218,37 @@ function updateRowWithResults(host) {
     }
 
     const ports = host.ports || [];
-    const portsStr = ports.map(port => `${port.port}/${String(port.service || '').split(/\s+/)[0]}`).join(', ');
+    const portLabels = ports.map(port => `${port.port}/${String(port.service || '').split(/\s+/)[0]}`);
+    const portsStr = portLabels.join(', ');
     const openPortsCell = getDiscoveryTableCell(rowToUpdate, 'open_ports');
     const versionCell = getDiscoveryTableCell(rowToUpdate, 'version');
     const cvesCell = getDiscoveryTableCell(rowToUpdate, 'cves');
 
-    if (openPortsCell) openPortsCell.textContent = portsStr;
+    // One line per port in both columns so each port sits beside its version.
+    if (openPortsCell) renderDelimitedCell(openPortsCell, portLabels, { className: RESULT_LINE_CLASS });
     if (versionCell) {
         versionCell.replaceChildren();
         ports.forEach(port => {
+            // The service name already shows under Open Ports; keep the product/version here.
+            const [, ...detail] = String(port.service ?? '').trim().split(/\s+/);
             const service = document.createElement('div');
-            service.className = 'text-xs';
-            service.textContent = port.service ?? '';
+            service.className = `${RESULT_LINE_CLASS} truncate${detail.length ? '' : ' text-olive-600'}`;
+            service.textContent = detail.length ? detail.join(' ') : '\u2014';
+            if (detail.length) service.title = detail.join(' ');
             versionCell.appendChild(service);
         });
     }
 
-    if (cvesCell) renderCveArrayCell(cvesCell, Array.isArray(host.cves) ? host.cves : []);
+    const cves = Array.isArray(host.cves) ? host.cves : [];
+    if (cvesCell) renderCveArrayCell(cvesCell, cves, { ip: host.ip });
 
-    if (window.currentHosts[host.ip]) {
-        window.currentHosts[host.ip].open_ports = portsStr;
-        window.currentHosts[host.ip].version = ports.map(port => port.service).join(', ');
-        window.currentHosts[host.ip].cves = (host.cves || []).map(cve => cve.id).join(', ');
-    }
+    mergeHostRecord(host.ip, {
+        open_ports: portsStr,
+        ports_detail: ports,
+        version: ports.map(port => port.service).join(', '),
+        cves: cves.map(cve => cve.id).join(', '),
+        vulnerabilities: cves,
+    });
 }
 
 function hostsStorageKey() {
@@ -303,49 +350,59 @@ function populateTableWithResults(data, isHistorical = false) {
             cell.dataset.column = col;
             cell.className = 'px-4 py-3 text-olive-900';
 
-            if (col === 'open_ports' || col === 'version' || col === 'cves') {
-                const value = result[col] || '';
-                if (value) {
-                    const items = value.split(',').map(item => item.trim()).filter(item => item);
-
-                    if (col === 'cves') {
-                        renderDelimitedCell(cell, items, {
-                            className: 'whitespace-nowrap text-olive-800 hover:text-olive-950 underline decoration-olive-400',
-                            onClick: event => {
-                                event.stopPropagation();
-                                showAssetDetailsModal(window.assetData[result.ip]);
-                            },
-                        });
-                    } else {
-                        renderDelimitedCell(cell, items);
-                    }
+            if (col === 'cves') {
+                // Historical assets carry structured Vulners findings; live
+                // quick-scan rows only have an ID list until the deep scan lands.
+                if (Array.isArray(result.vulnerabilities) && result.vulnerabilities.length) {
+                    renderCveArrayCell(cell, result.vulnerabilities, { ip: result.ip });
                 } else {
-                    cell.textContent = '';
+                    renderDelimitedCell(cell, splitResultList(result.cves), { className: `${RESULT_LINE_CLASS} font-mono` });
                 }
-                if (col === 'open_ports') cell.classList.add('open-ports-cell');
+            } else if (col === 'open_ports' || col === 'version') {
+                const value = col === 'open_ports' ? (result.open_ports || (typeof result.ports === 'string' ? result.ports : '')) : result.version;
+                renderDelimitedCell(cell, splitResultList(value), { className: col === 'version' ? `${RESULT_LINE_CLASS} truncate` : RESULT_LINE_CLASS });
             } else {
                 cell.textContent = result[col] || '';
             }
 
+            if (col === 'ip') cell.classList.add('font-mono', 'text-sm', 'font-medium');
             if (col === 'mac') cell.classList.add('font-mono', 'text-xs');
-            if (col === 'vendor') cell.classList.add('text-olive-600');
-            if (col === 'hostname') {
-                cell.classList.add('truncate', 'max-w-[150px]', 'block');
-                cell.title = result[col];
-            }
+            if (col === 'vendor') cell.classList.add('text-olive-700');
+            if (col === 'hostname') cell.title = result[col] || '';
         });
-        const rescanCell = newRow.insertCell(-1);
-        rescanCell.dataset.column = 'actions';
-        rescanCell.className = 'px-4 py-3';
+        const actionsCell = newRow.insertCell(-1);
+        actionsCell.dataset.column = 'actions';
+        actionsCell.className = 'px-4 py-3';
+        const actions = document.createElement('div');
+        actions.className = 'flex flex-col items-stretch gap-1.5';
+
+        // Accessible names start with the visible word (WCAG 2.5.3) and add the host.
+        const detailsBtn = document.createElement('button');
+        detailsBtn.type = 'button';
+        detailsBtn.textContent = 'Details';
+        detailsBtn.setAttribute('aria-label', `Details for ${result.ip}`);
+        detailsBtn.className = 'inline-flex min-h-7 items-center justify-center rounded-full border border-olive-400 bg-white px-3 text-xs font-medium text-olive-900 transition-colors hover:bg-olive-100';
+        detailsBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            openHostDetails(result.ip);
+        });
+
         const rescanBtn = document.createElement('button');
+        rescanBtn.type = 'button';
         rescanBtn.textContent = 'Rescan';
-        rescanBtn.classList.add('inline-flex', 'items-center', 'justify-center', 'rounded-full', 'bg-olive-950', 'text-white', 'hover:bg-olive-800', 'font-medium', 'py-1', 'px-3', 'text-xs', 'transition-colors');
+        rescanBtn.setAttribute('aria-label', `Rescan ${result.ip}`);
+        rescanBtn.className = 'inline-flex min-h-7 items-center justify-center rounded-full bg-olive-950 px-3 text-xs font-medium text-white transition-colors hover:bg-olive-800';
         rescanBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             handleRescan(result['ip']);
         });
-        rescanCell.appendChild(rescanBtn);
+        actions.append(detailsBtn, rescanBtn);
+        actionsCell.appendChild(actions);
     });
+}
+
+function splitResultList(value) {
+    return String(value || '').split(',').map(item => item.trim()).filter(Boolean);
 }
 
 function initializeDiscoveryUI(socket) {
@@ -396,7 +453,9 @@ function initializeDiscoveryUI(socket) {
             if (getDiscoveryTableCell(row, 'ip')?.textContent === data.target) {
                 let cell = getDiscoveryTableCell(row, 'cves');
                 if (!cell) break;
-                renderCveArrayCell(cell, data.cve_array || []);
+                renderCveArrayCell(cell, data.cve_array || [], { ip: data.target });
+                mergeHostRecord(data.target, { vulnerabilities: data.cve_array || [] });
+                if (typeof updateDeepScanStats === 'function') updateDeepScanStats();
                 break;
             }
         }
@@ -423,8 +482,23 @@ function initializeDiscoveryUI(socket) {
         document.getElementById('quick-hosts').textContent = data.hosts_up;
     });
 
+    // A host whose service scan timed out would otherwise just look empty.
+    socket.on('deep_scan_host_complete', data => {
+        if (data?.status !== 'incomplete' || !data.ip) return;
+        const row = window.discoveryRowsByIp?.get(data.ip)
+            || Array.from(document.querySelectorAll('#discovery-table tbody tr')).find(r => getDiscoveryTableCell(r, 'ip')?.textContent === data.ip);
+        const cell = row && getDiscoveryTableCell(row, 'open_ports');
+        if (!cell || cell.textContent.trim()) return;
+        const note = document.createElement('div');
+        note.className = 'text-xs font-medium text-amber-800';
+        note.textContent = 'Service scan incomplete. Use Rescan to retry this host.';
+        cell.replaceChildren(note);
+    });
+
     socket.on('deep_scan_results', data => {
         data.forEach(updateRowWithResults);
+        // The Deep Scan card has no server progress events of its own.
+        if (typeof updateDeepScanStats === 'function') updateDeepScanStats();
         saveHostsToStorage();
         updateLastScanResults('deepScan', data);
         if (window.tableSorter) window.tableSorter.resort();
@@ -607,7 +681,22 @@ function initializeDiscoveryEmptyState() {
     new MutationObserver(syncDiscoveryEmptyState).observe(tbody, { childList: true });
 }
 
+// The empty state has three messages: before any scan, while one runs, and
+// after a scan that found nothing (so "Enter a target above" never follows a
+// finished scan).
+function setDiscoveryEmptyVariant(variant, target) {
+    const emptyState = document.getElementById('discovery-empty-state');
+    if (!emptyState) return;
+    emptyState.querySelectorAll('[data-empty-variant]').forEach(block => {
+        block.hidden = block.dataset.emptyVariant !== variant;
+    });
+    if (target) {
+        emptyState.querySelectorAll('[data-empty-target]').forEach(el => { el.textContent = target; });
+    }
+}
+
 window.syncDiscoveryEmptyState = syncDiscoveryEmptyState;
+window.setDiscoveryEmptyVariant = setDiscoveryEmptyVariant;
 
 function formatReportCompleteMessage(data) {
     const scanDir = data?.scan_dir || 'saved scan folder';
@@ -622,8 +711,12 @@ function formatReportCompleteMessage(data) {
         driveMessage = ' Google Drive upload was skipped.';
     }
 
+    // The PDF renderer can be missing on a scanner; say so instead of offering a dead link.
+    const pdfMessage = data?.pdf_available === false
+        ? ' The PDF could not be rendered on this scanner: open the HTML report and print it to PDF.'
+        : '';
     if (!diffSummary || !diffSummary.has_changes) {
-        return `Report generated successfully. Check: ${scanDir}.${driveMessage}`;
+        return `Report generated successfully. Check: ${scanDir}.${pdfMessage}${driveMessage}`;
     }
 
     const facts = [];
@@ -644,7 +737,7 @@ function formatReportCompleteMessage(data) {
     }
 
     const summaryText = facts.length ? ` Changes detected: ${facts.join(', ')}.` : ' Changes detected.';
-    return `Report generated successfully. Check: ${scanDir}.${summaryText}${driveMessage}`;
+    return `Report generated successfully. Check: ${scanDir}.${summaryText}${pdfMessage}${driveMessage}`;
 }
 
 window.setSafeExternalLink = setSafeExternalLink;
