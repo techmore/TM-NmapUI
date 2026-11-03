@@ -1,17 +1,23 @@
 import AppKit
+import CryptoKit
+import Darwin
 import Foundation
 import RuntimeContracts
+import Security
 
 /// Client for the root-only nmap helper.
 ///
 /// The GUI app stays a normal user process. Privileged nmap runs either:
 /// 1. Through the installed LaunchDaemon helper (preferred, no prompt after install), or
 /// 2. Via a one-shot `osascript` admin elevation of the helper `run` mode (interactive fallback).
+///
+/// The helper never opens files in the user's work directory. The client
+/// sends targets in the request and writes the returned scan output itself.
 enum PrivilegeHelperClient {
     static let helperLabel = "com.techmore.nmapui.nmap-helper"
-    static let helperInstallPath = "/Library/PrivilegedHelperTools/com.techmore.nmapui.nmap-helper"
+    static let helperInstallPath = NmapPrivilegedHelperContract.helperInstallPath
     static let nmapInstallPath = NmapPrivilegedHelperContract.privilegedNmapPath
-    static let vulnersInstallPath = "/Library/Application Support/NmapUI/nmap-vulners/vulners.nse"
+    static let vulnersInstallPath = NmapPrivilegedHelperContract.privilegedVulnersScriptPath
     static let launchDaemonPlistPath = "/Library/LaunchDaemons/com.techmore.nmapui.nmap-helper.plist"
     static let socketPath = "/Library/Application Support/NmapUI/helper.sock"
     static let machServiceName = NmapPrivilegedHelperContract.machServiceName
@@ -28,6 +34,8 @@ enum PrivilegeHelperClient {
         case installFailed(String)
         case communicationFailed(String)
         case notAvailable
+        case unsignedBuild
+        case invalidRequest(String)
 
         var errorDescription: String? {
             switch self {
@@ -39,6 +47,10 @@ enum PrivilegeHelperClient {
                 return "Could not talk to the privileged scanner helper. \(message)"
             case .notAvailable:
                 return "Privileged scanner helper is not available."
+            case .unsignedBuild:
+                return "This build of NmapUI is not signed with an Apple team identity, so the privileged scanner helper cannot verify it. Build with CODESIGN_IDENTITY set to a Developer ID or Apple Development identity to run privileged scans."
+            case .invalidRequest(let message):
+                return "Invalid privileged scan request. \(message)"
             }
         }
     }
@@ -48,38 +60,54 @@ enum PrivilegeHelperClient {
     }
 
     static var isCurrentHelperReachable: Bool {
-        (try? sendViaXPC(requestJSON: #"{"cmd":"ping"}"#).stdout) == "pong:\(NmapPrivilegedHelperContract.protocolVersion)"
+        isHelperReachable
     }
 
+    /// The helper accepts only clients signed by its own team, so a build
+    /// without a team can never use it (see `HelperClientAuthorization`).
+    static var runningAppTeamIdentifier: String? {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
+              let team = (information as? [String: Any])?[kSecCodeInfoTeamIdentifier as String] as? String,
+              NmapPrivilegedHelperContract.isValidTeamIdentifier(team) else { return nil }
+        return team
+    }
+
+    /// True only when the installed helper is the exact bundled binary: either
+    /// the bytes match, or the root daemon's stamp records the bundled
+    /// helper's SHA-256 and this protocol version.
     static var installedHelperMatchesBundledHelper: Bool {
         guard let bundled = resolveHelperBinaryURL() else { return false }
         if FileManager.default.contentsEqual(atPath: bundled.path, andPath: helperInstallPath) {
             return true
         }
-        // #237: byte-inequality can be benign (rebuild with identical protocol).
-        // Only treat as stale when the daemon's own install stamp disagrees.
-        return installedStampMatchesBundledProtocol()
+        guard let bundledSHA256 = sha256Hex(of: bundled),
+              let stamp = readRootOwnedFile(NmapPrivilegedHelperContract.helperStampPath) else { return false }
+        return NmapPrivilegedHelperContract.helperStampMatches(stamp, bundledSHA256: bundledSHA256)
     }
 
-    /// The root daemon writes helper-stamp.json at startup containing its protocol
-    /// version. If it matches ours, the installed helper speaks our contract and no
-    /// reinstall (admin prompt) is needed despite binary drift.
-    private static func installedStampMatchesBundledProtocol() -> Bool {
-        let stampPath = "/Library/Application Support/NmapUI/helper-stamp.json"
-        guard let data = FileManager.default.contents(atPath: stampPath),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              (obj["protocolVersion"] as? Int) == NmapPrivilegedHelperContract.protocolVersion
-        else { return false }
-        return true
+    static func sha256Hex(of url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// A stamp a user could write would let them pin an old helper, so only
+    /// a root-owned regular file counts.
+    private static func readRootOwnedFile(_ path: String) -> Data? {
+        var info = stat()
+        guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == 0, info.st_mode & 0o022 == 0 else {
+            return nil
+        }
+        return FileManager.default.contents(atPath: path)
     }
 
     static func ping() throws -> Bool {
-        let response = try pingResponse()
-        return response.ok && response.stdout == "pong:\(NmapPrivilegedHelperContract.protocolVersion)"
-    }
-
-    private static func pingResponse() throws -> HelperResponse {
-        try send(requestJSON: #"{"cmd":"ping"}"#)
+        let response = try callHelper(timeout: 2) { proxy, reply in proxy.ping(withReply: reply) }
+        return String(decoding: response, as: UTF8.self) == "pong:\(NmapPrivilegedHelperContract.protocolVersion)"
     }
 
     static func ensureInstalled() async throws {
@@ -91,6 +119,11 @@ enum PrivilegeHelperClient {
                     if installationIsComplete {
                         continuation.resume()
                         return
+                    }
+                    // Installing would prompt for an administrator and still
+                    // leave a helper that rejects this unsigned client.
+                    guard runningAppTeamIdentifier != nil else {
+                        throw ClientError.unsignedBuild
                     }
                     try installHelper()
                     let deadline = Date().addingTimeInterval(8)
@@ -110,17 +143,20 @@ enum PrivilegeHelperClient {
     }
 
     static func cancelActiveScan(scanID: UUID) {
-        let payload: [String: Any] = ["cmd": "cancel", "scanID": scanID.uuidString]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let requestJSON = String(data: data, encoding: .utf8) else { return }
+        guard let data = try? JSONEncoder().encode(NmapPrivilegedScanReference(scanID: scanID.uuidString)) else { return }
         // Cancellation is best-effort and must never block the main actor on a
         // broken helper connection.
         DispatchQueue.global(qos: .userInitiated).async {
-            _ = try? send(requestJSON: requestJSON)
+            _ = try? callHelper(timeout: 2) { proxy, reply in proxy.cancel(request: data, withReply: reply) }
         }
     }
 
     /// Runs nmap with root privileges via the helper daemon, or interactive elevation fallback.
+    ///
+    /// The helper always runs its own installed nmap; `nmapPath` is ignored.
+    /// `arguments` may name artifacts with `-oX`/`-oG` and a targets file in
+    /// `workDirectory` with `-iL`; the client reads that file and writes the
+    /// returned artifacts into `workDirectory` as the current user.
     static func runNmap(
         nmapPath: String,
         arguments: [String],
@@ -129,17 +165,69 @@ enum PrivilegeHelperClient {
         allowInteractiveFallback: Bool
     ) throws -> RunResult {
         try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+        let request = try makeRunRequest(arguments: arguments, workDirectory: workDirectory, scanID: scanID)
+        removeArtifacts(named: requestedArtifacts(in: request.arguments), in: workDirectory)
 
+        let response: NmapPrivilegedRunResponse
         if isHelperReachable {
-            // The installed helper exposes only the versioned XPC contract.
-            return try runViaHelper(nmapPath: nmapPath, arguments: arguments, workDirectory: workDirectory, scanID: scanID)
-        }
-
-        guard allowInteractiveFallback else {
+            response = try runViaHelper(request, workDirectory: workDirectory)
+        } else if allowInteractiveFallback {
+            response = try runViaInteractiveElevation(request)
+        } else {
             throw ClientError.notAvailable
         }
+        try writeArtifacts(response.artifacts, to: workDirectory)
+        return RunResult(exitCode: Int32(clamping: response.exitCode), stdout: response.stdout, stderr: response.stderr)
+    }
 
-        return try runViaInteractiveElevation(nmapPath: nmapPath, arguments: arguments, workDirectory: workDirectory, scanID: scanID)
+    /// Builds the wire request: pins --script to the installed Vulners path
+    /// and turns `-iL <file>` into an explicit target list.
+    static func makeRunRequest(arguments: [String], workDirectory: URL, scanID: UUID) throws -> NmapPrivilegedRunRequest {
+        var result: [String] = []
+        var targets: [String] = []
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            if argument == "--script", index + 1 < arguments.count {
+                result.append(contentsOf: [argument, vulnersInstallPath])
+                index += 2
+            } else if argument == "-iL", index + 1 < arguments.count {
+                let name = arguments[index + 1]
+                guard !name.contains("/"), !name.hasPrefix(".") else {
+                    throw ClientError.invalidRequest("targets file must be in the scan work directory")
+                }
+                let contents = try String(contentsOf: workDirectory.appendingPathComponent(name), encoding: .utf8)
+                // nmap's -iL format: whitespace-separated, "#" starts a comment.
+                for line in contents.split(whereSeparator: \.isNewline) {
+                    let uncommented = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+                    targets.append(contentsOf: uncommented.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init))
+                }
+                index += 2
+            } else {
+                result.append(argument)
+                index += 1
+            }
+        }
+        return NmapPrivilegedRunRequest(arguments: result, targets: targets, scanID: scanID.uuidString)
+    }
+
+    static func requestedArtifacts(in arguments: [String]) -> [String] {
+        zip(arguments, arguments.dropFirst())
+            .filter { $0.0 == "-oX" || $0.0 == "-oG" }
+            .map(\.1)
+            .filter(NmapPrivilegedHelperContract.artifactNames.contains)
+    }
+
+    private static func removeArtifacts(named names: [String], in workDirectory: URL) {
+        for name in names {
+            try? FileManager.default.removeItem(at: workDirectory.appendingPathComponent(name))
+        }
+    }
+
+    static func writeArtifacts(_ artifacts: [String: Data], to workDirectory: URL) throws {
+        for (name, data) in artifacts where NmapPrivilegedHelperContract.artifactNames.contains(name) {
+            try data.write(to: workDirectory.appendingPathComponent(name), options: .atomic)
+        }
     }
 
     // MARK: - Install
@@ -188,51 +276,13 @@ enum PrivilegeHelperClient {
               FileManager.default.fileExists(atPath: vulnersURL.path) else {
             throw ClientError.installFailed("The bundled Vulners script is missing.")
         }
-
-        let helperSource = shellQuoted(helperURL.path)
-        let installPath = shellQuoted(helperInstallPath)
-        let plistPath = shellQuoted(launchDaemonPlistPath)
-        let socketDir = shellQuoted("/Library/Application Support/NmapUI")
-        let nmapSource = shellQuoted(nmapPath)
-        let nmapInstall = shellQuoted(nmapInstallPath)
-        let vulnersSource = shellQuoted(vulnersURL.deletingLastPathComponent().path)
-        let vulnersInstallDir = shellQuoted(URL(fileURLWithPath: vulnersInstallPath).deletingLastPathComponent().path)
-
-        let plistBody = launchDaemonPlistContents()
-
-        let encodedPlist = plistBody
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-
-        let script = """
-        set -eu
-        mkdir -p /Library/PrivilegedHelperTools
-        mkdir -p \(socketDir)
-        rm -f \(nmapInstall)
-        cp -L \(nmapSource) \(nmapInstall)
-        chown root:wheel \(nmapInstall)
-        chmod 755 \(nmapInstall)
-        rm -rf \(vulnersInstallDir)
-        cp -R \(vulnersSource) \(vulnersInstallDir)
-        chown -R root:wheel \(vulnersInstallDir)
-        find \(vulnersInstallDir) -type d -exec chmod 755 {} +
-        find \(vulnersInstallDir) -type f -exec chmod 644 {} +
-        rm -f \(shellQuoted(socketPath))
-        cp \(helperSource) \(installPath)
-        xattr -cr \(installPath) 2>/dev/null || true
-        codesign --remove-signature \(installPath) 2>/dev/null || true
-        codesign --force --sign - --identifier \(machServiceName) \(installPath)
-        chown root:wheel \(installPath)
-        chmod 755 \(installPath)
-        printf "%b" "\(encodedPlist)" > \(plistPath)
-        chown root:wheel \(plistPath)
-        chmod 644 \(plistPath)
-        launchctl bootout system/\(helperLabel) 2>/dev/null || true
-        launchctl bootstrap system \(plistPath)
-        launchctl enable system/\(helperLabel)
-        launchctl kickstart -k system/\(helperLabel)
-        """
+        let nmapPlan: PrivilegedNmapInstallPlan
+        do {
+            nmapPlan = try PrivilegedNmapInstallPlan.make(nmapPath: nmapPath)
+        } catch {
+            throw ClientError.installFailed(error.localizedDescription)
+        }
+        let script = installScript(helperSource: helperURL.path, vulnersSourceDirectory: vulnersURL.deletingLastPathComponent().path, nmapPlan: nmapPlan)
 
         let result = try ExternalProcessRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/osascript"),
@@ -248,10 +298,54 @@ enum PrivilegeHelperClient {
         }
     }
 
+    static func installScript(helperSource: String, vulnersSourceDirectory: String, nmapPlan: PrivilegedNmapInstallPlan) -> String {
+        let installPath = shellQuoted(helperInstallPath)
+        let plistPath = shellQuoted(launchDaemonPlistPath)
+        let supportDirectory = shellQuoted(NmapPrivilegedHelperContract.supportDirectory)
+        let vulnersSource = shellQuoted(vulnersSourceDirectory)
+        let vulnersInstallDir = shellQuoted(URL(fileURLWithPath: vulnersInstallPath).deletingLastPathComponent().path)
+        let encodedPlist = launchDaemonPlistContents()
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+
+        // The helper is copied byte-for-byte (not re-signed), so it keeps the
+        // team signature it derives its client requirement from, and its
+        // SHA-256 matches the bundled helper's.
+        return ([
+            "set -eu",
+            "mkdir -p /Library/PrivilegedHelperTools",
+            "mkdir -p \(supportDirectory)",
+            "chown root:wheel \(supportDirectory)",
+            "chmod 755 \(supportDirectory)",
+        ] + nmapPlan.shellCommands() + [
+            "rm -rf \(vulnersInstallDir)",
+            "cp -RL \(vulnersSource) \(vulnersInstallDir)",
+            "chown -R root:wheel \(vulnersInstallDir)",
+            "find \(vulnersInstallDir) -type d -exec chmod 755 {} +",
+            "find \(vulnersInstallDir) -type f -exec chmod 644 {} +",
+            "rm -rf \(shellQuoted(NmapPrivilegedHelperContract.helperRunRoot))",
+            "rm -f \(shellQuoted(socketPath)) \(shellQuoted(NmapPrivilegedHelperContract.helperStampPath))",
+            "rm -f \(installPath)",
+            "cp \(shellQuoted(helperSource)) \(installPath)",
+            "xattr -c \(installPath) 2>/dev/null || true",
+            "chown root:wheel \(installPath)",
+            "chmod 755 \(installPath)",
+            "printf \"%b\" \"\(encodedPlist)\" > \(plistPath)",
+            "chown root:wheel \(plistPath)",
+            "chmod 644 \(plistPath)",
+            "launchctl bootout system/\(helperLabel) 2>/dev/null || true",
+            "launchctl bootstrap system \(plistPath)",
+            "launchctl enable system/\(helperLabel)",
+            "launchctl kickstart -k system/\(helperLabel)",
+        ]).joined(separator: "\n")
+    }
+
     private static var installationIsComplete: Bool {
         isCurrentHelperReachable
             && FileManager.default.isExecutableFile(atPath: nmapInstallPath)
             && FileManager.default.fileExists(atPath: vulnersInstallPath)
+            && FileManager.default.fileExists(atPath: NmapPrivilegedHelperContract.privilegedNmapDataDirectory + "/nse_main.lua")
             && installedHelperMatchesBundledHelper
     }
 
@@ -259,11 +353,8 @@ enum PrivilegeHelperClient {
         let fileManager = FileManager.default
         var candidates: [URL] = []
 
-        if let resourceURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/NmapPrivilegedHelper") as URL? {
-            candidates.append(resourceURL)
-        }
+        candidates.append(Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/NmapPrivilegedHelper"))
         if let executable = Bundle.main.executableURL {
-            candidates.append(executable.deletingLastPathComponent().appendingPathComponent("NmapPrivilegedHelper"))
             // SwiftPM run: .build/debug/NmapUI sibling
             candidates.append(executable.deletingLastPathComponent().appendingPathComponent("NmapPrivilegedHelper"))
         }
@@ -281,63 +372,43 @@ enum PrivilegeHelperClient {
 
     // MARK: - Helper run
 
-    private static func runViaHelper(
-        nmapPath: String,
-        arguments: [String],
-        workDirectory: URL,
-        scanID: UUID
-    ) throws -> RunResult {
-        let privilegedArguments = replaceArgumentValue(
-            in: arguments,
-            flag: "--script",
-            with: vulnersInstallPath
-        )
-        let payload: [String: Any] = [
-            "cmd": "run",
-            "run": [
-                "nmapPath": nmapInstallPath,
-                "arguments": privilegedArguments,
-                "workDirectory": workDirectory.path,
-                "scanID": scanID.uuidString
-            ]
-        ]
-        let data = try JSONSerialization.data(withJSONObject: payload)
-        guard let json = String(data: data, encoding: .utf8) else {
-            throw ClientError.communicationFailed("could not encode request")
+    private static func runViaHelper(_ request: NmapPrivilegedRunRequest, workDirectory: URL) throws -> NmapPrivilegedRunResponse {
+        let data = try JSONEncoder().encode(request)
+        // The helper keeps grepable progress in its own directory; mirror it
+        // into the work directory so the scan coordinator can show live hosts.
+        let mirror = request.arguments.contains(NmapPrivilegedHelperContract.progressArtifactName)
+            ? startProgressMirror(scanID: request.scanID, workDirectory: workDirectory)
+            : nil
+        defer { mirror?.cancel() }
+        let response = try callHelper(timeout: NmapPrivilegedHelperContract.maximumScanRuntime + NmapPrivilegedHelperContract.responseGracePeriod) { proxy, reply in
+            proxy.run(request: data, withReply: reply)
         }
-        let response = try send(requestJSON: json)
-        return RunResult(exitCode: Int32(response.exitCode), stdout: response.stdout, stderr: response.stderr)
+        guard let decoded = try? JSONDecoder().decode(NmapPrivilegedRunResponse.self, from: response) else {
+            throw ClientError.communicationFailed("invalid XPC helper response")
+        }
+        return decoded
     }
 
-    private static func replaceArgumentValue(in arguments: [String], flag: String, with replacement: String) -> [String] {
-        var result = arguments
-        guard let index = result.firstIndex(of: flag), index + 1 < result.count else { return result }
-        result[index + 1] = replacement
-        return result
+    private static func startProgressMirror(scanID: String?, workDirectory: URL) -> DispatchSourceTimer? {
+        guard let request = try? JSONEncoder().encode(NmapPrivilegedScanReference(scanID: scanID)) else { return nil }
+        let destination = workDirectory.appendingPathComponent(NmapPrivilegedHelperContract.progressArtifactName)
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "com.techmore.nmapui.helper-progress"))
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler {
+            guard let progress = try? callHelper(timeout: 2, { proxy, reply in proxy.progress(request: request, withReply: reply) }),
+                  !progress.isEmpty else { return }
+            try? progress.write(to: destination, options: .atomic)
+        }
+        timer.resume()
+        return timer
     }
 
-    private static func runViaInteractiveElevation(
-        nmapPath: String,
-        arguments: [String],
-        workDirectory: URL,
-        scanID: UUID
-    ) throws -> RunResult {
+    private static func runViaInteractiveElevation(_ request: NmapPrivilegedRunRequest) throws -> NmapPrivilegedRunResponse {
         guard let helperURL = resolveHelperBinaryURL() else {
             throw ClientError.helperBinaryMissing
         }
-
-        var commandParts = [
-            shellQuoted(helperURL.path),
-            "run",
-            "--work-dir",
-            shellQuoted(workDirectory.path),
-            "--scan-id",
-            shellQuoted(scanID.uuidString),
-            "--",
-            shellQuoted(nmapPath)
-        ]
-        commandParts.append(contentsOf: arguments.map(shellQuoted))
-        let shellCommand = commandParts.joined(separator: " ")
+        let encoded = try JSONEncoder().encode(request).base64EncodedString()
+        let shellCommand = [helperURL.path, "run", "--request-base64", encoded].map(shellQuoted).joined(separator: " ")
 
         let result = try ExternalProcessRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/osascript"),
@@ -345,20 +416,21 @@ enum PrivilegeHelperClient {
                 "-e",
                 "do shell script \(appleScriptString(shellCommand)) with administrator privileges"
             ],
-            timeout: 15 * 60
+            timeout: 15 * 60,
+            // The reply carries the scan output (base64 in JSON), not just logs.
+            maxOutputBytes: 4 * NmapPrivilegedHelperContract.maximumArtifactBytes
         )
-        return RunResult(exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr)
+        guard result.exitCode == 0 else {
+            throw ClientError.communicationFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        let line = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let response = try? JSONDecoder().decode(NmapPrivilegedRunResponse.self, from: Data(line.utf8)) else {
+            throw ClientError.communicationFailed("invalid one-shot helper response")
+        }
+        return response
     }
 
-    // MARK: - Framing
-
-    private struct HelperResponse: Decodable {
-        let ok: Bool
-        let exitCode: Int
-        let stdout: String
-        let stderr: String
-        let error: String?
-    }
+    // MARK: - XPC
 
     private final class XPCResponseBox: @unchecked Sendable {
         let lock = NSLock()
@@ -381,16 +453,10 @@ enum PrivilegeHelperClient {
         }
     }
 
-    private static func send(requestJSON: String) throws -> HelperResponse {
-        try sendViaXPC(requestJSON: requestJSON)
-    }
-
-    private static func sendViaXPC(requestJSON: String) throws -> HelperResponse {
-        guard let data = requestJSON.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let command = object["cmd"] as? String else {
-            throw ClientError.communicationFailed("could not decode XPC request")
-        }
+    private static func callHelper(
+        timeout: TimeInterval,
+        _ invoke: (NmapPrivilegedServiceProtocol, @escaping @Sendable (Data) -> Void) -> Void
+    ) throws -> Data {
         let connection = NSXPCConnection(machServiceName: machServiceName, options: .privileged)
         connection.remoteObjectInterface = NSXPCInterface(with: NmapPrivilegedServiceProtocol.self)
         connection.resume()
@@ -403,42 +469,21 @@ enum PrivilegeHelperClient {
         }) as? NmapPrivilegedServiceProtocol else {
             throw ClientError.communicationFailed("could not create XPC proxy")
         }
-        switch command {
-        case "ping":
-            proxy.ping { response in responseBox.set(data: response); semaphore.signal() }
-        case "cancel":
-            proxy.cancel(request: data) { response in responseBox.set(data: response); semaphore.signal() }
-        case "run":
-            proxy.run(request: data) { response in responseBox.set(data: response); semaphore.signal() }
-        default:
-            throw ClientError.communicationFailed("unsupported XPC request")
+        invoke(proxy) { response in
+            responseBox.set(data: response)
+            semaphore.signal()
         }
-        let responseTimeout: DispatchTime
-        if command == "ping" || command == "cancel" {
-            responseTimeout = .now() + 2
-        } else {
-            responseTimeout = .now()
-                + NmapPrivilegedHelperContract.maximumScanRuntime
-                + NmapPrivilegedHelperContract.responseGracePeriod
-        }
-        guard semaphore.wait(timeout: responseTimeout) == .success else {
+        guard semaphore.wait(timeout: .now() + timeout) == .success else {
             throw ClientError.communicationFailed("XPC helper timed out")
         }
         let (responseData, responseError) = responseBox.values()
         if let responseError { throw ClientError.communicationFailed(responseError.localizedDescription) }
         guard let responseData else { throw ClientError.communicationFailed("empty XPC helper response") }
-        if command == "ping" {
-            let pong = String(data: responseData, encoding: .utf8) ?? ""
-            return HelperResponse(ok: pong == "pong:\(NmapPrivilegedHelperContract.protocolVersion)", exitCode: 0, stdout: pong, stderr: "", error: nil)
-        }
-        guard let response = try? JSONDecoder().decode(HelperResponse.self, from: responseData) else {
-            throw ClientError.communicationFailed("invalid XPC helper response")
-        }
-        return response
+        return responseData
     }
 
     private static func shellQuoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        PrivilegedNmapInstallPlan.shellQuoted(value)
     }
 
     private static func appleScriptString(_ value: String) -> String {

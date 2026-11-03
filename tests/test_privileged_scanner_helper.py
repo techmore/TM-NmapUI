@@ -177,6 +177,30 @@ def test_rejects_a_script_outside_the_root_owned_asset_dir(helper, tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "vulners.nse,/tmp/evil.nse",  # nmap splits on commas: second script runs as root
+        "vulners.nse or all",  # boolean expression: every category as root
+        "vulners.nse,all",
+        "(vulners.nse)",
+        "+vulners.nse",
+        "*.nse",
+        "",  # the asset directory itself would load every script in it
+    ],
+)
+def test_rejects_script_lists_and_expressions_inside_the_asset_dir(helper, suffix):
+    value = os.path.join(helper.ASSET_DIR, suffix)
+    for flag in ("--script", "--stylesheet"):
+        with pytest.raises(helper.Rejected):
+            helper.build_argv(["nmap", "-sS", flag, value, "10.0.0.5"])
+
+
+def test_rejects_missing_asset_file(helper):
+    with pytest.raises(helper.Rejected, match="existing asset file"):
+        helper.build_argv(["nmap", "-sS", "--script", os.path.join(helper.ASSET_DIR, "missing.nse"), "10.0.0.5"])
+
+
 def test_rejects_output_outside_the_data_dir(helper, tmp_path):
     with pytest.raises(helper.Rejected):
         helper.build_argv(["nmap", "-sS", "-oA", "/etc/nmapui_scan", "10.0.0.5"])

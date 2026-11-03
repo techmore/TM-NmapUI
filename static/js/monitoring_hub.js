@@ -52,7 +52,7 @@ function updateMonitoringHubAutoMonitor(config = {}) {
 
     const enabled = !!config.enabled;
     stateEl.textContent = enabled ? `On (${config.recurrence || 'daily'})` : 'Off';
-    stateEl.className = enabled ? 'font-bold text-amber-600' : 'font-medium text-olive-400';
+    stateEl.className = enabled ? 'font-bold text-amber-800' : 'font-medium text-olive-600';
     indicator?.classList.toggle('hidden', !enabled);
 
     if (detailEl) {

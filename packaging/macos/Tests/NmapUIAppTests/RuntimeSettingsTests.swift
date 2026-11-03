@@ -243,7 +243,7 @@ struct RuntimeSettingsTests {
 
     @Test("privileged helper response window outlives its scan ceiling")
     func privilegedHelperTimeoutContractHasCleanupGrace() {
-        #expect(NmapPrivilegedHelperContract.protocolVersion == 4)
+        #expect(NmapPrivilegedHelperContract.protocolVersion == 6)
         #expect(NmapPrivilegedHelperContract.privilegedNmapPath.hasSuffix("/com.techmore.nmapui.nmap"))
         #expect(NmapPrivilegedHelperContract.isAllowedScanTarget("192.168.222.0/24"))
         #expect(NmapPrivilegedHelperContract.isAllowedScanTarget("scanner.example.com"))
